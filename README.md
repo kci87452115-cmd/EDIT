@@ -5,7 +5,7 @@
 | 폴더 | 내용 |
 |---|---|
 | `apps/runsheet/` | 운행표 데이터 편집기 (`pdf_data_editor.py`, `APP_VERSION`) — RADIO |
-| `apps/schedule/` | 편성표 PDF 편집기 (`ui.py`, `APP_VERSION`) — TV |
+| `apps/schedule/` | TV 편성표 편집기 (`ui.py`, `APP_VERSION`) — TV |
 | `launcher/` | 편집 프로그램 런처 (`LAUNCHER_VERSION`, 공용 실행 환경 `RUNTIME`) |
 | `installer/` | Inno Setup 설치 스크립트 |
 | `tools/build_packages.py` | catalog.json · 프로그램 꾸러미 · 설치 zip (앱 목록·그룹은 여기 `APPS`) |

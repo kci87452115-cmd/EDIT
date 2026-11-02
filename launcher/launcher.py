@@ -6,7 +6,7 @@
   업데이트\\               기본 업데이트 폴더 (catalog.json + 꾸러미 zip). 설정에서 공유 폴더·GitHub 주소로 바꿀 수 있다
   launcher.json             런처 설정
   radio\\앱\\<id>\\        RADIO 프로그램 (.py + app.json)  — 운행표 데이터 편집기
-  TV\\앱\\<id>\\           TV 프로그램                     — 편성표 PDF 편집기
+  TV\\앱\\<id>\\           TV 프로그램                     — TV 편성표 편집기, DMB 편성 편집기
   radio\\데이터\\  radio\\백업\\
   TV\\앱\\  TV\\데이터\\  TV\\백업\\
 
@@ -37,7 +37,7 @@ GROUP_FOLDER = {"radio": "radio", "tv": "TV"}        # C:\\EDIT 아래 폴더 �
 
 APP_INFO = {   # 기본 이름·설명·그룹 (catalog.json 에 있으면 그쪽을 쓴다)
     "runsheet": {"name": "운행표 데이터 편집기", "desc": "운행표 PDF에 광고주 데이터 입력 · 정산 · 일정표", "group": "radio"},
-    "schedule": {"name": "편성표 PDF 편집기", "desc": "편성표 PDF 편집 (칸 색 · 글자 · 분할선)", "group": "tv"},
+    "schedule": {"name": "TV 편성표 편집기", "desc": "편성표 PDF 편집 (칸 색 · 글자 · 분할선)", "group": "tv"},
 }
 
 

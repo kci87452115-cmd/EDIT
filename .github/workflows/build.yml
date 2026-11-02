@@ -87,7 +87,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.pkg.outputs.tag }}
-          name: 편집 프로그램 ${{ steps.pkg.outputs.tag }} (운행표 ${{ steps.pkg.outputs.runsheet }} · 편성표·DMB ${{ steps.pkg.outputs.schedule }} · 런처 ${{ steps.pkg.outputs.launcher }})
+          name: 편집 프로그램 ${{ steps.pkg.outputs.tag }} (운행표 ${{ steps.pkg.outputs.runsheet }} · TV 편성표·DMB ${{ steps.pkg.outputs.schedule }} · 런처 ${{ steps.pkg.outputs.launcher }})
           body: |
             처음 설치(둘 중 하나, 파이썬 필요 없음)
             - EDIT_setup_${{ steps.pkg.outputs.tag }}.exe 실행

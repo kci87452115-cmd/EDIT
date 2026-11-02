@@ -44,7 +44,7 @@ def schedule_badge_dir():
         return os.path.join(home, "데이터", "편성표", "badges")
     return os.path.abspath("badges")
 
-APP_VERSION = "3.10.5"
+APP_VERSION = "3.10.6"
 
 
 def _detect_profile():
@@ -58,7 +58,7 @@ def _detect_profile():
 PROFILE = _detect_profile()
 IS_DMB = PROFILE == "dmb"
 APP_TITLE = (f"DMB 편성 편집기 v{APP_VERSION}" if IS_DMB
-             else f"편성표 PDF 스마트 편집기 v{APP_VERSION} (Full Integrated Edition)")
+             else f"TV 편성표 편집기 v{APP_VERSION}")
 # 편성표 편집기와 DMB 편집기가 같이 쓰는 것 (나머지 설정·자동 저장·머리글은 따로)
 SHARED_KEYS = ("title_presets", "favorite_presets", "custom_badge_paths", "global_font_path")
 DMB_REGIONS = ["광주", "전주", "여수", "목포"]
@@ -1088,7 +1088,7 @@ class ScheduleEditor:
     def on_closing_app(self):
         """X 를 눌러도 바로 닫지 않고 물어본다. 저장 안 한 작업이 있으면 저장할지도 묻는다."""
         self.save_autosave()
-        name = "DMB 편성 편집기" if IS_DMB else "편성표 PDF 편집기"
+        name = "DMB 편성 편집기" if IS_DMB else "TV 편성표 편집기"
         if self._has_unsaved_work():
             ans = messagebox.askyesnocancel(
                 "종료 확인",
