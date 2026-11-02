@@ -38,6 +38,35 @@ def const(path, name):
     return m.group(1).strip()
 
 
+def sha256_of(path):
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def sign_catalog(cat_path):
+    """catalog.json 을 비밀 키(환경 변수 EDIT_SIGN_KEY, PEM)로 서명해 catalog.sig 를 만든다.
+    런처는 이 서명과 목록의 파일 지문이 맞을 때만 설치한다. 키가 없으면 GitHub 빌드에서는 실패로 멈춘다."""
+    key_pem = os.environ.get("EDIT_SIGN_KEY", "").strip()
+    if not key_pem:
+        if os.environ.get("GITHUB_ACTIONS"):
+            sys.exit("서명 키(EDIT_SIGN_KEY)가 없습니다. GitHub 저장소 Settings > Secrets and variables > Actions 에 넣어 주세요.")
+        print("  [주의] 서명 키가 없어 catalog.sig 를 만들지 않았습니다 (새 런처는 이 꾸러미를 설치하지 않습니다).")
+        return
+    import base64
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import padding
+    key = serialization.load_pem_private_key(key_pem.encode(), password=None)
+    data = open(cat_path, "rb").read()
+    sig = key.sign(data, padding.PKCS1v15(), hashes.SHA256())
+    with open(os.path.join(os.path.dirname(cat_path), "catalog.sig"), "w", encoding="ascii") as f:
+        f.write(base64.b64encode(sig).decode("ascii"))
+    print("  catalog.json 서명 완료 -> catalog.sig")
+
+
 def zip_dir(src_dir, zpath, arc_prefix=""):
     with zipfile.ZipFile(zpath, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
         for base, _d, files in os.walk(src_dir):
@@ -137,15 +166,18 @@ def main():
     cat = {"built": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"), "tag": tag,
            "launcher": {"version": lver, "runtime": runtime, "file": f"launcher_{lver}.zip"}, "apps": {}}
     zip_dir(dist, os.path.join(UPD, f"launcher_{lver}.zip"), "EditLauncher")
+    cat["launcher"]["sha256"] = sha256_of(os.path.join(UPD, f"launcher_{lver}.zip"))
     for app_id, (folder, entry, name, desc, need_rt, group) in APPS.items():
         ver = const(f"{folder}/{VERSION_FROM.get(app_id, entry)}", "APP_VERSION")
         fn = f"app_{app_id}_{ver}.zip"
         zip_dir(os.path.join(ROOT, folder), os.path.join(UPD, fn))
         cat["apps"][app_id] = {"name": name, "desc": desc, "version": ver, "file": fn, "entry": entry,
-                               "runtime": need_rt, "group": group, "notes": notes}
+                               "runtime": need_rt, "group": group, "notes": notes,
+                               "sha256": sha256_of(os.path.join(UPD, fn))}
         print(f"  [{group}] {name} v{ver} -> {fn}")
     with open(os.path.join(UPD, "catalog.json"), "w", encoding="utf-8") as f:
         json.dump(cat, f, ensure_ascii=False, indent=1)
+    sign_catalog(os.path.join(UPD, "catalog.json"))
     print(f"  런처 v{lver} (실행 환경 {runtime})")
 
     # USB·공유 폴더용: update 폴더를 하나로

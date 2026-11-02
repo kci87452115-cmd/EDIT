@@ -27,7 +27,7 @@ import sys
 import tempfile
 import zipfile
 
-LAUNCHER_VERSION = "1.0.1"
+LAUNCHER_VERSION = "1.0.2"
 RUNTIME = 1                         # 공용 실행 환경 세대. 필요한 부품이 바뀌면 올린다 (앱의 runtime 값과 비교)
 EXE_NAME = "EditLauncher.exe"
 MUTEX = "EditLauncher_Running"      # 설치 프로그램(setup)이 '실행 중'을 알아보는 이름
@@ -143,6 +143,90 @@ def installed_info(app_id, group=None):
     return None
 
 
+# ------------------------------------------------------------------ 업데이트 서명 확인
+# 꾸러미 목록(catalog.json)은 빌드 때 비밀 키(GitHub 비밀 설정 EDIT_SIGN_KEY)로 서명한다 -> catalog.sig
+# 런처는 아래 공개키로 서명을 확인하고, 목록에 적힌 지문(SHA-256)과 받은 파일이 같을 때만 설치한다.
+SIGN_N = int(
+    "b4149f9e7c37f0390d9613d363e12a2a8ccfe0ab5d961b8edd54075f4323ae2e"
+    "5939ab1679b85e02fed58f93b85d96d96e56ce41a4289013508544f1b7e9c0c4"
+    "78fdd81fc764e6cbee9037ab07a29eea23a40c4e53f9e95759b45f6d7aa544f0"
+    "6da5ae579b5130a6f2d08fcef8d14989e809f61dca0a87b8010c2a327689772e"
+    "a6f060390c15b879c98cc7ed69c2c387202771d551c6230aa94ee21764ff03db"
+    "1b8b502abe3c3e78994a40e6522d6fdc1e8be72764cd21ad22e0d457da4e1639"
+    "df760d9df44f00b043cf6e154eacaa1bdf957afa3617dbdc00a34b703c2808e1"
+    "37cdadcccc2402bddb2edbdb60ff8a57f2b6ef59f5691e483e8c6e7aabf36e5b"
+    "f10f3844d3c6760c625336464e0020a24f94e8b46164083309d79976d3fcd0f6"
+    "0b74c988dc517d05b4416774c8b24b0fe643b8851fd5c6b64a9586ef3a1fec52"
+    "426e09941c89aba6c296f6c5d1499b40bfa6200f14db12abc5b80006c6aa0e64"
+    "548106cbeb48160d5747934f769fcc6fd826ec417a7ee0539569c829a1067569", 16)
+SIGN_E = 65537
+_SHA256_DIGESTINFO = bytes.fromhex("3031300d060960864801650304020105000420")
+CATALOG_ERROR = ""          # 마지막으로 목록을 읽을 때 생긴 문제 (화면에 보여 준다)
+
+
+class UpdateSecurityError(Exception):
+    pass
+
+
+def verify_signature(data, sig_text, n=None, e=None):
+    """RSA(PKCS#1 v1.5, SHA-256) 서명 확인. 외부 부품 없이 파이썬만으로 계산한다."""
+    import base64
+    import hashlib
+    import hmac
+    n = n or SIGN_N
+    e = e or SIGN_E
+    try:
+        sig = base64.b64decode((sig_text or "").strip(), validate=True)
+    except Exception:
+        return False
+    k = (n.bit_length() + 7) // 8
+    if len(sig) != k:
+        return False
+    m = pow(int.from_bytes(sig, "big"), e, n).to_bytes(k, "big")
+    want = (b"\x00\x01" + b"\xff" * (k - 3 - len(_SHA256_DIGESTINFO) - 32) + b"\x00"
+            + _SHA256_DIGESTINFO + hashlib.sha256(data).digest())
+    return hmac.compare_digest(m, want)
+
+
+def file_sha256(path):
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def expected_sha(cat, fname):
+    fname = os.path.basename(fname)
+    ents = [cat.get("launcher") or {}] + list((cat.get("apps") or {}).values())
+    for ent in ents:
+        if ent.get("file") == fname:
+            return (ent.get("sha256") or "").lower()
+    return ""
+
+
+def check_file(cat, path):
+    """받은 꾸러미 파일이 서명된 목록의 지문과 같은지. 다르면 지우고 오류."""
+    want = expected_sha(cat, path)
+    if not want:
+        raise UpdateSecurityError(f"서명된 목록에 이 파일의 지문이 없습니다:\n{os.path.basename(path)}")
+    if file_sha256(path) != want:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        raise UpdateSecurityError(f"파일 지문이 맞지 않아 설치하지 않았습니다 (손상되었거나 바뀐 파일):\n{os.path.basename(path)}")
+
+
+def _parse_signed_catalog(data, sig_text, where):
+    if not sig_text:
+        raise UpdateSecurityError(f"서명 파일(catalog.sig)이 없습니다: {where}\n서명 확인이 된 꾸러미만 설치합니다.")
+    if not verify_signature(data, sig_text):
+        raise UpdateSecurityError(f"서명이 맞지 않습니다: {where}\n바뀌었거나 다른 곳에서 만든 꾸러미일 수 있어 설치하지 않습니다.")
+    return json.loads(data.decode("utf-8-sig"))
+
+
 GITHUB_RE = re.compile(r"github\.com[/:]+([^/\s]+)/([^/\s#?]+?)(?:\.git)?/?$", re.I)
 
 
@@ -169,9 +253,12 @@ def read_catalog_github(src):
     cache = os.path.join(UPDATE_DIR_DEFAULT, "github")
     os.makedirs(cache, exist_ok=True)
     data = _http_get(assets["catalog.json"], accept="application/octet-stream")
+    sig = _http_get(assets["catalog.sig"], accept="application/octet-stream").decode("ascii", "ignore") if "catalog.sig" in assets else ""
+    cat = _parse_signed_catalog(data, sig, src)
     with open(os.path.join(cache, "catalog.json"), "wb") as f:
         f.write(data)
-    cat = json.loads(data.decode("utf-8-sig"))
+    with open(os.path.join(cache, "catalog.sig"), "w", encoding="ascii") as f:
+        f.write(sig)
     cat["_dir"] = cache
     cat["_remote"] = assets
     cat.setdefault("apps", {})
@@ -182,6 +269,11 @@ def ensure_local(cat, fname):
     """꾸러미 파일 경로. GitHub 에서 읽은 목록이면 필요할 때 받아 온다."""
     path = os.path.join(cat["_dir"], os.path.basename(fname))
     remote = cat.get("_remote") or {}
+    if os.path.exists(path) and remote and fname in remote:
+        try:                                  # 예전에 받아 둔 파일이 목록과 다르면 지우고 다시 받는다
+            check_file(cat, path)
+        except UpdateSecurityError:
+            pass
     if not os.path.exists(path) and fname in remote:
         tmp = path + ".part"
         import urllib.request
@@ -189,21 +281,40 @@ def ensure_local(cat, fname):
         with urllib.request.urlopen(req, timeout=60) as r, open(tmp, "wb") as f:
             shutil.copyfileobj(r, f, 1024 * 256)
         os.replace(tmp, path)
+    if os.path.exists(path):
+        check_file(cat, path)                 # 서명된 목록의 지문과 같을 때만 쓴다
     return path
 
 
 def read_catalog(folder):
-    """업데이트 폴더(또는 공개 GitHub 저장소 주소)의 catalog.json. 없거나 못 읽으면 None."""
+    """업데이트 폴더(또는 공개 GitHub 저장소 주소)의 catalog.json. 없거나 못 읽거나 서명이 틀리면 None (이유는 CATALOG_ERROR)."""
+    global CATALOG_ERROR
+    CATALOG_ERROR = ""
     if not folder:
         return None
     if is_github(folder):
         try:
             return read_catalog_github(folder)
+        except UpdateSecurityError as exc:
+            CATALOG_ERROR = str(exc)
+            return None
         except Exception:
             return None
     try:
-        with open(os.path.join(folder, "catalog.json"), "r", encoding="utf-8-sig") as f:
-            cat = json.load(f)
+        with open(os.path.join(folder, "catalog.json"), "rb") as f:
+            data = f.read()
+    except Exception:
+        return None
+    try:
+        with open(os.path.join(folder, "catalog.sig"), "r", encoding="ascii", errors="ignore") as f:
+            sig = f.read()
+    except OSError:
+        sig = ""
+    try:
+        cat = _parse_signed_catalog(data, sig, folder)
+    except UpdateSecurityError as exc:
+        CATALOG_ERROR = str(exc)
+        return None
     except Exception:
         return None
     if not isinstance(cat, dict):
@@ -493,6 +604,7 @@ class LauncherApp:
     def refresh(self):
         tk, ttk = self.tk, self.ttk
         self.cat = read_catalog(self.settings["update_dir"])
+        sec_err = CATALOG_ERROR
         if self.cat is None and (is_github(self.settings["update_dir"]) or os.path.abspath(self.settings["update_dir"]) != os.path.abspath(UPDATE_DIR_DEFAULT)):
             self.cat = read_catalog(UPDATE_DIR_DEFAULT)      # 공유 폴더에 못 닿으면 PC 안의 업데이트 폴더라도
             src_note = f"업데이트 위치에 닿지 않아 이 PC의 업데이트 폴더를 봅니다: {UPDATE_DIR_DEFAULT}"
@@ -519,7 +631,9 @@ class LauncherApp:
             self.banner.config(text=f"⬆ 새 런처 v{lv} — 눌러서 업데이트  ")
         else:
             self.banner.config(text="")
-        if self.cat is None:
+        if self.cat is None and (sec_err or CATALOG_ERROR):
+            self.status.config(text="🔒 " + (sec_err or CATALOG_ERROR), foreground="#b91c1c", wraplength=720)
+        elif self.cat is None:
             self.status.config(text=f"업데이트 정보(catalog.json)를 찾지 못했습니다: {self.settings['update_dir']}   — 설치·업데이트를 하려면 위치를 확인하거나 [업데이트 파일 가져오기]를 쓰세요.",
                                foreground="#b45309", wraplength=720)
         else:
@@ -682,7 +796,7 @@ class LauncherApp:
                 folder = os.path.dirname(path)
                 if os.path.abspath(folder) != os.path.abspath(dst):
                     for fn in os.listdir(folder):
-                        if fn == "catalog.json" or fn.lower().endswith(".zip"):
+                        if fn in ("catalog.json", "catalog.sig") or fn.lower().endswith(".zip"):
                             shutil.copy2(os.path.join(folder, fn), os.path.join(dst, fn))
         except Exception as exc:
             messagebox.showerror("가져오기 실패", str(exc), parent=self.root)

@@ -73,6 +73,7 @@ Type: filesandordirs; Name: "{userprograms}\운행표 편집기"
 [Files]
 Source: "{#SrcDir}\*"; DestDir: "{app}\런처"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#PkgDir}\catalog.json"; DestDir: "{app}\업데이트"; Flags: ignoreversion
+Source: "{#PkgDir}\catalog.sig"; DestDir: "{app}\업데이트"; Flags: ignoreversion
 Source: "{#PkgDir}\app_*.zip"; DestDir: "{app}\업데이트"; Flags: ignoreversion
 Source: "기본데이터.db"; DestDir: "{app}\radio\데이터"; Flags: onlyifdoesntexist uninsneveruninstall skipifsourcedoesntexist
 

@@ -24,7 +24,7 @@ jobs:
           python-version: "3.12"
 
       - name: 패키지 설치
-        run: python -m pip install --upgrade pip pyinstaller pymupdf pillow openpyxl
+        run: python -m pip install --upgrade pip pyinstaller pymupdf pillow openpyxl cryptography
 
       - name: 문법 검사 (두 프로그램 + 런처)
         run: python -m py_compile apps/runsheet/pdf_data_editor.py apps/schedule/ui.py apps/schedule/dmb.py launcher/launcher.py
@@ -64,11 +64,15 @@ jobs:
       - name: 꾸러미 만들기 (catalog.json, 프로그램 zip, 설치 zip)
         id: pkg
         shell: pwsh
+        env:
+          EDIT_SIGN_KEY: ${{ secrets.EDIT_SIGN_KEY }}
         run: |
           $tag = "r${{ github.run_number }}"
           $msg = (git log -1 --pretty=%s)
           python tools\build_packages.py $tag "$msg"
           if ($LASTEXITCODE -ne 0) { throw "꾸러미 실패" }
+          python tools\verify_update.py Output\update
+          if ($LASTEXITCODE -ne 0) { throw "서명 확인 실패" }
           "tag=$tag" >> $env:GITHUB_OUTPUT
           Get-Content Output\versions.txt | ForEach-Object { $_ >> $env:GITHUB_OUTPUT }
 
@@ -102,5 +106,6 @@ jobs:
             Output/EDIT_install_*.zip
             Output/EDIT_update_*.zip
             Output/update/catalog.json
+            Output/update/catalog.sig
             Output/update/app_*.zip
             Output/update/launcher_*.zip
