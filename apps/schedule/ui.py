@@ -1,6 +1,7 @@
 import os
 import re
 import time
+import datetime
 import threading
 import json
 import tempfile
@@ -42,7 +43,7 @@ def schedule_badge_dir():
         return os.path.join(home, "데이터", "편성표", "badges")
     return os.path.abspath("badges")
 
-APP_VERSION = "3.9.32"
+APP_VERSION = "3.9.33"
 APP_TITLE = f"편성표 PDF 스마트 편집기 v{APP_VERSION} (Full Integrated Edition)"
 
 
@@ -505,6 +506,113 @@ def detect_schedule_blocks(drawings, page_rect=None, min_w=DETECT_MIN_W, min_h=D
     return out, "배경"
 
 
+# ============================================================================
+# 시간 축(5분 단위로 나누기용) · 머리글(제목·날짜) 찾기
+# ============================================================================
+def _undouble(s):
+    """굵은 글씨를 두 번 찍은 PDF('1100' = '10' 두 번)에서 원래 글자로."""
+    if len(s) >= 2 and len(s) % 2 == 0 and all(s[i] == s[i + 1] for i in range(0, len(s), 2)):
+        return s[::2]
+    return s
+
+
+def detect_time_rows(words, segs):
+    """편성표 왼쪽의 시간 숫자 열(5,6,7…12,1,2…)과 가로 테두리로 1시간 줄들을 찾는다.
+    · 시간 숫자가 가장 많이 세로로 늘어선 열을 시간 열로 본다.
+    · 그 열을 가로지르는 테두리 사이가 1시간. 숫자가 겹쳐 읽히지 않는 줄도 순서대로 시각을 매긴다.
+    words: [(x0,y0,x1,y1,text,...)], segs: _drawing_parts 의 선분
+    반환: [(y0, y1, hour24)] 위에서부터. 못 찾으면 []"""
+    cand = []
+    for w in words:
+        t = _undouble(str(w[4]).strip())
+        if t.isdigit() and len(t) <= 2 and 1 <= int(t) <= 24:
+            cand.append(((w[0] + w[2]) / 2, (w[1] + w[3]) / 2, int(t)))
+    cols = []
+    for cx, cy, h in cand:
+        col = next((c for c in cols if abs(c["x"] - cx) <= 4), None)
+        if col is None:
+            col = {"x": cx, "items": []}
+            cols.append(col)
+        col["items"].append((cy, h))
+    cols = [c for c in cols if len(c["items"]) >= 6]
+    if not cols:
+        return []
+    # 같은 시간 열이 여러 개(표 양쪽)면 가장 왼쪽. 숫자가 가장 많은 열들 중에서
+    most = max(len(c["items"]) for c in cols)
+    col = min((c for c in cols if len(c["items"]) >= most * 0.7), key=lambda c: c["x"])
+    cx = col["x"]
+    ys = sorted({round(sg[1], 1) for sg in segs if sg[0] == "h" and sg[2] - 1 <= cx <= sg[3] + 1})
+    bounds = []
+    for y in ys:
+        if bounds and y - bounds[-1] <= 1.5:
+            continue
+        bounds.append(y)
+    labels = sorted(col["items"])
+    lo, hi = labels[0][0], labels[-1][0]
+    rows = []
+    for y0, y1 in zip(bounds, bounds[1:]):
+        if y1 - y0 < 8 or y1 < lo - 1 or y0 > hi + 1:
+            continue
+        lab = [h for cy, h in labels if y0 <= cy <= y1]
+        rows.append([y0, y1, lab[0] if len(lab) == 1 else None])
+    if not rows:
+        return []
+    # 시각 매기기: 읽힌 숫자 중 첫 번째를 기준으로 한 줄에 1시간씩
+    first = next((i for i, r in enumerate(rows) if r[2] is not None), None)
+    if first is None:
+        return []
+    base = rows[first][2] - first
+    out = []
+    for i, (y0, y1, _) in enumerate(rows):
+        out.append((y0, y1, (base + i) % 24))
+    return out
+
+
+def time_ticks(rows, step=5):
+    """1시간 줄마다 step 분 간격의 (y, '시:분')."""
+    ticks = []
+    for y0, y1, h in rows:
+        for m in range(0, 60, step):
+            ticks.append((y0 + (y1 - y0) * m / 60.0, f"{h:02d}:{m:02d}"))
+    if rows:
+        y0, y1, h = rows[-1]
+        ticks.append((y1, f"{(h + 1) % 24:02d}:00"))
+    return ticks
+
+
+_DATE_RE = re.compile(r"\d{4}\s*년\s*\d{1,2}\s*월\s*\d{1,2}\s*일")
+
+
+def detect_header(text_dict, images, table_top, page_rect):
+    """표 위쪽의 제목(로고 그림 또는 가장 큰 글자 줄)과 날짜 줄을 찾는다.
+    반환: {"title": {"rect", "text"} 또는 None, "date": {"rect", "text", "size"} 또는 None}"""
+    top_limit = table_top if table_top else (page_rect[1] + (page_rect[3] - page_rect[1]) * 0.15)
+    lines = []
+    for b in (text_dict or {}).get("blocks", []):
+        for ln in b.get("lines", []):
+            spans = [s for s in ln.get("spans", []) if s.get("text", "").strip()]
+            if not spans:
+                continue
+            x0 = min(s["bbox"][0] for s in spans); y0 = min(s["bbox"][1] for s in spans)
+            x1 = max(s["bbox"][2] for s in spans); y1 = max(s["bbox"][3] for s in spans)
+            if y1 > top_limit:
+                continue
+            lines.append({"rect": (x0, y0, x1, y1), "text": "".join(s["text"] for s in spans).strip(),
+                          "size": max(s.get("size", 0) for s in spans)})
+    date = next((ln for ln in lines if _DATE_RE.search(ln["text"])), None)
+    title = None
+    imgs = [im for im in (images or []) if im["bbox"][3] <= top_limit and (im["bbox"][2] - im["bbox"][0]) > 60]
+    if imgs:
+        bb = max(imgs, key=lambda im: (im["bbox"][2] - im["bbox"][0]) * (im["bbox"][3] - im["bbox"][1]))["bbox"]
+        title = {"rect": tuple(bb), "text": ""}
+    else:
+        big = [ln for ln in lines if ln is not date and ln["size"] >= 12]
+        if big:
+            ln = max(big, key=lambda l: l["size"])
+            title = {"rect": ln["rect"], "text": ln["text"]}
+    return {"title": title, "date": date}
+
+
 def get_system_korean_font_path(custom_path=None):
     if custom_path and os.path.exists(custom_path) and custom_path.lower().endswith(('.ttf', '.otf', '.ttc')):
         return custom_path
@@ -662,6 +770,16 @@ class ScheduleEditor:
         self.lock_move = tk.BooleanVar(value=True)
         self.lock_move.trace_add("write", lambda *a: self._on_lock_changed())
         self._lock_hint_shown = False
+        # 나누기(2분할, 5분 단위) · 칸 이름 · 머리글
+        self.split_mode_var = tk.BooleanVar(value=False)
+        self.split_mode_var.trace_add("write", lambda *a: self._on_split_mode_var())
+        self.time_rows_by_page = {}
+        self.time_ticks_by_page = {}
+        self.header_found_by_page = {}
+        self.header_edit = {}               # 페이지 -> 제목·날짜 바꾸기 설정 (작업 내용, 자동 저장)
+        self.header_title_presets = []      # 저장해 둔 머리글 제목
+        self.title_presets = []             # 저장해 둔 칸 이름
+        self.recent_titles = []             # 최근에 넣은 칸 이름
         # 블록 찾기 최소 크기(pt)
         self.detect_min_w = DETECT_MIN_W
         self.detect_min_h = DETECT_MIN_H
@@ -708,6 +826,9 @@ class ScheduleEditor:
         self.root.bind("<Control-c>", lambda e: None if self._typing() else self.copy_selected_blocks())
         self.root.bind("<Control-v>", lambda e: None if self._typing() else self.paste_blocks())
         self.root.bind("<Control-a>", lambda e: None if self._typing() else self.select_all_blocks())
+        self.root.bind("<KeyPress-s>", lambda e: None if self._typing() else self.toggle_split_mode())
+        self.root.bind("<KeyPress-S>", lambda e: None if self._typing() else self.toggle_split_mode())
+        self.root.bind("<Escape>", lambda e: self.toggle_split_mode(False) if self.split_mode_var.get() else None)
         
         self.root.bind("<Left>", lambda e: self.nudge_selected_block(-1, 0, 0, 0))
         self.root.bind("<Right>", lambda e: self.nudge_selected_block(1, 0, 0, 0))
@@ -905,6 +1026,10 @@ class ScheduleEditor:
                 "mod_shade_in_export": self.mod_shade_in_export,
                 "mod_border_width": self.mod_border_width,
                 "lock_move": bool(self.lock_move.get()),
+                "header_edit": {} if clean else {str(k): v for k, v in self.header_edit.items()},
+                "header_title_presets": self.header_title_presets,
+                "title_presets": self.title_presets,
+                "recent_titles": self.recent_titles,
                 "detect_min_w": self.detect_min_w,
                 "detect_min_h": self.detect_min_h,
             }
@@ -945,6 +1070,10 @@ class ScheduleEditor:
                     self.mod_shade_enabled = data["mod_shade_enabled"]
                 if isinstance(data.get("mod_shade_in_export"), bool):
                     self.mod_shade_in_export = data["mod_shade_in_export"]
+                for key in ("header_title_presets", "title_presets", "recent_titles"):
+                    v = data.get(key)
+                    if isinstance(v, list):
+                        setattr(self, key, [str(x) for x in v if isinstance(x, str)][:200])
                 if isinstance(data.get("lock_move"), bool):
                     self.lock_move.set(data["lock_move"])
                 for key, lo, hi in (("detect_min_w", 5.0, 200.0), ("detect_min_h", 1.0, 100.0)):
@@ -1026,6 +1155,7 @@ class ScheduleEditor:
         ttk.Separator(self.toolbar, orient="vertical").pack(side="left", fill="y", padx=5)
         
         ttk.Checkbutton(self.toolbar, text="🔒 블록 위치 고정", variable=self.lock_move).pack(side="left", padx=5)
+        ttk.Checkbutton(self.toolbar, text="✂ 나누기 (S)", variable=self.split_mode_var).pack(side="left", padx=5)
         chk_draw = ttk.Checkbutton(self.toolbar, text="✏️ 수동 블록 그리기", variable=self.manual_draw_mode)
         chk_draw.pack(side="left", padx=5)
         
@@ -1160,6 +1290,7 @@ class ScheduleEditor:
         
         ttk.Separator(self.sidebar_content_frame).pack(fill="x", pady=4)
         
+        self._build_header_panel()
         fav_frame = ttk.LabelFrame(self.sidebar_content_frame, text=" ⭐ 블록 파렛트 (관리 및 적용) ", padding=8)
         fav_frame.pack(fill="x", pady=4)
         
@@ -1456,6 +1587,10 @@ class ScheduleEditor:
         self.current_page = page_idx
         self.page_blocks = pb
         self.initial_blocks = ib
+        try:
+            self.header_edit = {int(k): dict(v) for k, v in (data.get("header_edit") or {}).items() if isinstance(v, dict)}
+        except Exception:
+            self.header_edit = {}
         ids = [b["id"] for blist in pb.values() for b in blist if isinstance(b.get("id"), int)]
         if ids:
             self.next_id = max(self.next_id, max(ids) + 1)
@@ -1489,6 +1624,8 @@ class ScheduleEditor:
         self.current_page = 0
         self.page_blocks = {}
         self.initial_blocks = {}
+        self.header_edit = {}
+        self.split_mode_var.set(False)
         self.base_pdf_bytes = None
         self.orig_lines = {}
         self.history.clear()
@@ -1514,8 +1651,22 @@ class ScheduleEditor:
             pixmap = page.get_pixmap(matrix=fitz.Matrix(self.zoom, self.zoom), alpha=True)
             png_data = pixmap.tobytes("png")
 
+            all_drawings = page.get_drawings()
+            try:   # 5분 단위 나누기용 시간 줄, 제목·날짜 자리
+                _segs, _fills = _drawing_parts(all_drawings)
+                rows = detect_time_rows(page.get_text("words"), _segs)
+                self.time_rows_by_page[page_idx] = rows
+                self.time_ticks_by_page[page_idx] = time_ticks(rows)
+                _heads = [r.y0 for r, c in _fills if _is_header_color(c) and r.height >= 8]
+                self.header_found_by_page[page_idx] = detect_header(page.get_text("dict"), page.get_image_info(),
+                                                                    (min(_heads) - 1) if _heads else None, tuple(page.rect))
+            except Exception:
+                self.time_rows_by_page[page_idx] = []
+                self.time_ticks_by_page[page_idx] = []
+                self.header_found_by_page[page_idx] = {}
+
             if page_idx not in self.page_blocks:
-                drawings = page.get_drawings()
+                drawings = all_drawings
                 found, method = detect_schedule_blocks(drawings, tuple(page.rect),
                                                        min_w=self.detect_min_w, min_h=self.detect_min_h)
                 detected_blocks = []
@@ -1616,6 +1767,7 @@ class ScheduleEditor:
         self.canvas.bind("<Double-Button-1>", self.on_double_click_pdf)
         self.canvas.bind("<B1-Motion>", self.on_motion_pdf)
         self.canvas.bind("<ButtonRelease-1>", self.on_release_pdf)
+        self.canvas.bind("<Motion>", self.on_hover_pdf)
         self.canvas.bind("<MouseWheel>", self.on_mouse_wheel)
         self.canvas.bind("<Button-4>", self.on_mouse_wheel)
         self.canvas.bind("<Button-5>", self.on_mouse_wheel)
@@ -1963,6 +2115,10 @@ class ScheduleEditor:
         page_width, page_height = pw * self.zoom, ph * self.zoom
         
         c.create_image(18, 18, image=self.photo, anchor="nw")
+        try:
+            self._draw_header_preview(c)
+        except Exception:
+            pass
         c.configure(scrollregion=(0, 0, page_width + 36, page_height + 36))
 
         self.item_map.clear()
@@ -2931,7 +3087,9 @@ class ScheduleEditor:
         else:
             font_name = "helv"
 
-        if font_name == "helv" and any(not (b.get("title") or "").isascii() for b in blocks):
+        _hst = self.header_edit.get(self.current_page) or {}
+        _htexts = [_hst.get("title", "") if _hst.get("title_on") else "", _hst.get("date", "") if _hst.get("date_on") else ""]
+        if font_name == "helv" and (any(not (b.get("title") or "").isascii() for b in blocks) or any(not t.isascii() for t in _htexts)):
             doc.close()
             raise RuntimeError("한글 폰트를 불러오지 못했습니다.\n설정(⚙️)에서 .ttf/.ttc 한글 폰트 파일을 지정해 주세요.")
 
@@ -3065,9 +3223,491 @@ class ScheduleEditor:
             if rb[0] > 0.001:
                 page.draw_line(fitz.Point(r.x0, r.y0), fitz.Point(r.x0, r.y1), color=col, width=wid)
 
+        self._draw_header_pdf(page, font_name, measure_font)
         out_bytes = doc.tobytes() if for_preview else doc.tobytes(garbage=3, deflate=True)   # 저장본은 압축해서 용량을 줄인다
         doc.close()
         return out_bytes
+
+    # ================================================================ 화면 좌표 <-> PDF 좌표
+    def _to_doc(self, cx, cy):
+        ox, oy = self._page_origin()
+        return (cx - 18) / self.zoom + ox, (cy - 18) / self.zoom + oy
+
+    def _to_canvas(self, x, y):
+        ox, oy = self._page_origin()
+        return 18 + (x - ox) * self.zoom, 18 + (y - oy) * self.zoom
+
+    def _block_by_id(self, bid):
+        return next((b for b in self.blocks if b["id"] == bid), None)
+
+    def _block_at(self, cx, cy):
+        hits = self.canvas.find_overlapping(cx - 1, cy - 1, cx + 1, cy + 1)
+        found = next((self.item_map[i] for i in reversed(hits) if i in self.item_map), None)
+        return found[0] if found else None
+
+    # ================================================================ 나누기 (2분할, 5분 단위)
+    def _ticks(self):
+        return self.time_ticks_by_page.get(self.current_page, [])
+
+    def _time_label(self, y):
+        """PDF y 위치의 시각 '10:25' (시간 줄을 못 찾았으면 '')."""
+        for y0, y1, h in self.time_rows_by_page.get(self.current_page, []):
+            if y0 - 0.5 <= y <= y1 + 0.5 and y1 > y0:
+                m = int(round((y - y0) / (y1 - y0) * 60))
+                hh, mm = (h + m // 60) % 24, m % 60
+                return f"{hh:02d}:{mm:02d}"
+        return ""
+
+    def toggle_split_mode(self, on=None):
+        if not self.pdf_path:
+            return
+        on = (not self.split_mode_var.get()) if on is None else bool(on)
+        if on and self.manual_draw_mode.get():
+            self.manual_draw_mode.set(False)
+        self.split_mode_var.set(on)
+        self.canvas.delete("splitprev")
+        self.canvas.config(cursor="crosshair" if on else "")
+
+    def _on_split_mode_var(self):
+        try:
+            self.canvas.delete("splitprev")
+            self.canvas.config(cursor="crosshair" if self.split_mode_var.get() else "")
+        except Exception:
+            pass
+
+    def _split_target(self, block, x, y, vertical):
+        """나눌 위치 (PDF 좌표, 표시 글). 가로 나누기는 5분 눈금·옆 칸 경계에 붙는다."""
+        x0, y0, x1, y1 = block["rect"]
+        edge_tol = 5 / self.zoom
+        if not vertical:
+            lo, hi = y0 + 2.5, y1 - 2.5
+            if hi <= lo:
+                return None
+            edges = [e for b in self.blocks if b is not block      # 옆 요일 칸의 경계에 맞추기
+                     for e in (b["rect"][1], b["rect"][3]) if lo <= e <= hi and abs(e - y) <= edge_tol]
+            if edges:
+                pos = min(edges, key=lambda e: abs(e - y))
+                return pos, self._time_label(pos)
+            cands = [(t, lab) for t, lab in self._ticks() if lo <= t <= hi]
+            if cands:
+                return min(cands, key=lambda c: abs(c[0] - y))
+            pos = round(min(max(y, lo), hi) * 2) / 2
+            return pos, self._time_label(pos)
+        lo, hi = x0 + 8, x1 - 8
+        if hi <= lo:
+            return None
+        mid = (x0 + x1) / 2
+        if abs(mid - x) <= 10 / self.zoom:
+            return mid, "가운데"
+        edges = [e for b in self.blocks if b is not block for e in (b["rect"][0], b["rect"][2])
+                 if lo <= e <= hi and abs(e - x) <= edge_tol]
+        if edges:
+            return min(edges, key=lambda e: abs(e - x)), ""
+        return round(min(max(x, lo), hi) * 2) / 2, ""
+
+    def _draw_split_label(self, cx, cy, text):
+        c = self.canvas
+        t = c.create_text(cx + 14, cy - 14, text=text, anchor="w", font=(self.ui_font_family, 9, "bold"), fill="#b91c1c", tags="splitprev")
+        bb = c.bbox(t)
+        if bb:
+            c.create_rectangle(bb[0] - 3, bb[1] - 2, bb[2] + 3, bb[3] + 2, fill="#fff7ed", outline="#f97316", tags="splitprev")
+            c.tag_raise(t)
+
+    def on_hover_pdf(self, event):
+        """마우스를 움직일 때: 나누기 모드면 자를 선 미리보기, 아니면 나눈 경계선 위에서 커서 모양 바꾸기."""
+        if not self.pdf_path or self.drag:
+            return
+        c = self.canvas
+        c.delete("splitprev")
+        cx, cy = c.canvasx(event.x), c.canvasy(event.y)
+        if self.split_mode_var.get():
+            block = self._block_at(cx, cy)
+            if not block:
+                return
+            vertical = bool(event.state & 0x0001)
+            tgt = self._split_target(block, *self._to_doc(cx, cy), vertical)
+            if not tgt:
+                return
+            pos, lab = tgt
+            x0, y0, x1, y1 = block["rect"]
+            if vertical:
+                (ax, ay), (bx, by) = self._to_canvas(pos, y0), self._to_canvas(pos, y1)
+            else:
+                (ax, ay), (bx, by) = self._to_canvas(x0, pos), self._to_canvas(x1, pos)
+            c.create_line(ax, ay, bx, by, fill="#dc2626", width=2, dash=(6, 3), tags="splitprev")
+            hint = ("세로로 나누기" if vertical else "가로로 나누기") + (f"  {lab}" if lab else "")
+            self._draw_split_label(cx, cy, hint + "   (클릭: 나누기 · Shift: 세로 · Esc: 끝)")
+            return
+        bd = self._boundary_at(*self._to_doc(cx, cy))
+        c.config(cursor=("sb_v_double_arrow" if bd[0] == "h" else "sb_h_double_arrow") if bd else "")
+
+    def _recompute_rel_boxes(self, gid):
+        gbs = [b for b in self.blocks if b.get("group_id") == gid]
+        if not gbs:
+            return
+        gx0 = min(b["rect"][0] for b in gbs); gy0 = min(b["rect"][1] for b in gbs)
+        gx1 = max(b["rect"][2] for b in gbs); gy1 = max(b["rect"][3] for b in gbs)
+        gw, gh = max(gx1 - gx0, 1e-6), max(gy1 - gy0, 1e-6)
+        for b in gbs:
+            x0, y0, x1, y1 = b["rect"]
+            b["rel_box"] = ((x0 - gx0) / gw, (y0 - gy0) / gh, (x1 - gx0) / gw, (y1 - gy0) / gh)
+
+    def _do_split(self, block, pos, vertical):
+        """블록을 pos 에서 둘로 나눈다. 위(왼쪽)는 원래 이름, 아래(오른쪽)는 새 칸 -> 이름 입력 창."""
+        self.push_history()
+        x0, y0, x1, y1 = block["rect"]
+        gid = block.get("group_id")
+        if gid is None:
+            gid = self.next_id
+            self.next_id += 1
+        a, b = copy.deepcopy(block), copy.deepcopy(block)
+        a["id"] = self.next_id
+        b["id"] = self.next_id + 1
+        self.next_id += 2
+        if vertical:
+            a["rect"], b["rect"] = (x0, y0, pos, y1), (pos, y0, x1, y1)
+        else:
+            a["rect"], b["rect"] = (x0, y0, x1, pos), (x0, pos, x1, y1)
+        a["orig_rect"], b["orig_rect"] = a["rect"], b["rect"]
+        b["title"] = ""
+        a["group_id"] = b["group_id"] = gid
+        idx = self.blocks.index(block)
+        self.blocks[idx:idx + 1] = [a, b]
+        self._recompute_rel_boxes(gid)
+        self.page_blocks[self.current_page] = self.blocks
+        self.selected = {b["id"]}
+        self.toggle_split_mode(False)          # 2분할: 한 번 나누면 나누기 모드 끝
+        self._last_split_at = time.time()
+        self.draw_pdf()
+        self.save_autosave()
+        self.root.after(60, lambda: self.open_title_editor(b, hint="나눈 아래(오른쪽) 칸의 이름"))
+
+    def _boundary_at(self, x, y):
+        """나눈 두 칸(같은 묶음)이 맞닿은 경계선 근처면 ('h'|'v', 위/왼쪽 칸, 아래/오른쪽 칸)."""
+        tol = 4 / self.zoom
+        groups = {}
+        for b in self.blocks:
+            if b.get("group_id") is not None:
+                groups.setdefault(b["group_id"], []).append(b)
+        for gbs in groups.values():
+            for a in gbs:
+                ax0, ay0, ax1, ay1 = a["rect"]
+                for b in gbs:
+                    if a is b:
+                        continue
+                    bx0, by0, bx1, by1 = b["rect"]
+                    if abs(ay1 - by0) < 0.6:
+                        o0, o1 = max(ax0, bx0), min(ax1, bx1)
+                        if o1 > o0 and o0 <= x <= o1 and abs(y - ay1) <= tol:
+                            return ("h", a, b)
+                    if abs(ax1 - bx0) < 0.6:
+                        o0, o1 = max(ay0, by0), min(ay1, by1)
+                        if o1 > o0 and o0 <= y <= o1 and abs(x - ax1) <= tol:
+                            return ("v", a, b)
+        return None
+
+    def _drag_boundary(self, cx, cy):
+        a, b = self._block_by_id(self.drag["a"]), self._block_by_id(self.drag["b"])
+        if not a or not b:
+            return
+        X, Y = self._to_doc(cx, cy)
+        if self.drag["axis"] == "h":
+            lo, hi = a["rect"][1] + 2.5, b["rect"][3] - 2.5
+            cands = [t for t, _ in self._ticks() if lo <= t <= hi]
+            pos = min(cands, key=lambda t: abs(t - Y)) if cands else round(min(max(Y, lo), hi) * 2) / 2
+            a["rect"] = (a["rect"][0], a["rect"][1], a["rect"][2], pos)
+            b["rect"] = (b["rect"][0], pos, b["rect"][2], b["rect"][3])
+            lab = self._time_label(pos)
+        else:
+            lo, hi = a["rect"][0] + 8, b["rect"][2] - 8
+            mid = (a["rect"][0] + b["rect"][2]) / 2
+            pos = mid if abs(X - mid) <= 8 / self.zoom else round(min(max(X, lo), hi) * 2) / 2
+            a["rect"] = (a["rect"][0], a["rect"][1], pos, a["rect"][3])
+            b["rect"] = (pos, b["rect"][1], b["rect"][2], b["rect"][3])
+            lab = "가운데" if pos == mid else ""
+        a["orig_rect"], b["orig_rect"] = a["rect"], b["rect"]
+        self._recompute_rel_boxes(a.get("group_id"))
+        self.drag["moved"] = True
+        self.draw_pdf(refresh_sidebar=False)
+        if lab:
+            self._draw_split_label(cx, cy, lab)
+
+    # ================================================================ 칸 이름 입력 창 (더블클릭)
+    def _remember_title(self, text):
+        t = (text or "").strip()
+        if not t:
+            return
+        self.recent_titles = [t] + [x for x in self.recent_titles if x != t]
+        del self.recent_titles[20:]
+
+    def open_title_editor(self, block, hint="칸 이름"):
+        """칸 위에 작은 창: 이름을 바로 고치거나, 저장해 둔 제목·최근 제목에서 골라 넣는다.
+        Enter: 확인 / Shift+Enter: 줄바꿈 / Esc: 취소"""
+        old = getattr(self, "_title_win", None)
+        if old is not None:
+            try:
+                old.destroy()
+            except tk.TclError:
+                pass
+        win = tk.Toplevel(self.root)
+        self._title_win = win
+        win.title("칸 이름")
+        win.transient(self.root)
+        win.resizable(False, False)
+        try:
+            cx, cy = self._to_canvas(block["rect"][2], block["rect"][1])
+            px = self.canvas.winfo_rootx() + int(cx - self.canvas.canvasx(0)) + 8
+            py = self.canvas.winfo_rooty() + int(cy - self.canvas.canvasy(0))
+            win.geometry(f"+{max(0, px)}+{max(0, py)}")
+        except Exception:
+            pass
+        ttk.Label(win, text=hint, font=(self.ui_font_family, 9, "bold")).pack(anchor="w", padx=8, pady=(8, 2))
+        txt = tk.Text(win, width=30, height=3, font=(self.ui_font_family, 10), wrap="word")
+        txt.pack(padx=8)
+        txt.insert("1.0", block.get("title", ""))
+        txt.tag_add("sel", "1.0", "end-1c")
+        txt.focus_set()
+        ttk.Label(win, text="저장한 제목 · 파렛트 · 최근 (클릭: 넣기, 더블클릭: 넣고 확인)", font=(self.ui_font_family, 8), foreground="#555").pack(anchor="w", padx=8, pady=(6, 1))
+        lf = ttk.Frame(win)
+        lf.pack(fill="both", padx=8)
+        lb = tk.Listbox(lf, height=9, width=34, font=(self.ui_font_family, 9), activestyle="none", exportselection=False)
+        sb = ttk.Scrollbar(lf, orient="vertical", command=lb.yview)
+        lb.configure(yscrollcommand=sb.set)
+        lb.pack(side="left", fill="both")
+        sb.pack(side="right", fill="y")
+        items = []
+
+        def fill_list():
+            lb.delete(0, "end")
+            items.clear()
+            seen = set()
+            for kind, mark, src in (("saved", "★ ", self.title_presets),
+                                    ("palette", "◆ ", [p.get("title", "") for p in self.favorite_presets]),
+                                    ("recent", "· ", self.recent_titles)):
+                for t in src:
+                    if t and t not in seen:
+                        seen.add(t)
+                        items.append((kind, t))
+                        lb.insert("end", mark + t.replace("\n", " / "))
+
+        fill_list()
+
+        def put(event=None):
+            sel = lb.curselection()
+            if sel:
+                txt.delete("1.0", "end")
+                txt.insert("1.0", items[sel[0]][1])
+
+        def ok(event=None):
+            if event is not None and getattr(event, "state", 0) & 0x0001:
+                return None                         # Shift+Enter: 줄바꿈
+            new = txt.get("1.0", "end-1c").strip()
+            if new != block.get("title", ""):
+                self.push_history()
+                block["title"] = new
+                self.page_blocks[self.current_page] = self.blocks
+            self._remember_title(new)
+            win.destroy()
+            self.selected = {block["id"]}
+            self.draw_pdf()
+            self.save_autosave()
+            return "break"
+
+        def save_preset():
+            t = txt.get("1.0", "end-1c").strip()
+            if t and t not in self.title_presets:
+                self.title_presets.insert(0, t)
+                self.save_autosave()
+                fill_list()
+
+        def del_preset():
+            sel = lb.curselection()
+            if sel and items[sel[0]][0] == "saved":
+                self.title_presets.remove(items[sel[0]][1])
+                self.save_autosave()
+                fill_list()
+
+        lb.bind("<<ListboxSelect>>", put)
+        lb.bind("<Double-Button-1>", lambda e: (put(), ok()))
+        txt.bind("<Return>", ok)
+        win.bind("<Escape>", lambda e: win.destroy())
+        bf = ttk.Frame(win)
+        bf.pack(fill="x", padx=8, pady=8)
+        ttk.Button(bf, text="확인 (Enter)", command=ok).pack(side="left")
+        ttk.Button(bf, text="취소", command=win.destroy).pack(side="left", padx=4)
+        ttk.Button(bf, text="★ 제목 저장", command=save_preset).pack(side="right")
+        ttk.Button(bf, text="저장 삭제", command=del_preset).pack(side="right", padx=4)
+
+    # ================================================================ 머리글 (제목 · 날짜) 바꾸기
+    def _header_state(self):
+        st = self.header_edit.setdefault(self.current_page, {})
+        found = self.header_found_by_page.get(self.current_page) or {}
+        st.setdefault("title_on", False)
+        st.setdefault("title", self._suggest_header_title())
+        st.setdefault("title_size", 0)            # 0 = 자동
+        st.setdefault("title_bold", True)
+        st.setdefault("date_on", False)
+        st.setdefault("date", ((found.get("date") or {}).get("text") or "").strip())
+        return st
+
+    def _suggest_header_title(self):
+        """파일 이름 'MBC_10__3_2' -> '광주MBC 주간편성표 [ 10월 03주 확정 ]'."""
+        m = re.search(r"_(\d{1,2})__(\d)", os.path.basename(self.pdf_path or ""))
+        if m:
+            return f"광주MBC 주간편성표 [ {int(m.group(1))}월 {int(m.group(2)):02d}주 확정 ]"
+        return self.header_title_presets[0] if self.header_title_presets else "광주MBC 주간편성표"
+
+    def _now_date_text(self, like=""):
+        """원래 날짜와 같은 모양으로 지금 시각. (AM/PM 이 있으면 12시간제)"""
+        now = datetime.datetime.now()
+        wd = "월화수목금토일"[now.weekday()]
+        if re.search(r"\b(AM|PM)\b", like or ""):
+            h = now.hour % 12 or 12
+            return f"{now.year}년 {now.month}월 {now.day}일 ({wd}) {'AM' if now.hour < 12 else 'PM'} {h:02d}:{now.minute:02d}"
+        return f"{now.year}년 {now.month}월 {now.day}일({wd}) {now.hour:02d}:{now.minute:02d}"
+
+    def _header_layout(self, measure):
+        """머리글을 그릴 자리. measure(text, size) -> 너비(pt).
+        반환: [(덮을 사각형, 글자, 크기, (x, 기준선 y), 굵게)]"""
+        out = []
+        found = self.header_found_by_page.get(self.current_page) or {}
+        st = self._header_state()
+        pr = self.page_rect or (0, 0, 595, 842)
+        tf = found.get("title")
+        if st["title_on"] and tf and st["title"].strip():
+            x0, y0, x1, y1 = tf["rect"]
+            text = st["title"].strip()
+            size = float(st["title_size"] or 0) or min((y1 - y0) * 0.55, 20.0)
+            avail = (pr[2] - pr[0]) - 60
+            while size > 6 and measure(text, size) > avail:
+                size -= 0.5
+            w = measure(text, size)
+            cxm = (x0 + x1) / 2
+            tx = min(max(cxm - w / 2, pr[0] + 30), pr[2] - 30 - w)
+            out.append(((x0 - 1, y0 - 1, x1 + 1, y1 + 1), text, size, (tx, (y0 + y1) / 2 + size * 0.36), bool(st["title_bold"])))
+        df = found.get("date")
+        if st["date_on"] and df and st["date"].strip():
+            x0, y0, x1, y1 = df["rect"]
+            text = st["date"].strip()
+            size = float(df.get("size") or (y1 - y0) * 0.8)
+            w = measure(text, size)
+            out.append(((min(x0, x1 - w) - 1, y0 - 1, x1 + 1, y1 + 1), text, size, (x1 - w, (y0 + y1) / 2 + size * 0.36), False))
+        return out
+
+    def _draw_header_preview(self, c):
+        from tkinter import font as tkfont
+        cache = {}
+
+        def measure(text, size):
+            px = max(4, int(round(size * self.zoom)))
+            f = cache.get(px) or tkfont.Font(family=self.ui_font_family, size=-px)
+            cache[px] = f
+            return f.measure(text) / self.zoom
+
+        for cover, text, size, (tx, ty), bold in self._header_layout(measure):
+            a = self._to_canvas(cover[0], cover[1])
+            b = self._to_canvas(cover[2], cover[3])
+            c.create_rectangle(a[0], a[1], b[0], b[1], fill="#ffffff", outline="")
+            px = max(4, int(round(size * self.zoom)))
+            x, y = self._to_canvas(tx, ty)
+            c.create_text(x, y, text=text, anchor="sw", fill="#111111",
+                          font=(self.ui_font_family, -px, "bold") if bold else (self.ui_font_family, -px))
+
+    def _draw_header_pdf(self, page, font_name, measure_font):
+        def measure(text, size):
+            try:
+                return measure_font.text_length(text, fontsize=size)
+            except Exception:
+                return sum(size if ord(ch) > 127 else size * 0.5 for ch in text)
+
+        for cover, text, size, (tx, ty), bold in self._header_layout(measure):
+            page.draw_rect(fitz.Rect(cover), color=None, fill=(1, 1, 1))
+            kw = {"render_mode": 2, "border_width": 0.03} if bold else {}
+            try:
+                page.insert_text(fitz.Point(tx, ty), text, fontsize=size, fontname=font_name, color=(0, 0, 0), fill=(0, 0, 0), **kw)
+            except TypeError:
+                page.insert_text(fitz.Point(tx, ty), text, fontsize=size, fontname=font_name, color=(0, 0, 0))
+
+    def _build_header_panel(self):
+        f = ttk.LabelFrame(self.sidebar_content_frame, text=" 📝 머리글 (제목 · 날짜) ", padding=8)
+        f.pack(fill="x", pady=4)
+        found = self.header_found_by_page.get(self.current_page) or {}
+        st = self._header_state()
+        fnt = (self.ui_font_family, 8, "bold")
+
+        def changed(*_a):
+            st["title_on"] = bool(t_on.get())
+            st["title"] = t_var.get()
+            st["date_on"] = bool(d_on.get())
+            st["date"] = d_var.get()
+            st["title_bold"] = bool(t_bold.get())
+            self.draw_pdf(refresh_sidebar=False)
+
+        t_on = tk.BooleanVar(value=st["title_on"])
+        t_var = tk.StringVar(value=st["title"])
+        t_bold = tk.BooleanVar(value=st["title_bold"])
+        row = ttk.Frame(f)
+        row.pack(fill="x")
+        ttk.Checkbutton(row, text="제목 바꾸기", variable=t_on, command=changed).pack(side="left")
+        ttk.Checkbutton(row, text="굵게", variable=t_bold, command=changed).pack(side="left", padx=6)
+        if not found.get("title"):
+            ttk.Label(row, text="(제목 자리를 찾지 못함)", foreground="#b45309", font=(self.ui_font_family, 8)).pack(side="left")
+        values = [self._suggest_header_title()] + [x for x in self.header_title_presets if x != self._suggest_header_title()]
+        cb = ttk.Combobox(f, textvariable=t_var, values=values, font=(self.ui_font_family, 9))
+        cb.pack(fill="x", pady=2)
+        cb.bind("<<ComboboxSelected>>", lambda e: (t_on.set(True), changed()))
+        t_var.trace_add("write", lambda *a: (t_on.set(True) if t_var.get().strip() else None, changed()))
+        r2 = ttk.Frame(f)
+        r2.pack(fill="x")
+
+        def size(d):
+            cur = float(st["title_size"] or 0) or 20.0
+            st["title_size"] = max(6.0, min(48.0, cur + d))
+            sz_lbl.config(text=f"{st['title_size']:.0f}pt")
+            self.draw_pdf(refresh_sidebar=False)
+
+        def auto_size():
+            st["title_size"] = 0
+            sz_lbl.config(text="자동")
+            self.draw_pdf(refresh_sidebar=False)
+
+        def save_title():
+            t = t_var.get().strip()
+            if t and t not in self.header_title_presets:
+                self.header_title_presets.insert(0, t)
+                cb.config(values=[self._suggest_header_title()] + [x for x in self.header_title_presets if x != self._suggest_header_title()])
+                self.save_autosave()
+
+        def del_title():
+            t = t_var.get().strip()
+            if t in self.header_title_presets:
+                self.header_title_presets.remove(t)
+                cb.config(values=[self._suggest_header_title()] + self.header_title_presets)
+                self.save_autosave()
+
+        ttk.Label(r2, text="크기:", font=fnt).pack(side="left")
+        ttk.Button(r2, text="-", width=2, command=lambda: size(-1)).pack(side="left")
+        sz_lbl = ttk.Label(r2, text=(f"{st['title_size']:.0f}pt" if st["title_size"] else "자동"), width=5, anchor="center")
+        sz_lbl.pack(side="left")
+        ttk.Button(r2, text="+", width=2, command=lambda: size(1)).pack(side="left")
+        ttk.Button(r2, text="자동", width=4, command=auto_size).pack(side="left", padx=2)
+        ttk.Button(r2, text="삭제", width=4, command=del_title).pack(side="right")
+        ttk.Button(r2, text="★ 저장", width=6, command=save_title).pack(side="right", padx=2)
+
+        ttk.Separator(f).pack(fill="x", pady=5)
+        d_on = tk.BooleanVar(value=st["date_on"])
+        d_var = tk.StringVar(value=st["date"])
+        r3 = ttk.Frame(f)
+        r3.pack(fill="x")
+        ttk.Checkbutton(r3, text="날짜 바꾸기", variable=d_on, command=changed).pack(side="left")
+        if not found.get("date"):
+            ttk.Label(r3, text="(날짜 자리를 찾지 못함)", foreground="#b45309", font=(self.ui_font_family, 8)).pack(side="left")
+        orig = ((found.get("date") or {}).get("text") or "").strip()
+        ttk.Button(r3, text="지금 시각", command=lambda: (d_var.set(self._now_date_text(orig)), d_on.set(True), changed())).pack(side="right")
+        ttk.Button(r3, text="원래", command=lambda: (d_var.set(orig), changed())).pack(side="right", padx=2)
+        de = ttk.Entry(f, textvariable=d_var, font=(self.ui_font_family, 9))
+        de.pack(fill="x", pady=2)
+        d_var.trace_add("write", lambda *a: (d_on.set(True) if d_var.get().strip() != orig else None, changed()))
 
     def on_press_pdf(self, event):
         x, y = self.canvas.canvasx(event.x), self.canvas.canvasy(event.y)
@@ -3075,6 +3715,23 @@ class ScheduleEditor:
         if self.manual_draw_mode.get():
             self.manual_rect_start = (x, y)
             self.temp_draw_id = self.canvas.create_rectangle(x, y, x, y, outline="#9333ea", width=2, dash=(4, 4))
+            return
+
+        if self.split_mode_var.get():       # 나누기 모드: 클릭한 자리에서 둘로
+            block = self._block_at(x, y)
+            if block:
+                vertical = bool(event.state & 0x0001)
+                tgt = self._split_target(block, *self._to_doc(x, y), vertical)
+                if tgt:
+                    self._do_split(block, tgt[0], vertical)
+            return
+
+        bd = self._boundary_at(*self._to_doc(x, y))
+        if bd:                              # 나눈 두 칸 사이 경계선 끌기 (위치 고정 중에도 됨)
+            self.canvas.delete("splitprev")
+            self.drag = {"type": "boundary", "axis": bd[0], "a": bd[1]["id"], "b": bd[2]["id"],
+                         "snap": self._snapshot_blocks(), "moved": False}
+            self.selected = {bd[1]["id"], bd[2]["id"]}
             return
 
         hits = self.canvas.find_overlapping(x - 2, y - 2, x + 2, y + 2)
@@ -3130,7 +3787,10 @@ class ScheduleEditor:
             self.split_ratios.clear()
             self.split_titles.clear()
             self.selected = {block["id"]}
+            self.drag = None
             self.draw_pdf()
+            if not self.split_mode_var.get() and time.time() - getattr(self, "_last_split_at", 0) > 0.8:
+                self.open_title_editor(block)
 
     def get_snapped_rect(self, current_rect, exclude_id=None, snap_dist=10):
         x0, y0, x1, y1 = current_rect
@@ -3173,6 +3833,10 @@ class ScheduleEditor:
             csx0, csy0, csx1, csy1 = self._xy(snapped)
             
             self.canvas.coords(self.temp_draw_id, csx0, csy0, csx1, csy1)
+            return
+
+        if self.drag and self.drag.get("type") == "boundary":
+            self._drag_boundary(x, y)
             return
 
         if not self.drag: return
@@ -3315,6 +3979,15 @@ class ScheduleEditor:
                 self.page_blocks[self.current_page] = self.blocks
                 self.save_autosave()
                 self.draw_pdf()
+            return
+
+        if self.drag and self.drag.get("type") == "boundary":
+            if self.drag.get("moved"):
+                self._push_snapshot(self.drag["snap"])
+                self.page_blocks[self.current_page] = self.blocks
+                self.save_autosave()
+            self.drag = None
+            self.draw_pdf()
             return
 
         if self.drag:

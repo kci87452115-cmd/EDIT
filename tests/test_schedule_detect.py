@@ -44,3 +44,64 @@ for fn, (min_n, min_small) in EXPECT.items():
 if fail:
     sys.exit(f"블록 찾기 점검 실패: {fail}")
 print("블록 찾기 점검 통과")
+
+
+# ---------------------------------------------------------------- 시간 줄 · 머리글 · 나누기
+print()
+fail2 = []
+for fn in EXPECT:
+    doc = pymupdf.open(os.path.join(HERE, "pdfs", fn))
+    page = doc.load_page(0)
+    dr = page.get_drawings()
+    segs, fills = ui._drawing_parts(dr)
+    rows = ui.detect_time_rows(page.get_text("words"), segs)
+    heads = [r.y0 for r, c in fills if ui._is_header_color(c) and r.height >= 8]
+    hdr = ui.detect_header(page.get_text("dict"), page.get_image_info(), (min(heads) - 1) if heads else None, tuple(page.rect))
+    ok = len(rows) == 24 and rows[0][2] == 5 and hdr.get("title") is not None and (fn.startswith("tv_") or hdr.get("date") is not None)
+    # 5분 눈금이 실제 칸 경계와 맞는지
+    ticks = ui.time_ticks(rows)
+    blocks, _ = ui.detect_schedule_blocks(dr, tuple(page.rect))
+    near = sum(1 for b in blocks if ticks and min(abs(b["rect"][1] - t[0]) for t in ticks) <= 1.5)
+    ok = ok and near >= len(blocks) * 0.9
+    print(f"{'OK  ' if ok else 'FAIL'} {fn:16s} 시간줄={len(rows)} ({rows[0][2] if rows else '-'}시~) 칸 윗변이 5분 눈금에 맞음={near}/{len(blocks)} "
+          f"제목={'있음' if hdr.get('title') else '없음'} 날짜={(hdr.get('date') or {}).get('text', '없음')}")
+    if not ok:
+        fail2.append(fn)
+    doc.close()
+
+# 나누기 동작 (화면 없이 계산만)
+class _Canvas:
+    def __getattr__(self, name):
+        return lambda *a, **k: (0, 0, 1, 1) if name == "bbox" else 1
+class _Var:
+    def __init__(self, v=False): self.v = v
+    def get(self): return self.v
+    def set(self, v): self.v = v
+doc = pymupdf.open(os.path.join(HERE, "pdfs", "mbc_3_2.pdf"))
+page = doc.load_page(0)
+dr = page.get_drawings()
+segs, _f = ui._drawing_parts(dr)
+E = ui.ScheduleEditor.__new__(ui.ScheduleEditor)
+E.zoom, E.page_rect, E.current_page, E.ui_font_family = 1.5, tuple(page.rect), 0, "x"
+rows = ui.detect_time_rows(page.get_text("words"), segs)
+E.time_rows_by_page, E.time_ticks_by_page = {0: rows}, {0: ui.time_ticks(rows)}
+found, _ = ui.detect_schedule_blocks(dr, E.page_rect)
+E.blocks = [{"id": i + 1, "title": f"t{i}", "rect": f["rect"], "orig_rect": f["rect"], "group_id": None, "rel_box": None} for i, f in enumerate(found)]
+E.next_id, E.page_blocks, E.selected, E.drag, E.pdf_path = 1000, {0: E.blocks}, set(), None, "x"
+E.canvas, E.split_mode_var, E.manual_draw_mode = _Canvas(), _Var(), _Var()
+for n in ("draw_pdf", "save_autosave", "push_history", "open_title_editor"):
+    setattr(E, n, lambda *a, **k: None)
+E.root = type("R", (), {"after": lambda *a: None})()
+blk = max(E.blocks, key=lambda b: b["rect"][3] - b["rect"][1])
+x0, y0, x1, y1 = blk["rect"]
+pos, lab = E._split_target(blk, (x0 + x1) / 2, y0 + (y1 - y0) / 3, False)
+on_tick = any(abs(pos - t[0]) < 0.01 for t in E.time_ticks_by_page[0])
+E._do_split(blk, pos, False)
+parts = [b for b in E.blocks if b.get("group_id") is not None]
+ok = on_tick and len(parts) == 2 and lab.endswith(("0", "5")) and E._boundary_at((x0 + x1) / 2, pos)
+print(f"{'OK  ' if ok else 'FAIL'} 나누기: {lab} 에서 둘로 (5분 눈금 위={on_tick}), 경계선 끌기 대상 찾음={bool(E._boundary_at((x0 + x1) / 2, pos))}")
+if not ok:
+    fail2.append("split")
+if fail2:
+    sys.exit(f"시간 줄·머리글·나누기 점검 실패: {fail2}")
+print("시간 줄·머리글·나누기 점검 통과")

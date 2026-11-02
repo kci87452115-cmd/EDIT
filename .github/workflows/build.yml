@@ -29,6 +29,9 @@ jobs:
       - name: 문법 검사 (두 프로그램 + 런처)
         run: python -m py_compile apps/runsheet/pdf_data_editor.py apps/schedule/ui.py launcher/launcher.py
 
+      - name: 빠진 import 등 정의 안 된 이름 검사
+        run: python tools/check_names.py apps/runsheet/pdf_data_editor.py apps/schedule/ui.py launcher/launcher.py
+
       - name: 편성표 블록 찾기 점검 (실제 편성표 PDF)
         run: python tests/test_schedule_detect.py
 
