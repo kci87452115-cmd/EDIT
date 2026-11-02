@@ -1,6 +1,6 @@
-# 코드를 올리면 GitHub의 윈도우 서버가 RADIO 런처·프로그램 꾸러미·설치 파일을 만들어 Releases 에 올립니다.
+# 코드를 올리면 GitHub의 윈도우 서버가 편집 프로그램 런처(RADIO/TV)·프로그램 꾸러미·설치 파일을 만들어 Releases 에 올립니다.
 # 회사 PC에는 파이썬·Inno Setup 이 필요 없습니다.
-name: build-radio
+name: build-edit
 
 on:
   push:
@@ -34,17 +34,17 @@ jobs:
         run: |
           $icon = @()
           if (Test-Path launcher\icon.ico) { $icon = @("--icon", "launcher\icon.ico") }
-          python -m PyInstaller --noconfirm --clean --windowed --onedir --name RADIOLauncher @icon `
+          python -m PyInstaller --noconfirm --clean --windowed --onedir --name EditLauncher @icon `
             --collect-all pymupdf --collect-submodules openpyxl --collect-submodules PIL `
             --hidden-import tkinter.colorchooser --hidden-import tkinter.simpledialog `
             launcher\launcher.py
-          if (-not (Test-Path dist\RADIOLauncher\RADIOLauncher.exe)) { throw "런처 exe 가 만들어지지 않았습니다" }
+          if (-not (Test-Path dist\EditLauncher\EditLauncher.exe)) { throw "런처 exe 가 만들어지지 않았습니다" }
 
       - name: 공용 실행 환경 점검 (만든 런처로 실제 부품을 불러 봄)
         shell: pwsh
         run: |
           $out = "$PWD\selftest.txt"
-          $p = Start-Process dist\RADIOLauncher\RADIOLauncher.exe -ArgumentList "--selftest", "`"$out`"" -PassThru -Wait
+          $p = Start-Process dist\EditLauncher\EditLauncher.exe -ArgumentList "--selftest", "`"$out`"" -PassThru -Wait
           if (-not (Test-Path $out)) { throw "점검 결과 파일이 없습니다 (rc=$($p.ExitCode))" }
           $r = Get-Content $out -Raw -Encoding utf8
           Write-Host $r
@@ -67,7 +67,7 @@ jobs:
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
           if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
           Push-Location installer
-          & $iscc "/DAppVer=${{ steps.pkg.outputs.launcher }}" "/DTag=${{ steps.pkg.outputs.tag }}" "/DSrcDir=..\dist\RADIOLauncher" "/DPkgDir=..\Output\update" setup.iss
+          & $iscc "/DAppVer=${{ steps.pkg.outputs.launcher }}" "/DTag=${{ steps.pkg.outputs.tag }}" "/DSrcDir=..\dist\EditLauncher" "/DPkgDir=..\Output\update" setup.iss
           $rc = $LASTEXITCODE
           Pop-Location
           if ($rc -ne 0) { throw "Inno Setup 실패" }
@@ -76,20 +76,20 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.pkg.outputs.tag }}
-          name: RADIO ${{ steps.pkg.outputs.tag }} (운행표 ${{ steps.pkg.outputs.runsheet }} · 편성표 ${{ steps.pkg.outputs.schedule }} · 런처 ${{ steps.pkg.outputs.launcher }})
+          name: 편집 프로그램 ${{ steps.pkg.outputs.tag }} (운행표 ${{ steps.pkg.outputs.runsheet }} · 편성표 ${{ steps.pkg.outputs.schedule }} · 런처 ${{ steps.pkg.outputs.launcher }})
           body: |
             처음 설치(둘 중 하나, 파이썬 필요 없음)
-            - RADIO_setup_${{ steps.pkg.outputs.tag }}.exe 실행
-            - 또는 RADIO_install_${{ steps.pkg.outputs.tag }}.zip 압축 풀고 설치.bat
+            - EDIT_setup_${{ steps.pkg.outputs.tag }}.exe 실행
+            - 또는 EDIT_install_${{ steps.pkg.outputs.tag }}.zip 압축 풀고 설치.bat
             업데이트
-            - RADIO_update_${{ steps.pkg.outputs.tag }}.zip 의 내용을 업데이트 폴더(공유 폴더)에 풀어 두거나,
+            - EDIT_update_${{ steps.pkg.outputs.tag }}.zip 의 내용을 업데이트 폴더(공유 폴더)에 풀어 두거나,
               각 PC 런처의 [업데이트 파일 가져오기] 로 이 zip 을 선택
             - 저장소가 공개(Public)이면 런처 업데이트 위치에 https://github.com/${{ github.repository }} 를 넣어 인터넷으로 바로 받기
               (catalog.json · app_*.zip · launcher_*.zip 은 그 용도)
           files: |
-            Output/RADIO_setup_*.exe
-            Output/RADIO_install_*.zip
-            Output/RADIO_update_*.zip
+            Output/EDIT_setup_*.exe
+            Output/EDIT_install_*.zip
+            Output/EDIT_update_*.zip
             Output/update/catalog.json
             Output/update/app_*.zip
             Output/update/launcher_*.zip

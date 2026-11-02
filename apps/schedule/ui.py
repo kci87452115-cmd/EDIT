@@ -35,7 +35,7 @@ APP_TITLE = f"편성표 PDF 스마트 편집기 v{APP_VERSION} (Full Integrated 
 
 
 def schedule_settings_path():
-    """설정(자동 저장) 파일 위치. RADIO 런처로 실행하면 C:\\RADIO\\데이터\\편성표\\settings.json,
+    """설정(자동 저장) 파일 위치. 편집 프로그램 런처로 실행하면 C:\\edit\\radio\\데이터\\편성표\\settings.json,
     따로 실행하면 예전처럼 사용자 폴더. 새 위치가 비어 있으면 예전 설정을 한 번 복사해 이어받는다."""
     old = os.path.join(os.path.expanduser("~"), ".schedule_editor_settings.json")
     home = os.environ.get("RADIO_HOME")
