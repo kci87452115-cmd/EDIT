@@ -74,6 +74,29 @@ if n_img <= 50:
 E.shade_target = "both"
 E.draw_pdf()
 
+# 여러 칸 골라 음영 넣기 / 빼기 (H)
+E.mod_shade_enabled = False
+E.selected = {b["id"] for b in E.blocks[:5]}
+E.shade_selected("#86efac")
+n1 = sum(1 for b in E.blocks if b.get("shade") == "#86efac")
+E.draw_pdf()
+n_img1 = sum(1 for i in c.find_all() if c.type(i) == "image") - 1
+E.toggle_pick_shade()
+n2 = sum(1 for b in E.blocks if b.get("shade"))
+E.toggle_pick_shade()
+ok = n1 == 5 and n_img1 == 5 and n2 == 0 and sum(1 for b in E.blocks if b.get("shade")) == 5
+print(f"{'OK  ' if ok else 'FAIL'} 선택 칸 음영: 넣기 {n1}칸, 화면 {n_img1}개, H로 빼기 후 {n2}칸")
+if not ok:
+    fail.append("pick-shade")
+try:
+    E._generate_pdf_bytes()
+except Exception:
+    traceback.print_exc()
+    fail.append("export-with-shade")
+E.selected = set()
+E.mod_shade_enabled = True
+E.draw_pdf()
+
 # 화면 사진 (로그에 작게)
 try:
     from PIL import ImageGrab
