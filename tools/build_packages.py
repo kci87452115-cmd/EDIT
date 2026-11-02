@@ -22,7 +22,7 @@ OUT = os.path.join(ROOT, "Output")
 UPD = os.path.join(OUT, "update")
 
 APPS = {   # id: (폴더, 실행 파일, 이름, 설명, 필요한 런처 실행 환경 세대, 그룹 radio/tv)
-    # 그룹을 바꾸면 런처의 다른 탭(C:\\edit\\TV 등)에 설치된다
+    # 그룹을 바꾸면 런처의 다른 탭(C:\\EDIT\\TV 등)에 설치된다
     "runsheet": ("apps/runsheet", "pdf_data_editor.py", "운행표 데이터 편집기", "운행표 PDF에 광고주 데이터 입력 · 정산 · 일정표", 1, "radio"),
     "schedule": ("apps/schedule", "ui.py", "편성표 PDF 편집기", "편성표 PDF 편집 (칸 색 · 글자 · 분할선)", 1, "radio"),
 }
@@ -52,9 +52,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0install.ps1"
 pause
 """
 
-INSTALL_PS1 = r"""# 편집 프로그램(런처) 설치: C:\edit 에 넣고 바탕화면에 [편집 프로그램] 바로가기 하나를 만든다 (관리자 권한 필요 없음)
+INSTALL_PS1 = r"""# 편집 프로그램(런처) 설치: C:\EDIT 에 넣고 바탕화면에 [편집 프로그램] 바로가기 하나를 만든다 (관리자 권한 필요 없음)
 $ErrorActionPreference = 'Stop'
-$root = 'C:\edit'
+$root = 'C:\EDIT'
 $src = Split-Path -Parent $MyInvocation.MyCommand.Path
 Write-Host ''
 Write-Host '  편집 프로그램 (RADIO / TV 런처) 설치  ->  ' $root
@@ -109,10 +109,10 @@ INSTALL_TXT = """편집 프로그램 (RADIO / TV) 설치 방법 - 파이썬 필�
 
 1. 이 zip 의 압축을 풉니다. (마우스 오른쪽 > 압축 풀기)
 2. '설치.bat' 를 더블클릭합니다.
-3. C:\\edit 에 설치되고 바탕화면에 [편집 프로그램] 바로가기가 생깁니다.
+3. C:\\EDIT 에 설치되고 바탕화면에 [편집 프로그램] 바로가기가 생깁니다.
 4. 편집 프로그램(런처)의 RADIO / TV 탭에서 필요한 프로그램만 [설치] 를 누릅니다.
 
-· 폴더: C:\\edit\\런처(공용) / radio\\(앱·데이터·백업) / TV\\(앱·데이터·백업) / 업데이트
+· 폴더: C:\\EDIT\\런처(공용) / radio\\(앱·데이터·백업) / TV\\(앱·데이터·백업) / 업데이트
 · 다시 설치해도 기록·설정은 그대로입니다. 예전 C:\\RADIO 기록은 런처가 처음 켤 때 옮길지 묻습니다.
 · 윈도우가 '알 수 없는 게시자' 경고를 띄우면 [추가 정보] > [실행].
 """

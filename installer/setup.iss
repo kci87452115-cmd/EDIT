@@ -2,7 +2,7 @@
 ;  편집 프로그램 (RADIO / TV 런처) 설치 파일 - Inno Setup 6
 ;  GitHub Actions 가 /DAppVer /DTag /DSrcDir /DPkgDir 를 넘겨 컴파일합니다.
 ;
-;  설치 결과 (C:\edit)
+;  설치 결과 (C:\EDIT)
 ;    런처\EditLauncher.exe          런처 + 공용 실행 환경 (RADIO·TV 같이 씀)
 ;    업데이트\                      프로그램 꾸러미 (런처에서 필요한 것만 설치)
 ;    radio\앱 · 데이터 · 백업        TV\앱 · 데이터 · 백업   (데이터·백업은 제거해도 남음)
@@ -27,8 +27,8 @@ AppId={{52764615-1BDF-4279-88BB-1732F176B599}
 AppName=편집 프로그램 (RADIO / TV)
 AppVersion={#AppVer}
 AppVerName=편집 프로그램 (런처 {#AppVer})
-DefaultDirName=C:\edit
-; 예전 설치 위치(C:\RADIO)를 이어받지 않고 항상 C:\edit
+DefaultDirName=C:\EDIT
+; 예전 설치 위치(C:\RADIO)를 이어받지 않고 항상 C:\EDIT
 UsePreviousAppDir=no
 DisableDirPage=yes
 DefaultGroupName=편집 프로그램

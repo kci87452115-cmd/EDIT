@@ -1,7 +1,7 @@
 """
 편집 프로그램 런처 — RADIO / TV 프로그램 중 필요한 것만 골라 설치하고, 업데이트하고, 실행한다.
 
-폴더 (C:\\edit)
+폴더 (C:\\EDIT)
   런처\\EditLauncher.exe    런처 + 공용 실행 환경(파이썬·PyMuPDF·Pillow·openpyxl)  ← RADIO·TV 가 같이 씀
   업데이트\\               기본 업데이트 폴더 (catalog.json + 꾸러미 zip). 설정에서 공유 폴더·GitHub 주소로 바꿀 수 있다
   launcher.json             런처 설정
@@ -32,7 +32,7 @@ EXE_NAME = "EditLauncher.exe"
 MUTEX = "EditLauncher_Running"      # 설치 프로그램(setup)이 '실행 중'을 알아보는 이름
 
 GROUPS = {"radio": "RADIO", "tv": "TV"}              # 그룹 id: 탭 이름
-GROUP_FOLDER = {"radio": "radio", "tv": "TV"}        # C:\\edit 아래 폴더 이름
+GROUP_FOLDER = {"radio": "radio", "tv": "TV"}        # C:\\EDIT 아래 폴더 이름
 
 APP_INFO = {   # 기본 이름·설명·그룹 (catalog.json 에 있으면 그쪽을 쓴다)
     "runsheet": {"name": "운행표 데이터 편집기", "desc": "운행표 PDF에 광고주 데이터 입력 · 정산 · 일정표", "group": "radio"},
@@ -46,7 +46,7 @@ def _root():
     if getattr(sys, "frozen", False):
         base = os.path.dirname(os.path.abspath(sys.executable))
         return os.path.dirname(base) if os.path.basename(base) in ("런처", "launcher") else base
-    return r"C:\edit" if os.name == "nt" else os.path.join(os.path.expanduser("~"), "edit")
+    return r"C:\EDIT" if os.name == "nt" else os.path.join(os.path.expanduser("~"), "EDIT")
 
 
 ROOT = _root()
@@ -319,7 +319,7 @@ def run_app_mode(spec):
         return 1
     folder = info["_dir"]
     script = os.path.join(folder, info["entry"])
-    os.environ["RADIO_HOME"] = group_root(info["group"])     # 앱은 이 폴더 아래 데이터·백업을 쓴다 (C:\\edit\\radio 등)
+    os.environ["RADIO_HOME"] = group_root(info["group"])     # 앱은 이 폴더 아래 데이터·백업을 쓴다 (C:\\EDIT\\radio 등)
     os.environ["EDIT_HOME"] = ROOT
     os.environ["RADIO_LAUNCHER"] = "1"
     os.environ["RADIO_APP_ID"] = app_id
@@ -342,7 +342,7 @@ def start_app_process(app_id):
 
 
 def migrate_old_radio(ask):
-    """예전 C:\\RADIO 의 기록·설정을 C:\\edit\\radio 로 옮긴다 (복사, 원본은 그대로). 옮겼으면 안내 문장."""
+    """예전 C:\\RADIO 의 기록·설정을 C:\\EDIT\\radio 로 옮긴다 (복사, 원본은 그대로). 옮겼으면 안내 문장."""
     old_data = os.path.join(OLD_RADIO_ROOT, "데이터")
     new_data = data_dir("radio")
     if os.path.abspath(old_data) == os.path.abspath(new_data) or not os.path.isdir(old_data):
