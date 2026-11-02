@@ -5,7 +5,7 @@ name: build-setup
 on:
   push:
     branches: [main]
-    paths: ["pdf_data_editor.py", "setup.iss", "icon.ico", ".github/workflows/build.yml"]
+    paths: ["pdf_data_editor.py", "setup.iss", "release.py", "icon.ico", ".github/workflows/build.yml"]
   workflow_dispatch:
 
 permissions:
@@ -14,6 +14,8 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
+    env:
+      PYTHONUTF8: "1"
     steps:
       - uses: actions/checkout@v4
 
@@ -57,18 +59,23 @@ jobs:
           & $iscc "/DAppVer=${{ steps.ver.outputs.version }}" "/DSrcDir=dist\RunSheetEditor" setup.iss
           if ($LASTEXITCODE -ne 0) { throw "Inno Setup 실패" }
 
+      - name: 설치 zip 만들기 (압축 풀고 설치.bat)
+        run: python -c "import release; print(release.make_zip('${{ steps.ver.outputs.version }}'))"
+
       - name: version.json 만들기 (업데이트 폴더용)
         shell: pwsh
         run: |
           $v = "${{ steps.ver.outputs.version }}"
           $msg = (git log -1 --pretty=%s)
-          @{ version = $v; setup = "RunSheetEditor_setup_$v.exe"; notes = $msg } | ConvertTo-Json | Out-File -Encoding utf8 Output\version.json
+          $info = [ordered]@{ version = $v; package = "RunSheetEditor_$v.zip"; setup = "RunSheetEditor_setup_$v.exe"; notes = $msg }
+          [IO.File]::WriteAllText("$PWD\Output\version.json", ($info | ConvertTo-Json), (New-Object Text.UTF8Encoding $false))
 
       - name: 결과물 보관
         uses: actions/upload-artifact@v4
         with:
           name: RunSheetEditor_setup_${{ steps.ver.outputs.version }}
           path: |
+            Output/*.zip
             Output/*.exe
             Output/version.json
 
@@ -78,9 +85,12 @@ jobs:
           tag_name: v${{ steps.ver.outputs.version }}
           name: 운행표 편집기 ${{ steps.ver.outputs.version }}
           body: |
-            설치: RunSheetEditor_setup_${{ steps.ver.outputs.version }}.exe 를 받아 실행하세요 (파이썬 필요 없음).
-            업데이트 배포: exe 와 version.json 두 파일을 업데이트 폴더(C:\RADIO\업데이트 또는 공유 폴더)에 복사하면
+            설치(둘 중 하나, 파이썬 필요 없음)
+            - RunSheetEditor_setup_${{ steps.ver.outputs.version }}.exe 실행
+            - 또는 RunSheetEditor_${{ steps.ver.outputs.version }}.zip 압축 풀고 설치.bat 실행
+            업데이트 배포: zip(또는 exe) 와 version.json 을 업데이트 폴더(C:\RADIO\업데이트 또는 공유 폴더)에 복사하면
             각 PC가 켤 때 새 버전을 안내합니다.
           files: |
+            Output/*.zip
             Output/*.exe
             Output/version.json
