@@ -44,7 +44,7 @@ def schedule_badge_dir():
         return os.path.join(home, "데이터", "편성표", "badges")
     return os.path.abspath("badges")
 
-APP_VERSION = "3.10.2"
+APP_VERSION = "3.10.3"
 
 
 def _detect_profile():
@@ -2316,6 +2316,7 @@ class ScheduleEditor:
         ph = (self.page_rect[3] - self.page_rect[1]) if self.page_rect else 800
         page_width, page_height = pw * self.zoom, ph * self.zoom
         
+        c.create_rectangle(18, 18, 18 + page_width, 18 + page_height, fill="#ffffff", outline="")   # 종이 바탕(투명한 곳이 회색으로 보이지 않게)
         c.create_image(18, 18, image=self.photo, anchor="nw")
         try:
             self._draw_header_preview(c)
