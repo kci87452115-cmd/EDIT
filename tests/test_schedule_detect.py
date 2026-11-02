@@ -148,6 +148,10 @@ D.pdf_path = "DMB_11__1.pdf"
 D.header_edit = {}
 if D._suggest_header_title() != "광주 MYMBC 주간편성표 [ 11월 01주 기본 ]":
     fail3.append("dmb-title-basic")
+for src, want in (("MBC_11__1__2.pdf", "DMB_11__1__2.pdf"), ("편성표.pdf", "DMB_편성표.pdf"), ("DMB_11__1.pdf", "DMB_11__1.pdf")):
+    D.pdf_path = os.path.join(HERE, src)
+    if D._default_save_name() != want:
+        fail3.append(f"save-name {src}")
 ui.IS_DMB = False
 doc.close()
 if fail3:

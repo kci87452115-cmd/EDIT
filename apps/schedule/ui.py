@@ -44,7 +44,7 @@ def schedule_badge_dir():
         return os.path.join(home, "데이터", "편성표", "badges")
     return os.path.abspath("badges")
 
-APP_VERSION = "3.10.0"
+APP_VERSION = "3.10.1"
 
 
 def _detect_profile():
@@ -890,6 +890,7 @@ class ScheduleEditor:
         self.recent_titles = []             # 최근에 넣은 칸 이름
         self.dmb_regions = list(DMB_REGIONS)    # DMB 요일 칸 지역 목록
         self.dmb_day_regions = []               # DMB 요일 칸마다 지난번에 넣은 지역 (다음 주에 그대로 제안)
+        self.last_save_dir = ""                 # 마지막으로 PDF 를 저장한 폴더 (편성표·DMB 따로)
         self._shared_last = None
         # 블록 찾기 최소 크기(pt)
         self.detect_min_w = DETECT_MIN_W
@@ -1145,6 +1146,7 @@ class ScheduleEditor:
                 "detect_min_h": self.detect_min_h,
                 "dmb_regions": self.dmb_regions,
                 "dmb_day_regions": self.dmb_day_regions,
+                "last_save_dir": self.last_save_dir,
             }
             text = json.dumps(data, ensure_ascii=False)   # 먼저 문자열로 만들어 두어야 직렬화 실패 시 기존 파일이 깨지지 않는다
             tmp_path = self.backup_file_path + ".tmp"
@@ -1230,6 +1232,8 @@ class ScheduleEditor:
                 mbw = data.get("mod_border_width")
                 if isinstance(mbw, (int, float)) and not isinstance(mbw, bool):
                     self.mod_border_width = max(0.25, min(6.0, float(mbw)))
+                if isinstance(data.get("last_save_dir"), str):
+                    self.last_save_dir = data["last_save_dir"]
                 for key in ("dmb_regions", "dmb_day_regions"):
                     v = data.get(key)
                     if isinstance(v, list):
@@ -1318,7 +1322,7 @@ class ScheduleEditor:
         ttk.Button(self.toolbar, text="작업 초기화", command=self.clear_all_blocks).pack(side="left", padx=3)
         
         ttk.Button(self.toolbar, text="🔍 저장 전 미리보기", command=self.preview_pdf).pack(side="left", padx=3)
-        ttk.Button(self.toolbar, text="PDF 저장 (다운로드)", command=self.export_pdf).pack(side="left", padx=3)
+        ttk.Button(self.toolbar, text=("💾 DMB PDF 저장" if IS_DMB else "PDF 저장 (다운로드)"), command=self.export_pdf).pack(side="left", padx=3)
         
         ttk.Separator(self.toolbar, orient="vertical").pack(side="left", fill="y", padx=5)
         ttk.Button(self.toolbar, text="🔍+", command=lambda: self.change_zoom(1)).pack(side="left", padx=2)
@@ -3216,9 +3220,17 @@ class ScheduleEditor:
     def export_pdf(self):
         if not self.pdf_path:
             return
-        out_path = filedialog.asksaveasfilename(title="PDF 저장", defaultextension=".pdf", filetypes=[("PDF 파일", "*.pdf")])
+        src_dir = os.path.dirname(os.path.abspath(self.pdf_path))
+        init_dir = self.last_save_dir if self.last_save_dir and os.path.isdir(self.last_save_dir) else src_dir
+        out_path = filedialog.asksaveasfilename(title=("DMB PDF 저장" if IS_DMB else "PDF 저장"), defaultextension=".pdf",
+                                                filetypes=[("PDF 파일", "*.pdf")], initialdir=init_dir,
+                                                initialfile=self._default_save_name())
         if not out_path:
             return False
+        if os.path.abspath(out_path) == os.path.abspath(self.pdf_path):
+            messagebox.showwarning("PDF 저장", "받은 원본 PDF 위에는 저장할 수 없습니다.\n다른 이름으로 저장해 주세요.")
+            return False
+        self.last_save_dir = os.path.dirname(out_path)
             
         try:
             with PDF_LOCK:
@@ -3230,6 +3242,17 @@ class ScheduleEditor:
         except Exception as e:
             messagebox.showerror("저장 실패", f"PDF 파일 저장 실패:\n{str(e)}")
             return False
+
+    def _default_save_name(self):
+        """저장 이름 제안. DMB: 'MBC_11__1__2.pdf' -> 'DMB_11__1__2.pdf' / 편성표: 원래 이름 그대로"""
+        base = os.path.basename(self.pdf_path or "편성표.pdf")
+        if not IS_DMB:
+            return base
+        if re.match(r"(?i)^dmb[_\s-]", base):
+            return base
+        if re.match(r"^[A-Za-z]+_", base):
+            return re.sub(r"^[A-Za-z]+_", "DMB_", base)
+        return "DMB_" + base
 
     def _generate_pdf_bytes(self, for_preview=False, blocks=None):
         blocks = self.blocks if blocks is None else blocks
