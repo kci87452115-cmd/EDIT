@@ -35,6 +35,11 @@ jobs:
       - name: 편성표 블록 찾기 점검 (실제 편성표 PDF)
         run: python tests/test_schedule_detect.py
 
+      - name: 화면 점검 (DMB 편집 화면)
+        timeout-minutes: 4
+        continue-on-error: true
+        run: python tests/test_gui_smoke.py
+
       - name: 런처 + 공용 실행 환경 만들기 (PyInstaller)
         shell: pwsh
         run: |

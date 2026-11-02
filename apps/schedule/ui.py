@@ -44,7 +44,7 @@ def schedule_badge_dir():
         return os.path.join(home, "데이터", "편성표", "badges")
     return os.path.abspath("badges")
 
-APP_VERSION = "3.10.1"
+APP_VERSION = "3.10.2"
 
 
 def _detect_profile():
@@ -871,6 +871,8 @@ class ScheduleEditor:
         self.mod_shade_color = "#facc15"       # 음영 색 (사용자 선택)
         self.mod_shade_alpha = 0.35            # 음영 진하기 (0~1)
         self.mod_shade_in_export = False       # 저장 PDF에도 음영 포함 (기본: 미리보기에만)
+        self.shade_target = "mod"              # 음영 넣을 칸: mod=수정한 칸 / unmod=수정 안 한 칸 / both=둘 다(색 따로)
+        self.unmod_shade_color = "#60a5fa"     # 수정 안 한 칸 음영 색
         self.mod_border_width = None           # 수정 블록 공통 테두리 두께(pt), None = 원본 유지
         self._mod_ids = set()
 
@@ -1136,6 +1138,8 @@ class ScheduleEditor:
                 "mod_shade_color": self.mod_shade_color,
                 "mod_shade_alpha": self.mod_shade_alpha,
                 "mod_shade_in_export": self.mod_shade_in_export,
+                "shade_target": self.shade_target,
+                "unmod_shade_color": self.unmod_shade_color,
                 "mod_border_width": self.mod_border_width,
                 "lock_move": bool(self.lock_move.get()),
                 "header_edit": {} if clean else {str(k): v for k, v in self.header_edit.items()},
@@ -1219,6 +1223,10 @@ class ScheduleEditor:
                     self.mod_shade_enabled = data["mod_shade_enabled"]
                 if isinstance(data.get("mod_shade_in_export"), bool):
                     self.mod_shade_in_export = data["mod_shade_in_export"]
+                if data.get("shade_target") in ("mod", "unmod", "both"):
+                    self.shade_target = data["shade_target"]
+                if isinstance(data.get("unmod_shade_color"), str) and re.fullmatch(r"#[0-9a-fA-F]{6}", data["unmod_shade_color"]):
+                    self.unmod_shade_color = data["unmod_shade_color"]
                 for key in ("header_title_presets", "title_presets", "recent_titles"):
                     v = data.get(key)
                     if isinstance(v, list):
@@ -1491,8 +1499,18 @@ class ScheduleEditor:
             return self.mod_border_width
         return b.get("border_width") or 0.5
 
-    def _draw_shade(self, c, x0, y0, x1, y1):
-        color = self.mod_shade_color
+    def _shade_color_for(self, b, modified):
+        """이 칸에 넣을 음영 색 (없으면 None)."""
+        if not self.mod_shade_enabled:
+            return None
+        if modified and self.shade_target in ("mod", "both"):
+            return self.mod_shade_color
+        if not modified and self.shade_target in ("unmod", "both"):
+            return self.unmod_shade_color
+        return None
+
+    def _draw_shade(self, c, x0, y0, x1, y1, color=None):
+        color = color or self.mod_shade_color
         if Image and ImageTk:
             w = max(1, int(round(x1 - x0)))
             h = max(1, int(round(y1 - y0)))
@@ -1514,8 +1532,14 @@ class ScheduleEditor:
         fnt = (self.ui_font_family, 8, "bold")
 
         self.mod_shade_var = tk.BooleanVar(value=self.mod_shade_enabled)
-        ttk.Checkbutton(f, text="수정된 블록에 반투명 음영 표시", variable=self.mod_shade_var,
+        ttk.Checkbutton(f, text="블록에 반투명 음영 표시", variable=self.mod_shade_var,
                         command=self.on_mod_style_changed).pack(anchor="w")
+        row_t = ttk.Frame(f)
+        row_t.pack(fill="x", pady=(1, 2))
+        self.shade_target_var = tk.StringVar(value=self.shade_target)
+        for val, txt in (("mod", "수정한 칸"), ("unmod", "수정 안 한 칸"), ("both", "둘 다")):
+            ttk.Radiobutton(row_t, text=txt, value=val, variable=self.shade_target_var,
+                            command=self.on_mod_style_changed).pack(side="left", padx=(0, 6))
         self.mod_export_var = tk.BooleanVar(value=self.mod_shade_in_export)
         ttk.Checkbutton(f, text="저장 PDF에도 음영 포함 (끄면 미리보기에만)", variable=self.mod_export_var,
                         command=self.on_mod_style_changed).pack(anchor="w")
@@ -1523,9 +1547,12 @@ class ScheduleEditor:
         row_c = ttk.Frame(f)
         row_c.pack(fill="x", pady=2)
         ttk.Label(row_c, text="음영 색:", font=fnt).pack(side="left")
-        self.mod_color_btn = tk.Button(row_c, text="  색 선택  ", bg=self.mod_shade_color,
+        self.unmod_color_btn = tk.Button(row_c, text=" 안 한 칸 ", bg=self.unmod_shade_color,
+                                         font=(self.ui_font_family, 8), command=self.pick_unmod_shade_color)
+        self.unmod_color_btn.pack(side="right")
+        self.mod_color_btn = tk.Button(row_c, text=" 수정한 칸 ", bg=self.mod_shade_color,
                                        font=(self.ui_font_family, 8), command=self.pick_mod_shade_color)
-        self.mod_color_btn.pack(side="right")
+        self.mod_color_btn.pack(side="right", padx=2)
 
         row_a = ttk.Frame(f)
         row_a.pack(fill="x", pady=2)
@@ -1553,6 +1580,7 @@ class ScheduleEditor:
             self.mod_alpha_lbl.config(text=f"{int(round(self.mod_shade_alpha * 100))}%")
             self.mod_border_lbl.config(text="원본" if self.mod_border_width is None else f"{self.mod_border_width:.2f}pt")
             self.mod_color_btn.config(bg=self.mod_shade_color)
+            self.unmod_color_btn.config(bg=self.unmod_shade_color)
         except (AttributeError, tk.TclError):
             pass
 
@@ -1571,12 +1599,22 @@ class ScheduleEditor:
     def on_mod_style_changed(self):
         self.mod_shade_enabled = bool(self.mod_shade_var.get())
         self.mod_shade_in_export = bool(self.mod_export_var.get())
+        try:
+            self.shade_target = self.shade_target_var.get()
+        except AttributeError:
+            pass
         self._mod_style_apply()
 
     def pick_mod_shade_color(self):
         c = colorchooser.askcolor(title="수정 블록 음영 색 선택", initialcolor=self.mod_shade_color)
         if c[1]:
             self.mod_shade_color = c[1]
+            self._mod_style_apply()
+
+    def pick_unmod_shade_color(self):
+        c = colorchooser.askcolor(title="수정 안 한 칸 음영 색 선택", initialcolor=self.unmod_shade_color)
+        if c[1]:
+            self.unmod_shade_color = c[1]
             self._mod_style_apply()
 
     def adjust_mod_alpha(self, delta):
@@ -2148,8 +2186,9 @@ class ScheduleEditor:
         else:
             hit_id = c.create_rectangle(x0, y0, x1, y1, fill=fill_color, outline="")
             
-        if self.mod_shade_enabled and b["id"] in self._mod_ids:
-            self._draw_shade(c, x0, y0, x1, y1)
+        _sc = self._shade_color_for(b, b["id"] in self._mod_ids)
+        if _sc:
+            self._draw_shade(c, x0, y0, x1, y1, _sc)
 
         rect_id = c.create_rectangle(x0, y0, x1, y1, fill="", outline=outline_color, width=width)
         
@@ -3308,10 +3347,11 @@ class ScheduleEditor:
         #    원본 테두리가 없거나 어긋나 있으므로 같은 스타일로 새로 그린다.
         # 1-3) 수정된 블록 반투명 음영 (미리보기, 또는 '저장 PDF에도 음영 포함'을 켠 경우)
         if self.mod_shade_enabled and (for_preview or self.mod_shade_in_export):
-            sh = self.mod_shade_color.lstrip("#")
-            sh_rgb = tuple(int(sh[i:i + 2], 16) / 255.0 for i in (0, 2, 4))
             for b in blocks:
-                if b["id"] in mod_ids:
+                sc = self._shade_color_for(b, b["id"] in mod_ids)
+                if sc:
+                    sh = sc.lstrip("#")
+                    sh_rgb = tuple(int(sh[i:i + 2], 16) / 255.0 for i in (0, 2, 4))
                     page.draw_rect(fitz.Rect(b["rect"]), color=None, fill=sh_rgb, fill_opacity=self.mod_shade_alpha)
 
         orig_rects = [tuple(ob["rect"]) for ob in self.initial_blocks.get(self.current_page, [])]
