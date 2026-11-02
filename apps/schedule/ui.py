@@ -42,7 +42,7 @@ def schedule_badge_dir():
         return os.path.join(home, "데이터", "편성표", "badges")
     return os.path.abspath("badges")
 
-APP_VERSION = "3.9.30"
+APP_VERSION = "3.9.31"
 APP_TITLE = f"편성표 PDF 스마트 편집기 v{APP_VERSION} (Full Integrated Edition)"
 
 
@@ -289,6 +289,211 @@ def _restore_lines(page, segs, r, tol=2.5):
                 page.draw_rect(fitz.Rect(x0, a, x1, b), color=None, fill=col)
 
 
+# ============================================================================
+# 블록(칸) 찾기 — 테두리에서 칸을 만든다
+#   · 크롬에서 만든 PDF: 테두리가 0.5pt 짜리 검은 가는 사각형, 칸마다 배경 사각형이 따로 있음
+#   · 엑셀에서 인쇄한 PDF: 테두리는 칸마다 있지만 배경은 줄 전체를 가로 띠로 칠함
+#   -> 배경이 아니라 '테두리'로 칸을 만들면 두 형식 모두 칸이 정확히 나온다.
+# ============================================================================
+DETECT_MIN_W = 20.0          # 블록으로 볼 최소 너비(pt)
+DETECT_MIN_H = 3.0           # 블록으로 볼 최소 높이(pt) - 10~25분짜리 얇은 칸까지
+BORDER_MAX_THICK = 2.2       # 이보다 얇은 사각형은 '테두리 선'으로 본다
+_GRID_TOL = 0.7
+
+
+def _lum(c):
+    """색(0~1, 회색/RGB/CMYK) 밝기. 읽을 수 없으면 1(흰색)."""
+    try:
+        c = [float(v) for v in c]
+    except Exception:
+        return 1.0
+    if len(c) == 1:
+        return c[0]
+    if len(c) == 3:
+        return sum(c) / 3
+    if len(c) == 4:
+        return (1 - c[3]) * (1 - sum(c[:3]) / 3)
+    return 1.0
+
+
+def _is_header_color(c):
+    """표 머리(시간·날짜 칸)의 연한 파랑 (#B8CCE4 등)."""
+    try:
+        r, g, b = [float(v) for v in c][:3]
+    except Exception:
+        return False
+    return b > r + 0.1 and b > 0.75 and r > 0.55
+
+
+def _drawing_parts(drawings):
+    """get_drawings() 결과에서 (테두리 선분들, 채움 사각형들)을 뽑는다.
+    선분: ('h', y, x0, x1, 색, 굵기) / ('v', x, y0, y1, 색, 굵기)
+    채움: (Rect, 색)"""
+    segs, fills = [], []
+    for d in drawings:
+        fill, stroke = d.get("fill"), d.get("color")
+        width = d.get("width") or 0.5
+        items = d.get("items", [])
+        rects = []
+        for it in items:
+            if it[0] == "re":
+                rects.append(fitz.Rect(it[1]))
+            elif it[0] == "qu":
+                rects.append(fitz.Rect(it[1].rect))
+        if not rects and items and all(it[0] == "l" for it in items) and fill is not None:
+            rects.append(fitz.Rect(d["rect"]))          # 선 4개로 그린 채움 사각형
+        if fill is not None:
+            for r in rects:
+                if min(r.width, r.height) <= BORDER_MAX_THICK and _lum(fill) < 0.6:
+                    if r.width >= r.height:
+                        segs.append(("h", (r.y0 + r.y1) / 2, r.x0, r.x1, tuple(fill), max(r.height, 0.1)))
+                    else:
+                        segs.append(("v", (r.x0 + r.x1) / 2, r.y0, r.y1, tuple(fill), max(r.width, 0.1)))
+                elif r.width > BORDER_MAX_THICK and r.height > BORDER_MAX_THICK:
+                    fills.append((r, tuple(fill)))
+        if stroke is not None and _lum(stroke) < 0.75:
+            col = tuple(stroke)
+            for it in items:
+                if it[0] == "l":
+                    p1, p2 = it[1], it[2]
+                    if abs(p1.y - p2.y) < 0.3:
+                        segs.append(("h", (p1.y + p2.y) / 2, min(p1.x, p2.x), max(p1.x, p2.x), col, width))
+                    elif abs(p1.x - p2.x) < 0.3:
+                        segs.append(("v", (p1.x + p2.x) / 2, min(p1.y, p2.y), max(p1.y, p2.y), col, width))
+            for r in rects:
+                segs += [("h", r.y0, r.x0, r.x1, col, width), ("h", r.y1, r.x0, r.x1, col, width),
+                         ("v", r.x0, r.y0, r.y1, col, width), ("v", r.x1, r.y0, r.y1, col, width)]
+    return segs, fills
+
+
+def _cells_from_segments(segs, tol=_GRID_TOL, min_w=DETECT_MIN_W, min_h=DETECT_MIN_H):
+    """테두리 선분들로 둘러싸인 직사각형 칸들. 칸 안의 뱃지 상자 같은 작은 구멍은 무시한다."""
+    import bisect
+    hs = [(s[1], s[2], s[3]) for s in segs if s[0] == "h"]
+    vs = [(s[1], s[2], s[3]) for s in segs if s[0] == "v"]
+    if not hs or not vs:
+        return []
+
+    def cluster(vals):
+        out = []
+        for v in sorted(vals):
+            if out and v - out[-1][-1] <= tol:
+                out[-1].append(v)
+            else:
+                out.append([v])
+        return [sum(g) / len(g) for g in out]
+
+    xs = cluster([v[0] for v in vs] + [h[1] for h in hs] + [h[2] for h in hs])
+    ys = cluster([h[0] for h in hs] + [v[1] for v in vs] + [v[2] for v in vs])
+    nx, ny = len(xs) - 1, len(ys) - 1
+    if nx < 1 or ny < 1 or nx * ny > 400000:
+        return []
+
+    def nearest(arr, v):
+        i = bisect.bisect_left(arr, v)
+        return min((j for j in (i - 1, i) if 0 <= j < len(arr)), key=lambda j: abs(arr[j] - v))
+
+    vblock, hblock = set(), set()
+    ymids = [(ys[j] + ys[j + 1]) / 2 for j in range(ny)]
+    xmids = [(xs[i] + xs[i + 1]) / 2 for i in range(nx)]
+    for x, y0, y1 in vs:
+        xi = nearest(xs, x)
+        for j in range(bisect.bisect_left(ymids, y0 - tol), bisect.bisect_right(ymids, y1 + tol)):
+            vblock.add((xi, j))
+    for y, x0, x1 in hs:
+        yj = nearest(ys, y)
+        for i in range(bisect.bisect_left(xmids, x0 - tol), bisect.bisect_right(xmids, x1 + tol)):
+            hblock.add((i, yj))
+    parent = list(range(nx * ny))
+
+    def find(a):
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+
+    for j in range(ny):
+        for i in range(nx):
+            k = j * nx + i
+            if i + 1 < nx and (i + 1, j) not in vblock:
+                ra, rb = find(k), find(k + 1)
+                if ra != rb:
+                    parent[ra] = rb
+            if j + 1 < ny and (i, j + 1) not in hblock:
+                ra, rb = find(k), find(k + nx)
+                if ra != rb:
+                    parent[ra] = rb
+    groups = {}
+    for j in range(ny):
+        for i in range(nx):
+            groups.setdefault(find(j * nx + i), []).append((i, j))
+    cells = []
+    for g in groups.values():
+        i0 = min(a for a, _ in g); i1 = max(a for a, _ in g)
+        j0 = min(b for _, b in g); j1 = max(b for _, b in g)
+        if i0 == 0 or j0 == 0 or i1 == nx - 1 or j1 == ny - 1:
+            continue                                   # 표 바깥으로 이어진 영역
+        x0, x1, y0, y1 = xs[i0], xs[i1 + 1], ys[j0], ys[j1 + 1]
+        if x1 - x0 < min_w or y1 - y0 < min_h:
+            continue
+        area = sum((xs[a + 1] - xs[a]) * (ys[b + 1] - ys[b]) for a, b in g)
+        if area < 0.8 * (x1 - x0) * (y1 - y0):
+            continue                                   # ㄱ자 등 직사각형이 아닌 영역
+        cells.append((x0, y0, x1, y1))
+    return cells
+
+
+def detect_schedule_blocks(drawings, page_rect=None, min_w=DETECT_MIN_W, min_h=DETECT_MIN_H):
+    """편성표 페이지의 칸들. 반환: [{"rect", "border_color", "border_width", "orig_fill"}], 방식('테두리'/'배경')
+    · 테두리로 칸을 만들고, 표 머리(파란 시간·날짜 칸)와 표 위쪽(제목·범례)은 뺀다.
+    · 테두리로 칸이 거의 안 나오는 PDF 는 예전처럼 배경 사각형으로 찾는다."""
+    segs, fills = _drawing_parts(drawings)
+    pw = (page_rect[2] - page_rect[0]) if page_rect else 1e9
+    ph = (page_rect[3] - page_rect[1]) if page_rect else 1e9
+
+    def fill_at(x, y):
+        best = None
+        for r, c in fills:
+            if r.x0 - 0.5 <= x <= r.x1 + 0.5 and r.y0 - 0.5 <= y <= r.y1 + 0.5:
+                if best is None or r.width * r.height < best[0].width * best[0].height:
+                    best = (r, c)
+        return best[1] if best else None
+
+    head_tops = [r.y0 for r, c in fills if _is_header_color(c)]
+    table_top = min(head_tops) - 1 if head_tops else None
+    out = []
+    for (x0, y0, x1, y1) in _cells_from_segments(segs, min_w=min_w, min_h=min_h):
+        if x1 - x0 > pw * 0.85 or y1 - y0 > ph * 0.85:
+            continue
+        if table_top is not None and y0 < table_top:
+            continue
+        fc = fill_at((x0 + x1) / 2, (y0 + y1) / 2)
+        if fc is not None and _is_header_color(fc):
+            continue
+        # 테두리 색·굵기: 이 칸 윗변에 걸친 선
+        bc, bw = None, None
+        for s in segs:
+            if s[0] == "h" and abs(s[1] - y0) <= 1.2 and s[2] - 1 <= (x0 + x1) / 2 <= s[3] + 1:
+                bc, bw = s[4], s[5]
+                break
+        out.append({"rect": (x0, y0, x1, y1), "border_color": bc, "border_width": bw,
+                    "orig_fill": _rgb_to_hex(fc) if fc else ""})
+    if len(out) >= 10:
+        return out, "테두리"
+    # --- 테두리가 거의 없는 PDF: 배경 사각형 (작은 칸까지)
+    out = []
+    for r, c in fills:
+        if r.width < max(min_w, 25) or r.height < min_h or r.width * r.height < 80:
+            continue
+        if r.width > pw * 0.85 or r.height > ph * 0.85 or _is_header_color(c) or _lum(c) < 0.3:
+            continue
+        box = (r.x0, r.y0, r.x1, r.y1)
+        if any(all(abs(box[i] - o["rect"][i]) < 1 for i in range(4)) for o in out):
+            continue
+        out.append({"rect": box, "border_color": None, "border_width": None, "orig_fill": _rgb_to_hex(c)})
+    return out, "배경"
+
+
 def get_system_korean_font_path(custom_path=None):
     if custom_path and os.path.exists(custom_path) and custom_path.lower().endswith(('.ttf', '.otf', '.ttc')):
         return custom_path
@@ -442,6 +647,14 @@ class ScheduleEditor:
         self.mod_border_width = None           # 수정 블록 공통 테두리 두께(pt), None = 원본 유지
         self._mod_ids = set()
 
+        # 블록 위치 고정: 칸은 옮기지 않고 합치기·나누기·내용 수정만 한다 (기본 켜짐)
+        self.lock_move = tk.BooleanVar(value=True)
+        self.lock_move.trace_add("write", lambda *a: self._on_lock_changed())
+        self._lock_hint_shown = False
+        # 블록 찾기 최소 크기(pt)
+        self.detect_min_w = DETECT_MIN_W
+        self.detect_min_h = DETECT_MIN_H
+
         self.backup_file_path = schedule_settings_path()
         
         self._recovery = None
@@ -540,8 +753,31 @@ class ScheduleEditor:
         for widget in self.sidebar_content_frame.winfo_children():
             widget.destroy()
 
+    def _on_lock_changed(self):
+        self.drag = None
+        if not hasattr(self, "toolbar"):          # 시작하면서 설정을 읽는 중에는 저장·그리기를 하지 않는다
+            return
+        try:
+            if self.pdf_path:
+                self.draw_pdf(refresh_sidebar=True)
+            self.save_autosave()
+        except Exception:
+            pass
+
+    def _move_locked(self, show=True):
+        """위치 고정 중이면 True (처음 한 번만 안내)."""
+        if not self.lock_move.get():
+            return False
+        if show and not self._lock_hint_shown:
+            self._lock_hint_shown = True
+            messagebox.showinfo("블록 위치 고정", "블록 위치 고정이 켜져 있어 옮기거나 크기를 바꿀 수 없습니다.\n"
+                                "(합치기·나누기·내용 수정은 그대로 됩니다)\n\n위치를 바꿔야 할 때만 도구 모음의 [🔒 블록 위치 고정]을 끄세요.")
+        return True
+
     def nudge_selected_block(self, dx, dy, dw, dh):
         if len(self.selected) != 1:
+            return
+        if self._typing() or self._move_locked():
             return
         if self._typing():
             return
@@ -657,6 +893,9 @@ class ScheduleEditor:
                 "mod_shade_alpha": self.mod_shade_alpha,
                 "mod_shade_in_export": self.mod_shade_in_export,
                 "mod_border_width": self.mod_border_width,
+                "lock_move": bool(self.lock_move.get()),
+                "detect_min_w": self.detect_min_w,
+                "detect_min_h": self.detect_min_h,
             }
             text = json.dumps(data, ensure_ascii=False)   # 먼저 문자열로 만들어 두어야 직렬화 실패 시 기존 파일이 깨지지 않는다
             tmp_path = self.backup_file_path + ".tmp"
@@ -695,6 +934,12 @@ class ScheduleEditor:
                     self.mod_shade_enabled = data["mod_shade_enabled"]
                 if isinstance(data.get("mod_shade_in_export"), bool):
                     self.mod_shade_in_export = data["mod_shade_in_export"]
+                if isinstance(data.get("lock_move"), bool):
+                    self.lock_move.set(data["lock_move"])
+                for key, lo, hi in (("detect_min_w", 5.0, 200.0), ("detect_min_h", 1.0, 100.0)):
+                    v = data.get(key)
+                    if isinstance(v, (int, float)) and not isinstance(v, bool):
+                        setattr(self, key, max(lo, min(hi, float(v))))
                 mbw = data.get("mod_border_width")
                 if isinstance(mbw, (int, float)) and not isinstance(mbw, bool):
                     self.mod_border_width = max(0.25, min(6.0, float(mbw)))
@@ -769,6 +1014,7 @@ class ScheduleEditor:
         ttk.Button(self.toolbar, text="⚙️ 설정 (폰트/뱃지)", command=self.open_settings_window).pack(side="left", padx=3)
         ttk.Separator(self.toolbar, orient="vertical").pack(side="left", fill="y", padx=5)
         
+        ttk.Checkbutton(self.toolbar, text="🔒 블록 위치 고정", variable=self.lock_move).pack(side="left", padx=5)
         chk_draw = ttk.Checkbutton(self.toolbar, text="✏️ 수동 블록 그리기", variable=self.manual_draw_mode)
         chk_draw.pack(side="left", padx=5)
         
@@ -789,7 +1035,7 @@ class ScheduleEditor:
     def open_settings_window(self):
         sett_win = tk.Toplevel(self.root)
         sett_win.title("⚙️ 프로그램 설정 (기본 폰트 및 뱃지 지정)")
-        sett_win.geometry("560x740")
+        sett_win.geometry("560x840")
         sett_win.transient(self.root)
         sett_win.grab_set()
 
@@ -840,7 +1086,25 @@ class ScheduleEditor:
             btn = ttk.Button(row_f, text="찾기", width=6, command=lambda k=key, v=var: self.browse_badge_image(k, v))
             btn.pack(side="right")
 
+        det_frame = ttk.LabelFrame(sett_win, text=" 블록 찾기 (PDF를 열 때 칸을 블록으로 만드는 기준) ", padding=8)
+        det_frame.pack(fill="x", padx=15, pady=5)
+        det_row = ttk.Frame(det_frame)
+        det_row.pack(fill="x")
+        ttk.Label(det_row, text="최소 너비(pt):", font=(self.ui_font_family, 8)).pack(side="left")
+        min_w_var = tk.StringVar(value=f"{self.detect_min_w:g}")
+        ttk.Spinbox(det_row, from_=5, to=200, increment=1, width=6, textvariable=min_w_var).pack(side="left", padx=(2, 12))
+        ttk.Label(det_row, text="최소 높이(pt):", font=(self.ui_font_family, 8)).pack(side="left")
+        min_h_var = tk.StringVar(value=f"{self.detect_min_h:g}")
+        ttk.Spinbox(det_row, from_=1, to=100, increment=0.5, width=6, textvariable=min_h_var).pack(side="left", padx=2)
+        ttk.Label(det_frame, text=f"※ 기본 너비 {DETECT_MIN_W:g} · 높이 {DETECT_MIN_H:g}. 작은 칸이 빠지면 줄이고, 뱃지 등이 블록으로 잡히면 늘리세요. 다음에 PDF를 열 때 적용됩니다.",
+                  font=(self.ui_font_family, 8), foreground="#666", wraplength=510).pack(anchor="w", pady=(4, 0))
+
         def save_and_close():
+            for var, key, lo, hi in ((min_w_var, "detect_min_w", 5.0, 200.0), (min_h_var, "detect_min_h", 1.0, 100.0)):
+                try:
+                    setattr(self, key, max(lo, min(hi, float(var.get()))))
+                except ValueError:
+                    pass
             self.global_font_path = self.font_path_var.get()
             self.ui_font_family = get_tk_font_family(self.global_font_path)
             for k, v in self.badge_path_vars.items():
@@ -1241,44 +1505,34 @@ class ScheduleEditor:
 
             if page_idx not in self.page_blocks:
                 drawings = page.get_drawings()
+                found, method = detect_schedule_blocks(drawings, tuple(page.rect),
+                                                       min_w=self.detect_min_w, min_h=self.detect_min_h)
                 detected_blocks = []
-                for d in drawings:
-                    dr = d.get("rect")
-                    if dr:
-                        r = fitz.Rect(dr)
-                        if 1000 < r.get_area() < 180000 and r.width > 20 and r.height > 10:
-                            is_overlapping = any(abs(r.x0 - ex["rect"][0]) < 5 and abs(r.y0 - ex["rect"][1]) < 5 for ex in detected_blocks)
-                            if not is_overlapping:
-                                detected_blocks.append({
-                                    "id": self.next_id,
-                                    "title": "",  
-                                    "color": "",  
-                                    "text_color": "#000000",
-                                    "font_size_offset": 0,
-                                    "options": {
-                                        "top_time_enabled": False, "top_time_val": "00", "top_time_font_size": DEFAULT_TIME_FONT_SIZE,
-                                        "bottom_time_enabled": False, "bottom_time_val": "00", "bottom_time_font_size": DEFAULT_TIME_FONT_SIZE,
-                                        "badge_size": 12,
-                                        "uhd": False, "sub": False, "sign": False, "des": False, "local": False, "age": "none"
-                                    },
-                                    "rect": (r.x0, r.y0, r.x1, r.y1),
-                                    "orig_rect": (r.x0, r.y0, r.x1, r.y1),
-                                    "border_color": d.get("color"),
-                                    "border_width": d.get("width"),
-                                    "orig_fill": _rgb_to_hex(d.get("fill")),
-                                    "group_id": None,
-                                    "rel_box": None,
-                                })
-                                self.next_id += 1
-                            else:
-                                _m = next((ex for ex in detected_blocks
-                                           if abs(r.x0 - ex["rect"][0]) < 5 and abs(r.y0 - ex["rect"][1]) < 5), None)
-                                if _m is not None:
-                                    if not _m.get("border_color") and d.get("color"):
-                                        _m["border_color"] = d.get("color")
-                                        _m["border_width"] = d.get("width")
-                                    if not _m.get("orig_fill") and d.get("fill"):
-                                        _m["orig_fill"] = _rgb_to_hex(d.get("fill"))
+                for fb in found:
+                    r = fb["rect"]
+                    detected_blocks.append({
+                        "id": self.next_id,
+                        "title": "",
+                        "color": "",
+                        "text_color": "#000000",
+                        "font_size_offset": 0,
+                        "options": {
+                            "top_time_enabled": False, "top_time_val": "00", "top_time_font_size": DEFAULT_TIME_FONT_SIZE,
+                            "bottom_time_enabled": False, "bottom_time_val": "00", "bottom_time_font_size": DEFAULT_TIME_FONT_SIZE,
+                            "badge_size": 12,
+                            "uhd": False, "sub": False, "sign": False, "des": False, "local": False, "age": "none"
+                        },
+                        "rect": tuple(r),
+                        "orig_rect": tuple(r),
+                        "border_color": fb["border_color"],
+                        "border_width": fb["border_width"],
+                        "orig_fill": fb["orig_fill"],
+                        "group_id": None,
+                        "rel_box": None,
+                    })
+                    self.next_id += 1
+                self._detect_note = f"블록 {len(detected_blocks)}개를 찾았습니다 ({method} 기준"\
+                                    f", 높이 10pt 미만 작은 칸 {sum(1 for x in found if x['rect'][3] - x['rect'][1] < 10)}개 포함)."
                 self.__dict__.setdefault("orig_lines", {})[page_idx] = _collect_line_segments(drawings)
                 self.page_blocks[page_idx] = detected_blocks
                 self.initial_blocks[page_idx] = copy.deepcopy(detected_blocks)
@@ -1334,6 +1588,10 @@ class ScheduleEditor:
         self.draw_pdf()
         
         load_msg = f"현재 페이지의 블록을 불러왔습니다. (소요 시간: {elapsed_time}초)"
+        note = getattr(self, "_detect_note", "")
+        if note:
+            load_msg += "\n" + note
+            self._detect_note = ""
         fill_rep = getattr(self, "_fill_report", "")
         if fill_rep:
             load_msg += "\n\n" + fill_rep
@@ -1655,7 +1913,7 @@ class ScheduleEditor:
         
         grip_id = None
         edge_handles = []
-        if is_selected:
+        if is_selected and not self.lock_move.get():
             grip_id = c.create_rectangle(x1-10, y1-10, x1, y1, fill="#2563eb", outline="white")
             if True:
                 gid_h = b.get("group_id")
@@ -2108,6 +2366,8 @@ class ScheduleEditor:
 
     def modify_block_edge(self, block, edge, sign):
         """선택 블록의 한 변(위/아래/왼쪽/오른쪽)을 sign(-1/+1) x 이동 단위(pt)만큼 옮긴다."""
+        if self._move_locked():
+            return
         try:
             step = int(self.edge_step_var.get())
         except Exception:
@@ -2835,6 +3095,12 @@ class ScheduleEditor:
         else:
             if clicked_id not in self.selected: self.selected = {clicked_id}
             
+        if self.lock_move.get():          # 위치 고정: 클릭은 선택만 (끌기·크기 조절 없음)
+            self.drag = None
+            self.drag_start_pos = None
+            self.draw_pdf()
+            return
+
         snap = self._snapshot_blocks()   # 실제로 움직였을 때만 release에서 기록
         gid = block.get("group_id")
         group_rects = {gb["id"]: tuple(gb["rect"]) for gb in self.blocks if gid is not None and gb.get("group_id") == gid}
@@ -2901,6 +3167,11 @@ class ScheduleEditor:
         if not self.drag: return
         block = next((b for b in self.blocks if b["id"] == self.drag["id"]), None)
         if not block: return
+        # 클릭할 때 손이 조금 흔들려도 블록이 움직이거나 옆 칸에 붙지 않도록: 5픽셀 이상 끌어야 움직인다
+        if not self.drag.get("started"):
+            if abs(x - self.drag["start_x"]) < 5 and abs(y - self.drag["start_y"]) < 5:
+                return
+            self.drag["started"] = True
         
         dx = (x - self.drag["start_x"]) / self.zoom
         dy = (y - self.drag["start_y"]) / self.zoom
