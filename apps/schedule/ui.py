@@ -30,7 +30,19 @@ except ImportError:
 # 상단/하단 시간 글자 크기 초기값(pt)
 DEFAULT_TIME_FONT_SIZE = 4
 
-APP_VERSION = "3.9.29"
+# PyMuPDF 는 여러 스레드에서 동시에 쓰면 안전하지 않다 -> PDF 작업(읽기·그리기·저장)은 이 잠금으로 한 번에 하나씩
+PDF_LOCK = threading.RLock()
+
+
+def schedule_badge_dir():
+    """뱃지 PNG 폴더. 런처로 실행하면 데이터 폴더(C:\\EDIT\\TV\\데이터\\편성표\\badges) - 업데이트해도 남는다.
+    따로 실행하면 예전처럼 실행 위치의 badges 폴더."""
+    home = os.environ.get("RADIO_HOME")
+    if home:
+        return os.path.join(home, "데이터", "편성표", "badges")
+    return os.path.abspath("badges")
+
+APP_VERSION = "3.9.30"
 APP_TITLE = f"편성표 PDF 스마트 편집기 v{APP_VERSION} (Full Integrated Edition)"
 
 
@@ -367,7 +379,7 @@ class ScheduleEditor:
         self.split_title_vars = {}
         self._split_preview_job = None 
         
-        self.badge_folder = "badges"
+        self.badge_folder = schedule_badge_dir()
         if not os.path.exists(self.badge_folder):
             try:
                 os.makedirs(self.badge_folder)
@@ -573,7 +585,7 @@ class ScheduleEditor:
 
     def on_closing_app(self):
         self.save_autosave()
-        if self.blocks and self.pdf_path:
+        if self.pdf_path and any(self._is_modified(b) for b in self.blocks):
             ans = messagebox.askyesnocancel("종료 확인", "작업 중인 내용이 있습니다.\nPDF로 저장하고 종료하시겠습니까?\n(아니오: 저장하지 않고 종료)")
             if ans is True:
                 if self.export_pdf():
@@ -663,8 +675,11 @@ class ScheduleEditor:
                 _pb = data.get("page_blocks")
                 if data.get("pdf_path") and isinstance(_pb, dict) and any(_pb.values()):
                     self._recovery = data
-                if "custom_badge_paths" in data:
-                    self.custom_badge_paths.update(data["custom_badge_paths"])
+                if "custom_badge_paths" in data and isinstance(data["custom_badge_paths"], dict):
+                    for k, v in data["custom_badge_paths"].items():
+                        if v and not os.path.isabs(v):
+                            v = os.path.join(self.badge_folder, os.path.basename(v))   # 예전 'badges\\xx.png' -> 뱃지 폴더
+                        self.custom_badge_paths[k] = v
                 if "global_font_path" in data and data["global_font_path"]:
                     self.global_font_path = data["global_font_path"]
                     self.ui_font_family = get_tk_font_family(self.global_font_path)
@@ -746,7 +761,7 @@ class ScheduleEditor:
         self.clear_toolbar()
         ttk.Button(self.toolbar, text="PDF 열기", command=self.open_pdf).pack(side="left", padx=3)
         ttk.Button(self.toolbar, text="⚙️ 설정 (폰트/뱃지)", command=self.open_settings_window).pack(side="left", padx=3)
-        ttk.Label(self.toolbar, text="  [v3.9.27] 상단의 'PDF 열기'를 눌러 시작하세요.").pack(side="left", padx=12)
+        ttk.Label(self.toolbar, text=f"  [v{APP_VERSION}] 상단의 'PDF 열기'를 눌러 시작하세요.").pack(side="left", padx=12)
 
     def _build_pdf_toolbar(self):
         self.clear_toolbar()
@@ -774,7 +789,7 @@ class ScheduleEditor:
     def open_settings_window(self):
         sett_win = tk.Toplevel(self.root)
         sett_win.title("⚙️ 프로그램 설정 (기본 폰트 및 뱃지 지정)")
-        sett_win.geometry("560x680")
+        sett_win.geometry("560x740")
         sett_win.transient(self.root)
         sett_win.grab_set()
 
@@ -837,6 +852,20 @@ class ScheduleEditor:
             messagebox.showinfo("설정 완료", "기본 폰트 및 설정이 성공적으로 저장되었습니다.")
             sett_win.destroy()
 
+        bf_row = ttk.Frame(sett_win)
+        bf_row.pack(fill="x", padx=15)
+        ttk.Label(bf_row, text=f"뱃지 폴더: {self.badge_folder}", font=(self.ui_font_family, 8), foreground="#555").pack(side="left")
+
+        def open_badge_folder():
+            try:
+                os.makedirs(self.badge_folder, exist_ok=True)
+                os.startfile(self.badge_folder)
+            except Exception:
+                pass
+
+        ttk.Button(bf_row, text="폴더 열기", command=open_badge_folder).pack(side="right")
+        ttk.Label(sett_win, text="※ 뱃지 PNG를 이 폴더에 uhd.png, all.png, 7.png … 이름으로 넣으면 바로 쓰입니다. (업데이트해도 지워지지 않습니다)",
+                  font=(self.ui_font_family, 8), foreground="#666", wraplength=520).pack(anchor="w", padx=15)
         ttk.Button(sett_win, text="설정 저장", command=save_and_close).pack(pady=12)
 
     def browse_badge_image(self, key, var):
@@ -1056,6 +1085,7 @@ class ScheduleEditor:
                     block["options"] = copy.deepcopy(preset["options"])
                 
         self.draw_pdf()
+        self.save_autosave()
         messagebox.showinfo("파렛트 적용", f"선택한 블록에 '{preset['title']}' 양식이 적용되었습니다!")
 
     def save_to_favorites(self):
@@ -1190,6 +1220,10 @@ class ScheduleEditor:
         threading.Thread(target=self._load_pdf_worker, args=(path, self.current_page), daemon=True).start()
 
     def _load_pdf_worker(self, path, page_idx):
+        with PDF_LOCK:
+            self._load_pdf_worker_locked(path, page_idx)
+
+    def _load_pdf_worker_locked(self, path, page_idx):
         try:
             start_time = time.time()
             doc = fitz.open(path)
@@ -1316,6 +1350,10 @@ class ScheduleEditor:
         self.canvas.bind("<MouseWheel>", self.on_mouse_wheel)
         self.canvas.bind("<Button-4>", self.on_mouse_wheel)
         self.canvas.bind("<Button-5>", self.on_mouse_wheel)
+
+    def _page_origin(self):
+        """PDF 페이지 원점(CropBox 여백이 있으면 0이 아님). 화면 좌표 <-> PDF 좌표 변환에 쓴다."""
+        return (self.page_rect[0], self.page_rect[1]) if self.page_rect else (0, 0)
 
     def _xy(self, rect):
         r = fitz.Rect(rect)
@@ -1702,6 +1740,21 @@ class ScheduleEditor:
         self._update_mod_count()
         if refresh_sidebar:
             self.update_sidebar_info()
+        self._schedule_autosave()
+
+    def _schedule_autosave(self, delay=800):
+        """바뀐 뒤 상태가 꼭 자동 저장되도록, 다시 그릴 때마다 잠시 뒤 한 번 저장한다 (드래그 중에는 묶어서 한 번)."""
+        job = getattr(self, "_autosave_job", None)
+        if job is not None:
+            try:
+                self.root.after_cancel(job)
+            except Exception:
+                pass
+        self._autosave_job = self.root.after(delay, self._run_autosave)
+
+    def _run_autosave(self):
+        self._autosave_job = None
+        self.save_autosave()
 
     def update_sidebar_info(self):
         if not hasattr(self, "info_frame"): return
@@ -2412,10 +2465,11 @@ class ScheduleEditor:
 
     def _render_zoom_worker(self, zoom, version):
         try:
-            doc = self._open_base_doc()
-            page = doc.load_page(self.current_page)
-            png_data = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=True).tobytes("png")
-            doc.close()
+            with PDF_LOCK:
+                doc = self._open_base_doc()
+                page = doc.load_page(self.current_page)
+                png_data = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=True).tobytes("png")
+                doc.close()
             self.root.after(0, self._zoom_finished, version, png_data, None)
         except Exception as exc:
             self.root.after(0, self._zoom_finished, version, None, exc)
@@ -2514,14 +2568,18 @@ class ScheduleEditor:
         lbl = ttk.Label(preview_win, text="최종 PDF 렌더링 생성 중...", font=(self.ui_font_family, 11))
         lbl.pack(expand=True)
         
+        blocks_snap = copy.deepcopy(self.blocks)      # 미리보기를 만드는 동안 블록을 고쳐도 섞이지 않게
+        page_no = self.current_page
+
         def render_preview():
             try:
-                out_bytes = self._generate_pdf_bytes(for_preview=True)
-                doc = fitz.open(stream=out_bytes, filetype="pdf")
-                page = doc.load_page(0)
-                pix = page.get_pixmap(dpi=150)
-                img_data = pix.tobytes("png")
-                doc.close()
+                with PDF_LOCK:
+                    out_bytes = self._generate_pdf_bytes(for_preview=True, blocks=blocks_snap)
+                    doc = fitz.open(stream=out_bytes, filetype="pdf")
+                    page = doc.load_page(min(page_no, doc.page_count - 1))
+                    pix = page.get_pixmap(dpi=150)
+                    img_data = pix.tobytes("png")
+                    doc.close()
                 
                 self.root.after(0, show_img, preview_win, lbl, img_data)
             except Exception as e:
@@ -2577,7 +2635,8 @@ class ScheduleEditor:
             return False
             
         try:
-            pdf_bytes = self._generate_pdf_bytes()
+            with PDF_LOCK:
+                pdf_bytes = self._generate_pdf_bytes()
             with open(out_path, "wb") as f:
                 f.write(pdf_bytes)
             messagebox.showinfo("저장 완료", f"PDF 파일이 성공적으로 저장되었습니다:\n{out_path}")
@@ -2586,7 +2645,8 @@ class ScheduleEditor:
             messagebox.showerror("저장 실패", f"PDF 파일 저장 실패:\n{str(e)}")
             return False
 
-    def _generate_pdf_bytes(self, for_preview=False):
+    def _generate_pdf_bytes(self, for_preview=False, blocks=None):
+        blocks = self.blocks if blocks is None else blocks
         doc = self._open_base_doc()
         page = doc.load_page(self.current_page)
         
@@ -2600,7 +2660,7 @@ class ScheduleEditor:
         else:
             font_name = "helv"
 
-        if font_name == "helv" and any(not (b.get("title") or "").isascii() for b in self.blocks):
+        if font_name == "helv" and any(not (b.get("title") or "").isascii() for b in blocks):
             doc.close()
             raise RuntimeError("한글 폰트를 불러오지 못했습니다.\n설정(⚙️)에서 .ttf/.ttc 한글 폰트 파일을 지정해 주세요.")
 
@@ -2609,10 +2669,10 @@ class ScheduleEditor:
         except Exception:
             measure_font = None
 
-        mod_ids = {b["id"] for b in self.blocks if self._is_modified(b)}
+        mod_ids = {b["id"] for b in blocks if self._is_modified(b)}
 
         # 1) 채우기: 원본 테두리를 덮지 않도록 선 굵기의 절반만큼 안쪽으로 줄여서 그린다.
-        for b in self.blocks:
+        for b in blocks:
             hex_c = (b.get("color") or "").lstrip("#")
             if len(hex_c) != 6:
                 continue
@@ -2627,7 +2687,7 @@ class ScheduleEditor:
         # 1-2) 채우기가 덮어버린 원본 선(칸 가장자리)을 원래 위치에 다시 그린다.
         segs = getattr(self, "orig_lines", {}).get(self.current_page, [])
         if segs:
-            for b in self.blocks:
+            for b in blocks:
                 if len((b.get("color") or "").lstrip("#")) == 6:
                     _restore_lines(page, segs, fitz.Rect(b["rect"]))
 
@@ -2637,12 +2697,12 @@ class ScheduleEditor:
         if self.mod_shade_enabled and (for_preview or self.mod_shade_in_export):
             sh = self.mod_shade_color.lstrip("#")
             sh_rgb = tuple(int(sh[i:i + 2], 16) / 255.0 for i in (0, 2, 4))
-            for b in self.blocks:
+            for b in blocks:
                 if b["id"] in mod_ids:
                     page.draw_rect(fitz.Rect(b["rect"]), color=None, fill=sh_rgb, fill_opacity=self.mod_shade_alpha)
 
         orig_rects = [tuple(ob["rect"]) for ob in self.initial_blocks.get(self.current_page, [])]
-        for b in self.blocks:
+        for b in blocks:
             r = fitz.Rect(b["rect"])
             rt = (r.x0, r.y0, r.x1, r.y1)
             modified = b["id"] in mod_ids
@@ -2652,7 +2712,7 @@ class ScheduleEditor:
             col = tuple(b.get("border_color") or DEFAULT_BORDER_COLOR)
             page.draw_rect(r, color=col, fill=None, width=self._eff_border_width(b, modified))
 
-        for b in self.blocks:
+        for b in blocks:
             r = fitz.Rect(b["rect"])
 
             opts = b.get("options", {})
@@ -2722,7 +2782,7 @@ class ScheduleEditor:
                     line_x = r.x0 + (bw - line_w) / 2 + b.get("text_dx", 0)
                     page.insert_text(fitz.Point(line_x, line_y), line, fontsize=f_size, fontname=font_name, color=txt_rgb)
 
-        for b in self.blocks:
+        for b in blocks:
             rb = b.get("rel_box")
             if b.get("group_id") is None or not rb:
                 continue
@@ -2734,7 +2794,7 @@ class ScheduleEditor:
             if rb[0] > 0.001:
                 page.draw_line(fitz.Point(r.x0, r.y0), fitz.Point(r.x0, r.y1), color=col, width=wid)
 
-        out_bytes = doc.tobytes()
+        out_bytes = doc.tobytes() if for_preview else doc.tobytes(garbage=3, deflate=True)   # 저장본은 압축해서 용량을 줄인다
         doc.close()
         return out_bytes
 
@@ -2826,17 +2886,14 @@ class ScheduleEditor:
         
         if self.manual_draw_mode.get() and self.manual_rect_start:
             sx, sy = self.manual_rect_start
-            raw_x0 = (min(sx, x) - 18) / self.zoom
-            raw_y0 = (min(sy, y) - 18) / self.zoom
-            raw_x1 = (max(sx, x) - 18) / self.zoom
-            raw_y1 = (max(sy, y) - 18) / self.zoom
+            ox, oy = self._page_origin()
+            raw_x0 = (min(sx, x) - 18) / self.zoom + ox
+            raw_y0 = (min(sy, y) - 18) / self.zoom + oy
+            raw_x1 = (max(sx, x) - 18) / self.zoom + ox
+            raw_y1 = (max(sy, y) - 18) / self.zoom + oy
             
             snapped = self.get_snapped_rect((raw_x0, raw_y0, raw_x1, raw_y1), snap_dist=12)
-            
-            csx0 = 18 + snapped[0] * self.zoom
-            csy0 = 18 + snapped[1] * self.zoom
-            csx1 = 18 + snapped[2] * self.zoom
-            csy1 = 18 + snapped[3] * self.zoom
+            csx0, csy0, csx1, csy1 = self._xy(snapped)
             
             self.canvas.coords(self.temp_draw_id, csx0, csy0, csx1, csy1)
             return
@@ -2939,10 +2996,11 @@ class ScheduleEditor:
         
         if self.manual_draw_mode.get() and self.manual_rect_start:
             sx, sy = self.manual_rect_start
-            x0 = (min(sx, x) - 18) / self.zoom
-            y0 = (min(sy, y) - 18) / self.zoom
-            x1 = (max(sx, x) - 18) / self.zoom
-            y1 = (max(sy, y) - 18) / self.zoom
+            ox, oy = self._page_origin()
+            x0 = (min(sx, x) - 18) / self.zoom + ox
+            y0 = (min(sy, y) - 18) / self.zoom + oy
+            x1 = (max(sx, x) - 18) / self.zoom + ox
+            y1 = (max(sy, y) - 18) / self.zoom + oy
             
             if self.temp_draw_id:
                 self.canvas.delete(self.temp_draw_id)
