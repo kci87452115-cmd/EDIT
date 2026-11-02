@@ -205,7 +205,8 @@ def import_base_data(dst_db, src_db):
 
 def read_update_info(folder):
     """업데이트 폴더의 version.json 을 읽는다. 없거나 못 읽으면 None.
-    version.json 예: {"version": "2.1.0", "setup": "RunSheetEditor_setup_2.1.0.exe", "notes": "바뀐 내용"}"""
+    version.json 예: {"version": "2.1.0", "package": "RunSheetEditor_2.1.0.zip", "setup": "RunSheetEditor_setup_2.1.0.exe", "notes": "바뀐 내용"}
+    package(zip) 와 setup(exe) 중 있는 것을 쓴다. 둘 다 있으면 zip 을 쓴다 (설치 도구 없이 만든 것도 되도록)."""
     if not folder:
         return None
     path = os.path.join(folder, "version.json")
@@ -214,9 +215,16 @@ def read_update_info(folder):
             info = json.load(f)
     except Exception:
         return None
-    if not isinstance(info, dict) or not info.get("version") or not info.get("setup"):
+    if not isinstance(info, dict) or not info.get("version") or not (info.get("setup") or info.get("package")):
         return None
-    info["setup_path"] = os.path.join(folder, os.path.basename(info["setup"]))
+    info["package_path"] = os.path.join(folder, os.path.basename(info["package"])) if info.get("package") else ""
+    info["setup_path"] = os.path.join(folder, os.path.basename(info["setup"])) if info.get("setup") else ""
+    if info["package_path"] and os.path.exists(info["package_path"]):
+        info["file_path"] = info["package_path"]
+    elif info["setup_path"] and os.path.exists(info["setup_path"]):
+        info["file_path"] = info["setup_path"]
+    else:
+        info["file_path"] = ""
     return info
 
 
@@ -1322,9 +1330,9 @@ class DataEditor:
             if not quiet:
                 messagebox.showinfo("업데이트 확인", f"최신 버전입니다.  (지금 {APP_VERSION})", parent=owner)
             return
-        if not os.path.exists(info["setup_path"]):
+        if not info["file_path"]:
             if not quiet:
-                messagebox.showwarning("업데이트 확인", f"새 버전 {info['version']} 정보는 있는데 설치 파일이 없습니다:\n{info['setup_path']}", parent=owner)
+                messagebox.showwarning("업데이트 확인", f"새 버전 {info['version']} 정보는 있는데 설치 파일(zip/exe)이 없습니다:\n{self.update_dir}", parent=owner)
             return
         notes = (info.get("notes") or "").strip()
         msg = (f"새 버전 {info['version']} 이 있습니다.  (지금 {APP_VERSION})\n\n" + (f"바뀐 내용:\n{notes}\n\n" if notes else "") +
@@ -1343,7 +1351,7 @@ class DataEditor:
         owner = owner or self.root
         if not getattr(sys, "frozen", False):
             messagebox.showinfo("업데이트", "지금은 파이썬 파일(.py)로 실행 중이라 자동 설치를 하지 않습니다.\n"
-                                f"설치 파일을 직접 실행해 주세요:\n{info['setup_path']}", parent=owner)
+                                f"새 버전 파일:\n{info['file_path']}", parent=owner)
             return
         # 1) 저장하지 않은 탭은 기록을 저장한다 (PDF 파일은 그대로)
         self._commit_date()
@@ -1362,14 +1370,38 @@ class DataEditor:
         if self.store is not None and self.run_backup(quiet=False) is None:
             if not messagebox.askyesno("업데이트", "백업하지 못했습니다. 그래도 업데이트할까요?", parent=owner):
                 return
-        # 3) 설치 파일을 임시 폴더로 복사한 뒤, 이 프로그램이 닫히고 2초 뒤에 조용히 설치(끝나면 다시 실행)
+        # 3) 새 버전을 임시 폴더에 준비한 뒤, 이 프로그램이 닫히면 교체하고 다시 실행한다
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         try:
-            dst = os.path.join(tempfile.gettempdir(), os.path.basename(info["setup_path"]))
-            shutil.copy2(info["setup_path"], dst)
-            flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-            subprocess.Popen(f'cmd /c timeout /t 2 /nobreak >nul & "{dst}" /SILENT /NORESTART', shell=False, creationflags=flags, close_fds=True)
+            src = info["file_path"]
+            if src.lower().endswith(".zip"):
+                # zip: 압축을 풀어 프로그램 폴더를 통째로 바꾼다 (데이터·백업 폴더는 건드리지 않음)
+                import zipfile
+                work = tempfile.mkdtemp(prefix="RunSheetEditor_update_")
+                with zipfile.ZipFile(src) as z:
+                    z.extractall(work)
+                new_dir = os.path.join(work, "RunSheetEditor")
+                if not os.path.exists(os.path.join(new_dir, "RunSheetEditor.exe")):
+                    raise RuntimeError("zip 안에 RunSheetEditor\\RunSheetEditor.exe 가 없습니다.")
+                prog_dir = os.path.dirname(os.path.abspath(sys.executable))
+                ps1 = os.path.join(work, "update.ps1")
+                q_new, q_prog = new_dir.replace("'", "''"), prog_dir.replace("'", "''")
+                with open(ps1, "w", encoding="utf-8-sig") as f:      # 한글 경로 때문에 BOM 있는 UTF-8 로
+                    f.write(f"""Start-Sleep -Seconds 2
+$new = '{q_new}'
+$prog = '{q_prog}'
+robocopy $new $prog /MIR /R:20 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
+Start-Process (Join-Path $prog 'RunSheetEditor.exe') -WorkingDirectory $prog
+""")
+                subprocess.Popen(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", ps1],
+                                 creationflags=flags, close_fds=True)
+            else:
+                # exe(설치 프로그램): 조용히 설치 -> 끝나면 다시 실행
+                dst = os.path.join(tempfile.gettempdir(), os.path.basename(src))
+                shutil.copy2(src, dst)
+                subprocess.Popen(f'cmd /c timeout /t 2 /nobreak >nul & "{dst}" /SILENT /NORESTART', shell=False, creationflags=flags, close_fds=True)
         except Exception as exc:
-            messagebox.showerror("업데이트 실패", f"설치 파일을 실행하지 못했습니다:\n{exc}", parent=owner)
+            messagebox.showerror("업데이트 실패", f"새 버전을 준비하지 못했습니다:\n{exc}", parent=owner)
             return
         self.root.destroy()
 
