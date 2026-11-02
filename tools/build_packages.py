@@ -24,7 +24,7 @@ UPD = os.path.join(OUT, "update")
 APPS = {   # id: (폴더, 실행 파일, 이름, 설명, 필요한 런처 실행 환경 세대, 그룹 radio/tv)
     # 그룹을 바꾸면 런처의 다른 탭(C:\\EDIT\\TV 등)에 설치된다
     "runsheet": ("apps/runsheet", "pdf_data_editor.py", "운행표 데이터 편집기", "운행표 PDF에 광고주 데이터 입력 · 정산 · 일정표", 1, "radio"),
-    "schedule": ("apps/schedule", "ui.py", "편성표 PDF 편집기", "편성표 PDF 편집 (칸 색 · 글자 · 분할선)", 1, "radio"),
+    "schedule": ("apps/schedule", "ui.py", "편성표 PDF 편집기", "편성표 PDF 편집 (칸 색 · 글자 · 분할선)", 1, "tv"),
 }
 
 

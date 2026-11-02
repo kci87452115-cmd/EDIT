@@ -30,12 +30,12 @@ except ImportError:
 # 상단/하단 시간 글자 크기 초기값(pt)
 DEFAULT_TIME_FONT_SIZE = 4
 
-APP_VERSION = "3.9.28"
+APP_VERSION = "3.9.29"
 APP_TITLE = f"편성표 PDF 스마트 편집기 v{APP_VERSION} (Full Integrated Edition)"
 
 
 def schedule_settings_path():
-    """설정(자동 저장) 파일 위치. 편집 프로그램 런처로 실행하면 C:\\EDIT\\radio\\데이터\\편성표\\settings.json,
+    """설정(자동 저장) 파일 위치. 편집 프로그램 런처로 실행하면 C:\\EDIT\\TV\\데이터\\편성표\\settings.json,
     따로 실행하면 예전처럼 사용자 폴더. 새 위치가 비어 있으면 예전 설정을 한 번 복사해 이어받는다."""
     old = os.path.join(os.path.expanduser("~"), ".schedule_editor_settings.json")
     home = os.environ.get("RADIO_HOME")
@@ -45,9 +45,16 @@ def schedule_settings_path():
     new = os.path.join(new_dir, "settings.json")
     try:
         os.makedirs(new_dir, exist_ok=True)
-        if not os.path.exists(new) and os.path.exists(old):
-            import shutil
-            shutil.copy2(old, new)
+        if not os.path.exists(new):
+            # 이어받을 예전 설정: RADIO 쪽에 잠깐 설치했던 것(C:\\EDIT\\radio\\...) -> 사용자 폴더의 것 순서
+            cands = []
+            if os.environ.get("EDIT_HOME"):
+                cands.append(os.path.join(os.environ["EDIT_HOME"], "radio", "데이터", "편성표", "settings.json"))
+            cands.append(old)
+            src = next((c for c in cands if os.path.exists(c) and os.path.abspath(c) != os.path.abspath(new)), None)
+            if src:
+                import shutil
+                shutil.copy2(src, new)
     except OSError:
         return old
     return new

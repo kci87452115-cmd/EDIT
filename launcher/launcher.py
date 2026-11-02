@@ -5,7 +5,8 @@
   런처\\EditLauncher.exe    런처 + 공용 실행 환경(파이썬·PyMuPDF·Pillow·openpyxl)  ← RADIO·TV 가 같이 씀
   업데이트\\               기본 업데이트 폴더 (catalog.json + 꾸러미 zip). 설정에서 공유 폴더·GitHub 주소로 바꿀 수 있다
   launcher.json             런처 설정
-  radio\\앱\\<id>\\        RADIO 프로그램 (.py + app.json)
+  radio\\앱\\<id>\\        RADIO 프로그램 (.py + app.json)  — 운행표 데이터 편집기
+  TV\\앱\\<id>\\           TV 프로그램                     — 편성표 PDF 편집기
   radio\\데이터\\  radio\\백업\\
   TV\\앱\\  TV\\데이터\\  TV\\백업\\
 
@@ -36,7 +37,7 @@ GROUP_FOLDER = {"radio": "radio", "tv": "TV"}        # C:\\EDIT 아래 폴더 �
 
 APP_INFO = {   # 기본 이름·설명·그룹 (catalog.json 에 있으면 그쪽을 쓴다)
     "runsheet": {"name": "운행표 데이터 편집기", "desc": "운행표 PDF에 광고주 데이터 입력 · 정산 · 일정표", "group": "radio"},
-    "schedule": {"name": "편성표 PDF 편집기", "desc": "편성표 PDF 편집 (칸 색 · 글자 · 분할선)", "group": "radio"},
+    "schedule": {"name": "편성표 PDF 편집기", "desc": "편성표 PDF 편집 (칸 색 · 글자 · 분할선)", "group": "tv"},
 }
 
 
@@ -126,7 +127,9 @@ def save_settings(d):
 
 
 def installed_info(app_id, group=None):
-    for g in ([group] if group else list(GROUPS)):
+    pref = APP_INFO.get(app_id, {}).get("group")
+    order = [group] if group else ([pref] if pref in GROUPS else []) + [g for g in GROUPS if g != pref]
+    for g in order:
         folder = os.path.join(apps_dir(g), app_id)
         try:
             with open(os.path.join(folder, "app.json"), "r", encoding="utf-8") as f:
@@ -287,6 +290,9 @@ def install_app(app_id, cat):
         for d in (data_dir(group), backup_dir(group)):
             os.makedirs(d, exist_ok=True)
         dst = os.path.join(apps_dir(group), app_id)
+        for g in GROUPS:                      # 그룹이 바뀐 앱(예: RADIO -> TV)은 예전 그룹의 설치본을 지운다 (데이터는 그대로)
+            if g != group:
+                shutil.rmtree(os.path.join(apps_dir(g), app_id), ignore_errors=True)
         old = dst + ".old"
         shutil.rmtree(old, ignore_errors=True)
         if os.path.exists(dst):
