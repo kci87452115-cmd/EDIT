@@ -2,8 +2,8 @@
 rem Build RunSheetEditor install package - see the README txt
 cd /d "%~dp0"
 set PY=
-rem 1. WinPython extracted in this folder - no install needed
-for /d %%d in ("%~dp0WPy*") do (
+rem 1. WinPython extracted in this folder - no install needed - WPy64-xxxx or Winpython64-x.x.x.xdot
+for /d %%d in ("%~dp0WPy*" "%~dp0Winpython*") do (
   for /f "delims=" %%p in ('dir /b /s "%%d\python.exe" 2^>nul') do (
     if not defined PY set PY="%%p"
   )
