@@ -1,0 +1,86 @@
+# 코드를 올리면 GitHub의 윈도우 서버가 설치 파일(setup.exe)을 만들어 Releases 에 올립니다.
+# 내 PC에는 파이썬·Inno Setup 이 필요 없습니다.
+name: build-setup
+
+on:
+  push:
+    branches: [main]
+    paths: ["pdf_data_editor.py", "setup.iss", "icon.ico", ".github/workflows/build.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 버전 읽기
+        id: ver
+        shell: pwsh
+        run: |
+          $m = Select-String -Path pdf_data_editor.py -Pattern '^APP_VERSION\s*=\s*"([^"]+)"' -Encoding utf8
+          $v = $m.Matches[0].Groups[1].Value
+          if (-not $v) { throw "APP_VERSION 을 찾지 못했습니다" }
+          "version=$v" >> $env:GITHUB_OUTPUT
+          Write-Host "버전 $v"
+
+      - name: 패키지 설치
+        run: python -m pip install --upgrade pip pyinstaller pymupdf openpyxl
+
+      - name: 프로그램 폴더 만들기 (PyInstaller)
+        shell: pwsh
+        run: |
+          $icon = @()
+          if (Test-Path icon.ico) { $icon = @("--icon", "icon.ico") }
+          python -m PyInstaller --noconfirm --clean --windowed --onedir --name RunSheetEditor --collect-all pymupdf @icon pdf_data_editor.py
+
+      - name: 실행 확인 (가져오기 오류 점검)
+        shell: pwsh
+        run: |
+          if (-not (Test-Path dist\RunSheetEditor\RunSheetEditor.exe)) { throw "exe 가 만들어지지 않았습니다" }
+          python -c "import fitz, openpyxl; print('pymupdf', fitz.VersionBind)"
+
+      - name: 설치 파일 만들기 (Inno Setup)
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            choco install innosetup -y --no-progress
+          }
+          & $iscc "/DAppVer=${{ steps.ver.outputs.version }}" "/DSrcDir=dist\RunSheetEditor" setup.iss
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup 실패" }
+
+      - name: version.json 만들기 (업데이트 폴더용)
+        shell: pwsh
+        run: |
+          $v = "${{ steps.ver.outputs.version }}"
+          $msg = (git log -1 --pretty=%s)
+          @{ version = $v; setup = "RunSheetEditor_setup_$v.exe"; notes = $msg } | ConvertTo-Json | Out-File -Encoding utf8 Output\version.json
+
+      - name: 결과물 보관
+        uses: actions/upload-artifact@v4
+        with:
+          name: RunSheetEditor_setup_${{ steps.ver.outputs.version }}
+          path: |
+            Output/*.exe
+            Output/version.json
+
+      - name: Releases 에 올리기
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.ver.outputs.version }}
+          name: 운행표 편집기 ${{ steps.ver.outputs.version }}
+          body: |
+            설치: RunSheetEditor_setup_${{ steps.ver.outputs.version }}.exe 를 받아 실행하세요 (파이썬 필요 없음).
+            업데이트 배포: exe 와 version.json 두 파일을 업데이트 폴더(C:\RADIO\업데이트 또는 공유 폴더)에 복사하면
+            각 PC가 켤 때 새 버전을 안내합니다.
+          files: |
+            Output/*.exe
+            Output/version.json
