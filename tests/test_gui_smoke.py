@@ -107,21 +107,6 @@ E.selected = set()
 E.mod_shade_enabled = True
 E.draw_pdf()
 
-# 화면 사진 (로그에 작게)
-try:
-    from PIL import ImageGrab
-    root.update()
-    x, y = c.winfo_rootx(), c.winfo_rooty()
-    img = ImageGrab.grab((x, y, x + c.winfo_width(), y + c.winfo_height())).convert("RGB")
-    img.thumbnail((900, 900))
-    buf = io.BytesIO()
-    img.save(buf, "JPEG", quality=60)
-    print("SCREENSHOT_B64_BEGIN")
-    print(base64.b64encode(buf.getvalue()).decode())
-    print("SCREENSHOT_B64_END")
-except Exception as exc:
-    print("화면 사진 실패:", exc)
-
 # 이전 판 작업 옮기기: 4주 1판에서 고치고 -> 3판을 열면 묻고 옮긴다
 def open_pdf(fn):
     E.pdf_path, E.current_page = os.path.join(HERE, "pdfs", fn), 0
@@ -152,6 +137,21 @@ print(f"{'OK  ' if ok else 'FAIL'} 이전 판 옮기기 (화면): 기록 {len(re
       f"음영 옮김={any(b.get('shade') for b in E.blocks)}, 바뀐 칸 표시 {len(E.changed_ids_by_page.get(0) or ())}개")
 if not ok:
     fail.append("carry-over")
+
+# 화면 사진 (로그에 작게)
+try:
+    from PIL import ImageGrab
+    root.update()
+    x, y = c.winfo_rootx(), c.winfo_rooty()
+    img = ImageGrab.grab((x, y, x + c.winfo_width(), y + c.winfo_height())).convert("RGB")
+    img.thumbnail((900, 900))
+    buf = io.BytesIO()
+    img.save(buf, "JPEG", quality=60)
+    print("SCREENSHOT_B64_BEGIN")
+    print(base64.b64encode(buf.getvalue()).decode())
+    print("SCREENSHOT_B64_END")
+except Exception as exc:
+    print("화면 사진 실패:", exc)
 
 root.destroy()
 if fail:
