@@ -1,5 +1,6 @@
 import os
 import sys
+import glob
 import re
 import time
 import datetime
@@ -44,7 +45,7 @@ def schedule_badge_dir():
         return os.path.join(home, "데이터", "편성표", "badges")
     return os.path.abspath("badges")
 
-APP_VERSION = "3.10.6"
+APP_VERSION = "3.11.0"
 
 
 def _detect_profile():
@@ -721,6 +722,137 @@ def detect_day_headers(text_dict, fills):
     return row
 
 
+
+# ---------------------------------------------------------------- 새 판 비교 · 고친 내용 옮기기
+def block_source_texts(words, rects):
+    """원본 PDF 글자 중 각 칸 안에 들어 있는 것을 이어 붙인다 (판끼리 같은 칸인지 비교할 때 씀)."""
+    out = []
+    for r in rects:
+        x0, y0, x1, y1 = r
+        ws = [w for w in words if x0 - 0.5 <= (w[0] + w[2]) / 2 <= x1 + 0.5 and y0 - 0.5 <= (w[1] + w[3]) / 2 <= y1 + 0.5]
+        ws.sort(key=lambda w: (round(w[1]), w[0]))
+        out.append(" ".join(w[4] for w in ws).strip())
+    return out
+
+
+def _norm_text(t):
+    return re.sub(r"\s+", "", t or "")
+
+
+def match_original_blocks(old_initial, new_initial, tol=2.5):
+    """이전 판과 새 판의 '원본 칸'을 짝짓는다 (위치가 tol pt 안이고 원본 글자가 같으면 같은 칸).
+    반환: {이전 칸 id: 새 칸}, 새 판에서 바뀐(짝 없는) 칸 id 집합"""
+    pairs, used = {}, set()
+    for ob in old_initial:
+        ot = _norm_text(ob.get("src_text"))
+        best = None
+        for nb in new_initial:
+            if nb["id"] in used:
+                continue
+            if all(abs(a - c) <= tol for a, c in zip(ob["rect"], nb["rect"])) and _norm_text(nb.get("src_text")) == ot:
+                d = sum(abs(a - c) for a, c in zip(ob["rect"], nb["rect"]))
+                if best is None or d < best[0]:
+                    best = (d, nb)
+        if best:
+            pairs[ob["id"]] = best[1]
+            used.add(best[1]["id"])
+    changed = {nb["id"] for nb in new_initial if nb["id"] not in used}
+    return pairs, changed
+
+
+def _overlap(a, b):
+    w = min(a[2], b[2]) - max(a[0], b[0])
+    h = min(a[3], b[3]) - max(a[1], b[1])
+    return w * h if w > 0 and h > 0 else 0.0
+
+
+def _area(r):
+    return max(0.0, r[2] - r[0]) * max(0.0, r[3] - r[1])
+
+
+_EDIT_KEYS = (("title", ""), ("color", ""), ("text_color", "#000000"), ("font_size_offset", 0), ("text_dx", 0), ("text_dy", 0))
+
+
+def _is_edited(b, initial):
+    if b.get("shade"):
+        return True
+    for ob in initial:
+        if all(abs(a - c) <= 0.5 for a, c in zip(b["rect"], ob["rect"])):
+            return any(b.get(k, d) != ob.get(k, d) for k, d in _EDIT_KEYS) or b.get("options", {}) != ob.get("options", {})
+    return True
+
+
+def transplant_work(old_initial, old_blocks, new_initial, next_id):
+    """이전 판에서 고친 칸을 새 판으로 옮긴다.
+    고친 칸마다 그 자리의 '이전 판 원본 칸'을 찾고, 그 원본 칸이 새 판에도 그대로(위치·글자) 있을 때만 옮긴다.
+    반환: (새 판 칸 목록, 옮긴 칸 수, 못 옮긴 칸 이름들, 새 판에서 바뀐 칸 id 집합, 다음 id)"""
+    pairs, changed = match_original_blocks(old_initial, new_initial)
+    edited = [b for b in old_blocks if _is_edited(b, old_initial)]
+    # 고친 칸 -> 그 자리 원본 칸들
+    src_of = {}
+    for e in edited:
+        srcs = [ob for ob in old_initial
+                if _overlap(e["rect"], ob["rect"]) >= 0.25 * max(1e-6, min(_area(e["rect"]), _area(ob["rect"])))]
+        src_of[e["id"]] = srcs
+    # 원본 칸을 같이 쓰는 고친 칸끼리 한 묶음 (나눈 칸 둘 = 같은 원본)
+    comps, seen = [], set()
+    for e in edited:
+        if e["id"] in seen:
+            continue
+        comp_e, comp_s, stack = [], {}, [e]
+        seen.add(e["id"])
+        while stack:
+            cur = stack.pop()
+            comp_e.append(cur)
+            for ob in src_of[cur["id"]]:
+                comp_s[ob["id"]] = ob
+                for other in edited:
+                    if other["id"] not in seen and any(o["id"] == ob["id"] for o in src_of[other["id"]]):
+                        seen.add(other["id"])
+                        stack.append(other)
+        comps.append((comp_e, list(comp_s.values())))
+    new_blocks = [copy.deepcopy(nb) for nb in new_initial]
+    moved, skipped = 0, []
+    gid_map = {}
+    for comp_e, comp_s in comps:
+        if not comp_s or any(ob["id"] not in pairs for ob in comp_s):
+            skipped += [(b.get("title") or "").replace("\n", " ")[:20] or "(이름 없는 칸)" for b in comp_e]
+            continue
+        o = [min(ob["rect"][0] for ob in comp_s), min(ob["rect"][1] for ob in comp_s),
+             max(ob["rect"][2] for ob in comp_s), max(ob["rect"][3] for ob in comp_s)]
+        ns = [pairs[ob["id"]] for ob in comp_s]
+        n = [min(b["rect"][0] for b in ns), min(b["rect"][1] for b in ns), max(b["rect"][2] for b in ns), max(b["rect"][3] for b in ns)]
+
+        def mx(x):
+            return n[0] + (x - o[0]) * ((n[2] - n[0]) / (o[2] - o[0]) if o[2] > o[0] else 1.0)
+
+        def my(y):
+            return n[1] + (y - o[1]) * ((n[3] - n[1]) / (o[3] - o[1]) if o[3] > o[1] else 1.0)
+
+        drop = {b["id"] for b in ns}
+        new_blocks = [b for b in new_blocks if b["id"] not in drop]
+        for e in comp_e:
+            c = copy.deepcopy(e)
+            c["id"] = next_id
+            next_id += 1
+            x0, y0, x1, y1 = e["rect"]
+            c["rect"] = (round(mx(x0), 2), round(my(y0), 2), round(mx(x1), 2), round(my(y1), 2))
+            c["orig_rect"] = c["rect"]
+            if e.get("group_id") is not None:
+                if e["group_id"] not in gid_map:
+                    gid_map[e["group_id"]] = next_id
+                    next_id += 1
+                c["group_id"] = gid_map[e["group_id"]]
+            # 같은 자리 원본의 테두리 모양은 새 판 것을 쓴다
+            if ns:
+                c["border_color"] = ns[0].get("border_color", c.get("border_color"))
+                c["border_width"] = ns[0].get("border_width", c.get("border_width"))
+            new_blocks.append(c)
+            moved += 1
+    new_blocks.sort(key=lambda b: (b["rect"][1], b["rect"][0]))
+    return new_blocks, moved, skipped, changed, next_id
+
+
 def get_system_korean_font_path(custom_path=None):
     if custom_path and os.path.exists(custom_path) and custom_path.lower().endswith(('.ttf', '.otf', '.ttc')):
         return custom_path
@@ -896,6 +1028,9 @@ class ScheduleEditor:
         self.dmb_day_regions = []               # DMB 요일 칸마다 지난번에 넣은 지역 (다음 주에 그대로 제안)
         self.last_save_dir = ""                 # 마지막으로 PDF 를 저장한 폴더 (편성표·DMB 따로)
         self._shared_last = None
+        self.changed_ids_by_page = {}           # 새 판에서 원본이 바뀐 칸 (이전 판과 비교) - 빨간 점선
+        self.show_changed = True
+        self._offered_carry_for = None
         # 블록 찾기 최소 크기(pt)
         self.detect_min_w = DETECT_MIN_W
         self.detect_min_h = DETECT_MIN_H
@@ -1188,6 +1323,173 @@ class ScheduleEditor:
         except Exception:
             pass
         self._save_shared()
+        self._save_work_record()
+
+    # ------------------------------------------------------------ PDF 별 작업 기록 (다음 판으로 옮길 때 씀)
+    def _work_dir(self):
+        base = os.path.dirname(os.path.abspath(self.backup_file_path))
+        name = "작업기록" if os.environ.get("RADIO_HOME") else f".{PROFILE}_작업기록"
+        return os.path.join(base, name)
+
+    def _save_work_record(self):
+        try:
+            if getattr(self, "_clean_exit", False) or not self.pdf_path or not self.page_blocks:
+                return
+            pages = {}
+            for pg, blocks in self.page_blocks.items():
+                init = self.initial_blocks.get(pg) or []
+                if any(_is_edited(b, init) for b in blocks):
+                    pages[str(pg)] = {"initial": init, "blocks": blocks}
+            hdr = {str(k): v for k, v in self.header_edit.items()}
+            if not pages:
+                return
+            d = self._work_dir()
+            os.makedirs(d, exist_ok=True)
+            fn = re.sub(r'[\\/:*?"<>|]', "_", os.path.basename(self.pdf_path)) + ".json"
+            data = {"pdf_name": os.path.basename(self.pdf_path), "pdf_path": self.pdf_path,
+                    "saved_at": datetime.datetime.now().isoformat(timespec="seconds"), "pages": pages, "header_edit": hdr}
+            text = json.dumps(data, ensure_ascii=False, default=list)
+            with open(os.path.join(d, fn + ".tmp"), "w", encoding="utf-8") as f:
+                f.write(text)
+            os.replace(os.path.join(d, fn + ".tmp"), os.path.join(d, fn))
+            olds = sorted(glob.glob(os.path.join(d, "*.json")), key=os.path.getmtime)
+            for old in olds[:-80]:
+                os.remove(old)
+        except Exception:
+            pass
+
+    def _list_work_records(self):
+        out = []
+        for path in glob.glob(os.path.join(self._work_dir(), "*.json")):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, dict) and isinstance(data.get("pages"), dict):
+                    data["_file"] = path
+                    out.append(data)
+            except Exception:
+                continue
+        out.sort(key=lambda d: d.get("saved_at", ""), reverse=True)
+        return out
+
+    @staticmethod
+    def _week_key(name):
+        m = re.search(r"_(\d{1,2})__(\d)", name or "")
+        return (int(m.group(1)), int(m.group(2))) if m else None
+
+    def _carry_candidate(self):
+        """지금 연 PDF 에 옮겨 올 만한 이전 판 작업: 같은 주(파일 이름의 월·주) -> 없으면 최근 3주 안의 가장 최근 것."""
+        me = os.path.basename(self.pdf_path or "")
+        recs = [r for r in self._list_work_records() if str(self.current_page) in r["pages"]]
+        same = [r for r in recs if r.get("pdf_name") != me and self._week_key(r.get("pdf_name")) and self._week_key(r.get("pdf_name")) == self._week_key(me)]
+        if same:
+            return same[0]
+        cutoff = (datetime.datetime.now() - datetime.timedelta(days=21)).isoformat()
+        recent = [r for r in recs if r.get("pdf_name") != me and r.get("saved_at", "") >= cutoff]
+        return recent[0] if recent else None
+
+    def apply_work_record(self, rec, quiet=False):
+        """이전 판 작업 기록을 지금 페이지에 옮긴다."""
+        pg = str(self.current_page)
+        page = (rec.get("pages") or {}).get(pg)
+        init_new = self.initial_blocks.get(self.current_page) or []
+        if not page or not init_new:
+            if not quiet:
+                messagebox.showinfo("이전 판 가져오기", "옮길 작업이 없습니다.", parent=self.root)
+            return None
+        for b in page["initial"] + page["blocks"]:
+            b["rect"] = tuple(b["rect"])
+        self.push_history()
+        new_blocks, moved, skipped, changed, self.next_id = transplant_work(page["initial"], page["blocks"], init_new, self.next_id)
+        self.blocks = new_blocks
+        self.page_blocks[self.current_page] = self.blocks
+        for gid in {b.get("group_id") for b in self.blocks if b.get("group_id") is not None}:
+            self._recompute_rel_boxes(gid)
+        self.changed_ids_by_page[self.current_page] = set(changed)
+        self.show_changed = True
+        # 머리글: 지역·제목 크기·굵게는 이어받고, 날짜는 새 판 것을 쓴다
+        old_h = (rec.get("header_edit") or {}).get(pg) or {}
+        st = self._header_state()
+        for k in ("title_size", "title_bold"):
+            if k in old_h:
+                st[k] = old_h[k]
+        if isinstance(old_h.get("days"), list) and len(old_h["days"]) == len(st.get("days") or []):
+            for v, ov in zip(st["days"], old_h["days"]):
+                if isinstance(ov, dict) and ov.get("region"):
+                    v["region"] = ov["region"]
+            st["days_on"] = bool(old_h.get("days_on", st.get("days_on")))
+        self.selected = set()
+        self.draw_pdf()
+        try:
+            self._build_pdf_sidebar()          # 머리글 지역·바뀐 칸 표시 줄 다시 그리기
+        except Exception:
+            pass
+        self.save_autosave()
+        msg = (f"'{rec.get('pdf_name')}' 에서 고친 칸 {moved}개를 옮겼습니다.\n"
+               f"이 판에서 원본이 바뀐 칸: {len(changed)}개 (빨간 점선으로 표시)")
+        if skipped:
+            msg += (f"\n\n원본이 바뀌어 옮기지 않은 칸 {len(skipped)}개 - 다시 확인해 주세요:\n  "
+                    + "\n  ".join(skipped[:12]) + ("\n  …" if len(skipped) > 12 else ""))
+        if not quiet:
+            messagebox.showinfo("이전 판 가져오기", msg, parent=self.root)
+        return moved, skipped, changed
+
+    def offer_carry_over(self):
+        if not self.pdf_path or self._offered_carry_for == (self.pdf_path, self.current_page):
+            return
+        self._offered_carry_for = (self.pdf_path, self.current_page)
+        if any(_is_edited(b, self.initial_blocks.get(self.current_page) or []) for b in self.blocks):
+            return                               # 이미 작업 중(복구한 것 등)이면 묻지 않는다
+        rec = self._carry_candidate()
+        if not rec:
+            return
+        n = sum(1 for b in rec["pages"][str(self.current_page)]["blocks"] if _is_edited(b, rec["pages"][str(self.current_page)]["initial"]))
+        when = rec.get("saved_at", "").replace("T", " ")[:16]
+        if messagebox.askyesno("이전 판 작업 가져오기",
+                               f"이전 판 '{rec.get('pdf_name')}' ({when} 작업)에서 고친 칸 {n}개가 있습니다.\n\n"
+                               "이 판으로 옮길까요?\n(원본이 그대로인 칸만 옮기고, 이 판에서 바뀐 칸은 빨간 점선으로 표시합니다)",
+                               parent=self.root):
+            self.apply_work_record(rec)
+
+    def choose_work_record(self):
+        """툴바 [📥 이전 판 가져오기]: 작업 기록 목록에서 골라 옮긴다."""
+        if not self.pdf_path:
+            return
+        me = os.path.basename(self.pdf_path)
+        recs = [r for r in self._list_work_records() if r.get("pdf_name") != me and str(self.current_page) in r["pages"]]
+        if not recs:
+            messagebox.showinfo("이전 판 가져오기", "옮길 수 있는 작업 기록이 아직 없습니다.\n(PDF를 고치면 파일마다 자동으로 기록됩니다)", parent=self.root)
+            return
+        win = tk.Toplevel(self.root)
+        win.title("이전 판 작업 가져오기")
+        win.transient(self.root)
+        win.geometry("520x360")
+        ttk.Label(win, text="어느 PDF에서 고친 내용을 이 판으로 옮길까요? (위가 최근)", padding=(10, 8, 10, 2)).pack(anchor="w")
+        lb = tk.Listbox(win, font=(self.ui_font_family, 10), activestyle="dotbox")
+        lb.pack(fill="both", expand=True, padx=10, pady=4)
+        wk = self._week_key(me)
+        for r in recs[:40]:
+            tag = "  ★ 같은 주" if wk and self._week_key(r.get("pdf_name")) == wk else ""
+            lb.insert("end", f"{r.get('saved_at', '').replace('T', ' ')[:16]}   {r.get('pdf_name')}{tag}")
+        lb.selection_set(0)
+
+        def go(*_a):
+            sel = lb.curselection()
+            if not sel:
+                return
+            win.destroy()
+            if any(_is_edited(b, self.initial_blocks.get(self.current_page) or []) for b in self.blocks):
+                if not messagebox.askyesno("이전 판 가져오기", "지금 화면에서 고친 내용이 있습니다.\n이전 판 작업으로 바꿀까요? (Ctrl+Z 로 되돌릴 수 있음)", parent=self.root):
+                    return
+                self.blocks = copy.deepcopy(self.initial_blocks.get(self.current_page) or [])
+                self.page_blocks[self.current_page] = self.blocks
+            self.apply_work_record(recs[sel[0]])
+
+        lb.bind("<Double-Button-1>", go)
+        bf = ttk.Frame(win, padding=(10, 0, 10, 10))
+        bf.pack(fill="x")
+        ttk.Button(bf, text="옮기기", command=go).pack(side="right")
+        ttk.Button(bf, text="닫기", command=win.destroy).pack(side="right", padx=6)
 
     def _shared_values(self):
         return {k: copy.deepcopy(getattr(self, k)) for k in SHARED_KEYS}
@@ -1360,6 +1662,7 @@ class ScheduleEditor:
         ttk.Button(self.toolbar, text="선택 블록 합치기", command=self.merge_selected).pack(side="left", padx=3)
         ttk.Button(self.toolbar, text="삭제 (Del)", command=self.delete_selected_blocks).pack(side="left", padx=3)
         ttk.Button(self.toolbar, text="작업 초기화", command=self.clear_all_blocks).pack(side="left", padx=3)
+        ttk.Button(self.toolbar, text="📥 이전 판 가져오기", command=self.choose_work_record).pack(side="left", padx=3)
         
         ttk.Button(self.toolbar, text="🔍 저장 전 미리보기", command=self.preview_pdf).pack(side="left", padx=3)
         ttk.Button(self.toolbar, text=("💾 DMB PDF 저장" if IS_DMB else "PDF 저장 (다운로드)"), command=self.export_pdf).pack(side="left", padx=3)
@@ -1660,6 +1963,18 @@ class ScheduleEditor:
 
         self.mod_count_lbl = ttk.Label(f, text="수정된 블록: 0개", font=(self.ui_font_family, 8), foreground="#2563eb")
         self.mod_count_lbl.pack(anchor="w", pady=(2, 0))
+        ch = self.changed_ids_by_page.get(self.current_page) or set()
+        if ch:
+            row_ch = ttk.Frame(f)
+            row_ch.pack(fill="x", pady=(2, 0))
+            show = tk.BooleanVar(value=self.show_changed)
+
+            def toggle_changed():
+                self.show_changed = bool(show.get())
+                self.draw_pdf(refresh_sidebar=False)
+
+            ttk.Checkbutton(row_ch, text=f"이전 판과 달라진 칸 {len(ch)}개 표시 (빨간 점선)", variable=show,
+                            command=toggle_changed).pack(side="left")
         self._refresh_mod_labels()
 
     def _refresh_mod_labels(self):
@@ -1908,6 +2223,7 @@ class ScheduleEditor:
         self.page_blocks = {}
         self.initial_blocks = {}
         self.header_edit = {}
+        self.changed_ids_by_page = {}
         self.split_mode_var.set(False)
         self.base_pdf_bytes = None
         self.orig_lines = {}
@@ -1981,11 +2297,24 @@ class ScheduleEditor:
                         "rel_box": None,
                     })
                     self.next_id += 1
+                try:   # 판 비교용: 칸 안의 원본 글자
+                    for _b, _t in zip(detected_blocks, block_source_texts(page.get_text("words"), [d["rect"] for d in detected_blocks])):
+                        _b["src_text"] = _t
+                except Exception:
+                    pass
                 self._detect_note = f"블록 {len(detected_blocks)}개를 찾았습니다 ({method} 기준"\
                                     f", 높이 10pt 미만 작은 칸 {sum(1 for x in found if x['rect'][3] - x['rect'][1] < 10)}개 포함)."
                 self.__dict__.setdefault("orig_lines", {})[page_idx] = _collect_line_segments(drawings)
                 self.page_blocks[page_idx] = detected_blocks
                 self.initial_blocks[page_idx] = copy.deepcopy(detected_blocks)
+
+            _init = self.initial_blocks.get(page_idx) or []
+            if _init and any("src_text" not in b for b in _init):     # 예전 자동 저장에서 이어받은 원본 칸: 판 비교용 글자 채우기
+                try:
+                    for _b, _t in zip(_init, block_source_texts(page.get_text("words"), [tuple(b["rect"]) for b in _init])):
+                        _b["src_text"] = _t
+                except Exception:
+                    pass
 
             if page_idx not in self.__dict__.setdefault("orig_lines", {}):
                 self.orig_lines[page_idx] = _collect_line_segments(page.get_drawings())
@@ -2053,6 +2382,10 @@ class ScheduleEditor:
         warn = getattr(self, "_clear_fill_warning", None)
         if warn:
             messagebox.showwarning("채우기 제거 안내", warn)
+        try:
+            self.offer_carry_over()
+        except Exception:
+            pass
 
     def bind_pdf_events(self):
         self.canvas.bind("<Button-1>", self.on_press_pdf)
@@ -2456,6 +2789,12 @@ class ScheduleEditor:
                         sx = x0 + step_w * i
                         c.create_line(sx, y0, sx, y1, fill="#10b981", dash=(4, 4), width=2)
 
+        if self.show_changed:
+            ch = self.changed_ids_by_page.get(self.current_page) or set()
+            for b in self.blocks:
+                if b["id"] in ch:
+                    x0, y0, x1, y1 = self._xy(b["rect"])
+                    c.create_rectangle(x0 + 1, y0 + 1, x1 - 1, y1 - 1, outline="#dc2626", width=2, dash=(5, 3))
         self._update_mod_count()
         if refresh_sidebar:
             self.update_sidebar_info()

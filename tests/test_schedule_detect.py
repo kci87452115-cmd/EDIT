@@ -157,3 +157,55 @@ doc.close()
 if fail3:
     sys.exit(f"DMB 점검 실패: {fail3}")
 print("DMB 요일 칸·제목 점검 통과")
+
+
+# ---------------------------------------------------------------- 새 판 비교 · 고친 내용 옮기기
+print()
+fail4 = []
+
+
+def load_initial(fn):
+    doc = pymupdf.open(os.path.join(HERE, "pdfs", fn))
+    page = doc.load_page(0)
+    found, _ = ui.detect_schedule_blocks(page.get_drawings(), tuple(page.rect))
+    texts = ui.block_source_texts(page.get_text("words"), [f["rect"] for f in found])
+    out = [{"id": i + 1, "title": "", "color": "", "text_color": "#000000", "font_size_offset": 0, "options": {},
+            "rect": tuple(f["rect"]), "orig_rect": tuple(f["rect"]), "group_id": None, "rel_box": None,
+            "border_color": f["border_color"], "border_width": f["border_width"], "orig_fill": f["orig_fill"], "src_text": t}
+           for i, (f, t) in enumerate(zip(found, texts))]
+    doc.close()
+    return out
+
+
+for old_fn, new_fn in (("mbc_4_1.pdf", "mbc_4_3.pdf"), ("mbc_1_6.pdf", "mbc_1_7.pdf"), ("mbc_5_1_3.pdf", "mbc_5_2.pdf")):
+    old_init, new_init = load_initial(old_fn), load_initial(new_fn)
+    pairs, changed = ui.match_original_blocks(old_init, new_init)
+    same = [ob for ob in old_init if ob["id"] in pairs and (ob["rect"][3] - ob["rect"][1]) > 12]
+    diff = [ob for ob in old_init if ob["id"] not in pairs and (ob["rect"][3] - ob["rect"][1]) > 12]
+    blocks = [dict(b) for b in old_init]
+    byid = {b["id"]: b for b in blocks}
+    # 고친 것: 같은 칸 3개 이름 바꾸기, 1개 음영, 1개 둘로 나누기, 바뀐 칸 1개 이름 바꾸기(옮기면 안 됨)
+    for k, ob in enumerate(same[:3]):
+        byid[ob["id"]]["title"] = f"바꾼이름{k}"
+    byid[same[3]["id"]]["shade"] = "#86efac"
+    sp = byid[same[4]["id"]]
+    x0, y0, x1, y1 = sp["rect"]
+    mid = round((y0 + y1) / 2, 2)
+    a, b = dict(sp, id=9001, rect=(x0, y0, x1, mid), group_id=777, title="위칸"), dict(sp, id=9002, rect=(x0, mid, x1, y1), group_id=777, title="아래칸")
+    blocks = [x for x in blocks if x["id"] != sp["id"]] + [a, b]
+    want_skip = 0
+    if diff:
+        next(x for x in blocks if x["id"] == diff[0]["id"])["title"] = "옮기면안됨"
+        want_skip = 1
+    res, moved, skipped, ch, _nid = ui.transplant_work(old_init, blocks, new_init, 10000)
+    titles = {x.get("title") for x in res}
+    ok = (moved == 6 and len(skipped) == want_skip and {"바꾼이름0", "바꾼이름1", "바꾼이름2", "위칸", "아래칸"} <= titles
+          and "옮기면안됨" not in titles and sum(1 for x in res if x.get("shade")) == 1
+          and len(res) == len(new_init) + 1 and 0 < len(ch) < len(new_init))
+    print(f"{'OK  ' if ok else 'FAIL'} 판 옮기기 {old_fn} -> {new_fn}: 같은 칸 {len(pairs)}/{len(old_init)}, 새 판에서 바뀐 칸 {len(ch)}, "
+          f"옮김 {moved}, 못 옮김 {len(skipped)} (기대 {want_skip}), 칸 수 {len(res)} = {len(new_init)}+1")
+    if not ok:
+        fail4.append(old_fn)
+if fail4:
+    sys.exit(f"판 옮기기 점검 실패: {fail4}")
+print("새 판 비교·옮기기 점검 통과")

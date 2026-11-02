@@ -122,6 +122,37 @@ try:
 except Exception as exc:
     print("화면 사진 실패:", exc)
 
+# 이전 판 작업 옮기기: 4주 1판에서 고치고 -> 3판을 열면 묻고 옮긴다
+def open_pdf(fn):
+    E.pdf_path, E.current_page = os.path.join(HERE, "pdfs", fn), 0
+    E.page_blocks, E.initial_blocks, E.header_edit, E.changed_ids_by_page = {}, {}, {}, {}
+    E._load_pdf_worker_locked(E.pdf_path, 0)
+    for _ in range(30):
+        root.update()
+
+ui.messagebox.askyesno = lambda *a, **k: True
+open_pdf("mbc_4_1.pdf")
+import pymupdf
+_d = pymupdf.open(os.path.join(HERE, "pdfs", "mbc_4_3.pdf"))
+_nt = ui.block_source_texts(_d[0].get_text("words"), [b["rect"] for b in E.blocks])
+_d.close()
+big = [b for b, nt in zip(E.blocks, _nt) if b.get("src_text") and nt == b["src_text"] and b["rect"][3] - b["rect"][1] > 15][:3]
+E.selected = {big[0]["id"]}
+E.shade_selected("#fde047")
+big[1]["title"] = "옮겨질 이름"
+E.save_autosave()
+recs = E._list_work_records()
+open_pdf("mbc_4_3.pdf")
+E._offered_carry_for = None
+E.offer_carry_over()
+titles = [b.get("title") for b in E.blocks]
+ok = (len(recs) >= 1 and "옮겨질 이름" in titles and any(b.get("shade") for b in E.blocks)
+      and len(E.changed_ids_by_page.get(0) or ()) > 0)
+print(f"{'OK  ' if ok else 'FAIL'} 이전 판 옮기기 (화면): 기록 {len(recs)}개, 이름 옮김={'옮겨질 이름' in titles}, "
+      f"음영 옮김={any(b.get('shade') for b in E.blocks)}, 바뀐 칸 표시 {len(E.changed_ids_by_page.get(0) or ())}개")
+if not ok:
+    fail.append("carry-over")
+
 root.destroy()
 if fail:
     sys.exit(f"화면 점검 실패: {fail}")
