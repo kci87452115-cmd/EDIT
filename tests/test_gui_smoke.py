@@ -74,6 +74,12 @@ if n_img <= 50:
 E.shade_target = "both"
 E.draw_pdf()
 
+# 닫기 확인: 막 저장한 상태 -> 저장할 것 없음, 음영을 넣으면 -> 저장 안 한 작업
+E._mark_saved()
+clean_before = not E._has_unsaved_work()
+E.on_closing_app()          # askokcancel=False 로 바꿔 두었으므로 닫히지 않아야 한다
+alive = bool(root.winfo_exists())
+
 # 여러 칸 골라 음영 넣기 / 빼기 (H)
 E.mod_shade_enabled = False
 E.selected = {b["id"] for b in E.blocks[:5]}
@@ -85,6 +91,10 @@ E.toggle_pick_shade()
 n2 = sum(1 for b in E.blocks if b.get("shade"))
 E.toggle_pick_shade()
 ok = n1 == 5 and n_img1 == 5 and n2 == 0 and sum(1 for b in E.blocks if b.get("shade")) == 5
+dirty = E._has_unsaved_work()
+print(f"{'OK  ' if (clean_before and alive and dirty) else 'FAIL'} 닫기 확인: 저장 직후 깨끗={clean_before}, X 눌러도 안 닫힘={alive}, 음영 뒤 저장할 것 있음={dirty}")
+if not (clean_before and alive and dirty):
+    fail.append("close-confirm")
 print(f"{'OK  ' if ok else 'FAIL'} 선택 칸 음영: 넣기 {n1}칸, 화면 {n_img1}개, H로 빼기 후 {n2}칸")
 if not ok:
     fail.append("pick-shade")

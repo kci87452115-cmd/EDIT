@@ -44,7 +44,7 @@ def schedule_badge_dir():
         return os.path.join(home, "데이터", "편성표", "badges")
     return os.path.abspath("badges")
 
-APP_VERSION = "3.10.4"
+APP_VERSION = "3.10.5"
 
 
 def _detect_profile():
@@ -1069,18 +1069,39 @@ class ScheduleEditor:
         self.save_autosave()
         self.root.destroy()
 
+    def _work_sig(self):
+        """지금 작업 상태(칸·음영·제목·날짜·요일 칸)를 한 줄로 - 마지막 저장 때와 비교해 바뀐 게 있는지 본다."""
+        try:
+            return json.dumps([self.pdf_path, self._snapshot_blocks(), self.header_edit], sort_keys=True, default=str)
+        except Exception:
+            return None
+
+    def _mark_saved(self):
+        self._saved_sig = self._work_sig()
+
+    def _has_unsaved_work(self):
+        if not self.pdf_path:
+            return False
+        sig = self._work_sig()
+        return sig is None or sig != getattr(self, "_saved_sig", None)
+
     def on_closing_app(self):
+        """X 를 눌러도 바로 닫지 않고 물어본다. 저장 안 한 작업이 있으면 저장할지도 묻는다."""
         self.save_autosave()
-        if self.pdf_path and any(self._is_modified(b) for b in self.blocks):
-            ans = messagebox.askyesnocancel("종료 확인", "작업 중인 내용이 있습니다.\nPDF로 저장하고 종료하시겠습니까?\n(아니오: 저장하지 않고 종료)")
+        name = "DMB 편성 편집기" if IS_DMB else "편성표 PDF 편집기"
+        if self._has_unsaved_work():
+            ans = messagebox.askyesnocancel(
+                "종료 확인",
+                "저장하지 않은 작업이 있습니다.\n\nPDF로 저장하고 종료할까요?\n\n"
+                "  예 : 저장하고 종료\n  아니오 : 저장하지 않고 종료\n  취소 : 계속 작업",
+                icon="warning", default="cancel", parent=self.root)
             if ans is True:
                 if self.export_pdf():
                     self._exit_clean()
             elif ans is False:
                 self._exit_clean()
-            else:
-                return
-        else:
+            return
+        if messagebox.askokcancel("종료 확인", f"{name}를 종료할까요?", default="cancel", parent=self.root):
             self._exit_clean()
 
     def push_history(self):
@@ -2024,6 +2045,10 @@ class ScheduleEditor:
         fill_rep = getattr(self, "_fill_report", "")
         if fill_rep:
             load_msg += "\n\n" + fill_rep
+        if not any(self._is_modified(b) or b.get("shade") for b in self.blocks):
+            self.root.after(300, self._mark_saved)     # 막 연 그대로면 '저장할 것 없음' (머리글 기본값이 채워진 뒤)
+        else:
+            self._saved_sig = None                     # 이어서 하던 작업(복구)은 저장 전
         messagebox.showinfo("페이지 로드 완료", load_msg)
         warn = getattr(self, "_clear_fill_warning", None)
         if warn:
@@ -3344,6 +3369,7 @@ class ScheduleEditor:
                 pdf_bytes = self._generate_pdf_bytes()
             with open(out_path, "wb") as f:
                 f.write(pdf_bytes)
+            self._mark_saved()
             messagebox.showinfo("저장 완료", f"PDF 파일이 성공적으로 저장되었습니다:\n{out_path}")
             return True
         except Exception as e:

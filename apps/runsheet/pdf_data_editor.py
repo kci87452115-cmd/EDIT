@@ -25,7 +25,7 @@ except ImportError:
     except ImportError:
         fitz = None
 
-APP_VERSION = "2.2.0"
+APP_VERSION = "2.2.1"
 APP_TITLE = f"운행표 데이터 편집기 v{APP_VERSION}"
 APP_MUTEX = "RunSheetEditor_Running"      # 설치 프로그램이 '실행 중'을 알아보는 이름 (setup.iss 의 AppMutex 와 같아야 함)
 RUN_BY_LAUNCHER = bool(os.environ.get("RADIO_LAUNCHER"))   # 편집 프로그램 런처로 실행됨 -> 업데이트는 런처가 한다
@@ -4657,6 +4657,8 @@ Start-Process (Join-Path $prog 'RunSheetEditor.exe') -WorkingDirectory $prog
                     self._activate(t)
                     if not self.export_pdf():      # 저장 창에서 취소하면 종료도 멈춘다
                         return
+        elif not messagebox.askokcancel("종료 확인", "운행표 데이터 편집기를 종료할까요?", default="cancel", parent=self.root):
+            return                                 # X 를 실수로 눌러도 바로 닫히지 않게
         self._finish_exit()
 
 
