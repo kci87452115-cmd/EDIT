@@ -25,9 +25,10 @@ except ImportError:
     except ImportError:
         fitz = None
 
-APP_VERSION = "2.1.0"
+APP_VERSION = "2.2.0"
 APP_TITLE = f"운행표 데이터 편집기 v{APP_VERSION}"
 APP_MUTEX = "RunSheetEditor_Running"      # 설치 프로그램이 '실행 중'을 알아보는 이름 (setup.iss 의 AppMutex 와 같아야 함)
+RUN_BY_LAUNCHER = bool(os.environ.get("RADIO_LAUNCHER"))   # RADIO 런처로 실행됨 -> 업데이트는 런처가 한다
 
 # ---- 폴더 구조 ---------------------------------------------------------------
 #   C:\RADIO\프로그램\RunSheetEditor.exe   ← 업데이트 때 이 폴더만 바뀐다
@@ -40,7 +41,7 @@ def _app_root():
         return os.environ["RADIO_HOME"]
     if getattr(sys, "frozen", False):                       # exe 로 실행: ...\RADIO\프로그램\RunSheetEditor.exe
         base = os.path.dirname(os.path.abspath(sys.executable))
-        return os.path.dirname(base) if os.path.basename(base) in ("프로그램", "program") else base
+        return os.path.dirname(base) if os.path.basename(base) in ("프로그램", "program", "런처") else base
     return r"C:\RADIO" if os.name == "nt" else os.path.join(os.path.expanduser("~"), "RADIO")
 
 
@@ -1112,7 +1113,7 @@ class DataEditor:
         if startup_note:
             self.root.after(300, lambda: messagebox.showinfo("데이터 준비", startup_note))
         self.startup_backup()
-        if self.update_check:
+        if self.update_check and not RUN_BY_LAUNCHER:
             self.root.after(1500, lambda: self.check_update(quiet=True))
 
     # ------------------------------------------------------------------ 설정 / DB
@@ -1258,7 +1259,7 @@ class DataEditor:
         ttk.Label(win, text=f"※ 백업 폴더를 비워 두면 {BACKUP_DIR} 을 씁니다. OneDrive·구글드라이브 폴더로 지정하면 다른 곳에도 보관됩니다.\n   복원: 백업 파일을 복사해 데이터 파일(.db) 이름으로 바꾸면 됩니다.",
                   font=(self.ui_font_family, 8), foreground="#666", wraplength=560, justify="left").pack(anchor="w", padx=15, pady=(4, 0))
 
-        ttk.Label(win, text="업데이트", font=(self.ui_font_family, 10, "bold")).pack(anchor="w", padx=15, pady=(14, 2))
+        ttk.Label(win, text="업데이트" + ("  (RADIO 런처에서 관리합니다)" if RUN_BY_LAUNCHER else ""), font=(self.ui_font_family, 10, "bold")).pack(anchor="w", padx=15, pady=(14, 2))
         r5 = ttk.Frame(win)
         r5.pack(fill="x", **pad)
         uvar = tk.StringVar(value=self.update_dir)
@@ -1320,6 +1321,10 @@ class DataEditor:
         """업데이트 폴더의 version.json 을 보고 새 버전이 있으면 업데이트할지 묻는다.
         quiet=True(켤 때): 폴더가 없거나 최신이면 아무 말도 하지 않는다."""
         owner = parent or self.root
+        if RUN_BY_LAUNCHER:
+            if not quiet:
+                messagebox.showinfo("업데이트 확인", "업데이트는 RADIO 런처에서 합니다.\n런처 화면에서 [업데이트]를 눌러 주세요.", parent=owner)
+            return
         info = read_update_info(self.update_dir)
         if info is None:
             if not quiet:
