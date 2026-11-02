@@ -42,7 +42,7 @@ def schedule_badge_dir():
         return os.path.join(home, "데이터", "편성표", "badges")
     return os.path.abspath("badges")
 
-APP_VERSION = "3.9.31"
+APP_VERSION = "3.9.32"
 APP_TITLE = f"편성표 PDF 스마트 편집기 v{APP_VERSION} (Full Integrated Edition)"
 
 
@@ -73,11 +73,22 @@ def schedule_settings_path():
 
 
 def _rgb_to_hex(c):
-    """PyMuPDF 색(0~1 RGB 튜플) -> '#rrggbb'. 없거나 변환 실패 시 ''."""
+    """PyMuPDF 색(0~1, 회색 1값 / RGB 3값 / CMYK 4값) -> '#rrggbb'. 없거나 변환 실패 시 ''.
+    (엑셀에서 인쇄한 PDF는 회색 칸을 회색 1값(예: 0.85)으로 쓴다)"""
     try:
-        if not c:
+        if c is None:
             return ""
-        return "#%02x%02x%02x" % tuple(max(0, min(255, int(round(v * 255)))) for v in c[:3])
+        if isinstance(c, (int, float)):
+            c = (c,)
+        c = [float(v) for v in c]
+        if len(c) == 1:
+            c = [c[0]] * 3
+        elif len(c) == 4:
+            k = c[3]
+            c = [(1 - c[0]) * (1 - k), (1 - c[1]) * (1 - k), (1 - c[2]) * (1 - k)]
+        elif len(c) != 3:
+            return ""
+        return "#%02x%02x%02x" % tuple(max(0, min(255, int(round(v * 255)))) for v in c)
     except Exception:
         return ""
 
