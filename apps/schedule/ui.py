@@ -1,4 +1,5 @@
 import os
+import sys
 import re
 import time
 import datetime
@@ -43,8 +44,24 @@ def schedule_badge_dir():
         return os.path.join(home, "데이터", "편성표", "badges")
     return os.path.abspath("badges")
 
-APP_VERSION = "3.9.33"
-APP_TITLE = f"편성표 PDF 스마트 편집기 v{APP_VERSION} (Full Integrated Edition)"
+APP_VERSION = "3.10.0"
+
+
+def _detect_profile():
+    """같은 프로그램을 두 가지로 쓴다: 편성표 편집기(schedule) / DMB 편성 편집기(dmb).
+    런처에서 'dmb' 로 실행하거나, dmb.py 로 실행하거나, --dmb 를 붙이면 DMB."""
+    if os.environ.get("RADIO_APP_ID") == "dmb" or os.environ.get("EDIT_PROFILE") == "dmb" or "--dmb" in sys.argv:
+        return "dmb"
+    return "schedule"
+
+
+PROFILE = _detect_profile()
+IS_DMB = PROFILE == "dmb"
+APP_TITLE = (f"DMB 편성 편집기 v{APP_VERSION}" if IS_DMB
+             else f"편성표 PDF 스마트 편집기 v{APP_VERSION} (Full Integrated Edition)")
+# 편성표 편집기와 DMB 편집기가 같이 쓰는 것 (나머지 설정·자동 저장·머리글은 따로)
+SHARED_KEYS = ("title_presets", "favorite_presets", "custom_badge_paths", "global_font_path")
+DMB_REGIONS = ["광주", "전주", "여수", "목포"]
 
 
 def schedule_settings_path():
@@ -52,6 +69,15 @@ def schedule_settings_path():
     따로 실행하면 예전처럼 사용자 폴더. 새 위치가 비어 있으면 예전 설정을 한 번 복사해 이어받는다."""
     old = os.path.join(os.path.expanduser("~"), ".schedule_editor_settings.json")
     home = os.environ.get("RADIO_HOME")
+    if IS_DMB:   # DMB 는 따로: C:\\EDIT\\TV\\데이터\\DMB\\settings.json
+        if not home:
+            return os.path.join(os.path.expanduser("~"), ".dmb_editor_settings.json")
+        d = os.path.join(home, "데이터", "DMB")
+        try:
+            os.makedirs(d, exist_ok=True)
+        except OSError:
+            return os.path.join(os.path.expanduser("~"), ".dmb_editor_settings.json")
+        return os.path.join(d, "settings.json")
     if not home:
         return old
     new_dir = os.path.join(home, "데이터", "편성표")
@@ -71,6 +97,43 @@ def schedule_settings_path():
     except OSError:
         return old
     return new
+
+
+def shared_settings_path():
+    """두 편집기가 같이 쓰는 것(★ 칸 이름, 즐겨찾기 색, 뱃지, 글꼴) - C:\\EDIT\\TV\\데이터\\공용\\shared.json"""
+    home = os.environ.get("RADIO_HOME")
+    if not home:
+        return os.path.join(os.path.expanduser("~"), ".edit_tv_shared.json")
+    return os.path.join(home, "데이터", "공용", "shared.json")
+
+
+def read_shared_settings():
+    """같이 쓰는 설정. 아직 없으면 편성표 편집기 설정에서 이어받는다."""
+    cands = [shared_settings_path()]
+    home = os.environ.get("RADIO_HOME")
+    cands.append(os.path.join(home, "데이터", "편성표", "settings.json") if home
+                 else os.path.join(os.path.expanduser("~"), ".schedule_editor_settings.json"))
+    for path in cands:
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                return {k: data[k] for k in SHARED_KEYS if k in data}
+        except (OSError, ValueError):
+            continue
+    return {}
+
+
+def write_shared_settings(values):
+    path = shared_settings_path()
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        text = json.dumps(values, ensure_ascii=False)
+        with open(path + ".tmp", "w", encoding="utf-8") as f:
+            f.write(text)
+        os.replace(path + ".tmp", path)
+    except OSError:
+        pass
 
 
 def _rgb_to_hex(c):
@@ -613,6 +676,51 @@ def detect_header(text_dict, images, table_top, page_rect):
     return {"title": title, "date": date}
 
 
+_DAY_RE = re.compile(r"^(\d{1,2})/(\d{1,2})\s*\(([월화수목금토일])\)")
+
+
+def detect_day_headers(text_dict, fills):
+    """표 머리의 요일 칸 글자('11/2(월)')를 찾는다 (DMB 에서 '11/2(월)전주' 로 바꾸는 자리).
+    반환: 왼쪽부터 [{"rect", "text", "size", "cx", "cy", "cell_w", "fill"}] (3개 미만이면 [])"""
+    found = []
+    for b in (text_dict or {}).get("blocks", []):
+        for ln in b.get("lines", []):
+            spans = [sp for sp in ln.get("spans", []) if sp.get("text", "").strip()]
+            if not spans:
+                continue
+            text = "".join(sp["text"] for sp in spans).strip()
+            if not _DAY_RE.match(text) or len(text) > 14:
+                continue
+            x0 = min(sp["bbox"][0] for sp in spans); y0 = min(sp["bbox"][1] for sp in spans)
+            x1 = max(sp["bbox"][2] for sp in spans); y1 = max(sp["bbox"][3] for sp in spans)
+            found.append({"rect": (x0, y0, x1, y1), "text": text, "size": max(sp.get("size", 0) for sp in spans)})
+    if len(found) < 3:
+        return []
+    # 같은 높이에 가장 많이 모인 줄만 (표 머리)
+    rows = {}
+    for d in found:
+        rows.setdefault(round((d["rect"][1] + d["rect"][3]) / 4), []).append(d)
+    row = sorted(max(rows.values(), key=len), key=lambda d: d["rect"][0])
+    if len(row) < 3:
+        return []
+    cxs = [(d["rect"][0] + d["rect"][2]) / 2 for d in row]
+    for i, d in enumerate(row):
+        gaps = [abs(cxs[i] - cxs[j]) for j in (i - 1, i + 1) if 0 <= j < len(row)]
+        d["cx"] = cxs[i]
+        d["cy"] = (d["rect"][1] + d["rect"][3]) / 2
+        d["cell_w"] = max(d["rect"][2] - d["rect"][0] + 4, min(gaps))
+        fill = None
+        best = None
+        for r, c in fills or []:
+            hx = _rgb_to_hex(c)
+            if hx and r.x0 - 0.5 <= d["cx"] <= r.x1 + 0.5 and r.y0 - 0.5 <= d["cy"] <= r.y1 + 0.5:
+                area = r.width * r.height
+                if best is None or area < best:
+                    best, fill = area, hx
+        d["fill"] = fill or "#B8CCE4"
+    return row
+
+
 def get_system_korean_font_path(custom_path=None):
     if custom_path and os.path.exists(custom_path) and custom_path.lower().endswith(('.ttf', '.otf', '.ttc')):
         return custom_path
@@ -780,6 +888,9 @@ class ScheduleEditor:
         self.header_title_presets = []      # 저장해 둔 머리글 제목
         self.title_presets = []             # 저장해 둔 칸 이름
         self.recent_titles = []             # 최근에 넣은 칸 이름
+        self.dmb_regions = list(DMB_REGIONS)    # DMB 요일 칸 지역 목록
+        self.dmb_day_regions = []               # DMB 요일 칸마다 지난번에 넣은 지역 (다음 주에 그대로 제안)
+        self._shared_last = None
         # 블록 찾기 최소 크기(pt)
         self.detect_min_w = DETECT_MIN_W
         self.detect_min_h = DETECT_MIN_H
@@ -1032,6 +1143,8 @@ class ScheduleEditor:
                 "recent_titles": self.recent_titles,
                 "detect_min_w": self.detect_min_w,
                 "detect_min_h": self.detect_min_h,
+                "dmb_regions": self.dmb_regions,
+                "dmb_day_regions": self.dmb_day_regions,
             }
             text = json.dumps(data, ensure_ascii=False)   # 먼저 문자열로 만들어 두어야 직렬화 실패 시 기존 파일이 깨지지 않는다
             tmp_path = self.backup_file_path + ".tmp"
@@ -1040,13 +1153,47 @@ class ScheduleEditor:
             os.replace(tmp_path, self.backup_file_path)
         except Exception:
             pass
+        self._save_shared()
+
+    def _shared_values(self):
+        return {k: copy.deepcopy(getattr(self, k)) for k in SHARED_KEYS}
+
+    def _save_shared(self):
+        """같이 쓰는 설정은 이 프로그램에서 바뀐 것만 공용 파일에 덮어쓴다 (다른 편집기가 바꾼 것은 그대로 둔다)."""
+        try:
+            cur = self._shared_values()
+            last = self._shared_last or {}
+            changed = {k: v for k, v in cur.items() if k not in last or last[k] != v}
+            if not changed and self._shared_last is not None:
+                return
+            on_disk = {}
+            try:
+                with open(shared_settings_path(), "r", encoding="utf-8") as f:
+                    on_disk = json.load(f)
+                if not isinstance(on_disk, dict):
+                    on_disk = {}
+            except (OSError, ValueError):
+                on_disk = {}
+            merged = {k: on_disk[k] for k in SHARED_KEYS if k in on_disk}
+            merged.update(changed if on_disk else cur)
+            write_shared_settings(merged)
+            self._shared_last = cur
+        except Exception:
+            pass
 
     def load_autosave(self):
-        if not os.path.exists(self.backup_file_path):
-            return
+        data = {}
         try:
-            with open(self.backup_file_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
+            if os.path.exists(self.backup_file_path):
+                with open(self.backup_file_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+        except Exception:
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        data.update(read_shared_settings())     # 같이 쓰는 것은 공용 파일이 우선
+        try:
+            if data:
                 _pb = data.get("page_blocks")
                 if data.get("pdf_path") and isinstance(_pb, dict) and any(_pb.values()):
                     self._recovery = data
@@ -1083,8 +1230,13 @@ class ScheduleEditor:
                 mbw = data.get("mod_border_width")
                 if isinstance(mbw, (int, float)) and not isinstance(mbw, bool):
                     self.mod_border_width = max(0.25, min(6.0, float(mbw)))
+                for key in ("dmb_regions", "dmb_day_regions"):
+                    v = data.get(key)
+                    if isinstance(v, list):
+                        setattr(self, key, [str(x) for x in v if isinstance(x, str)][:50])
         except Exception:
             pass
+        self._shared_last = self._shared_values()
 
     def undo_action(self):
         if not self.history:
@@ -1291,6 +1443,8 @@ class ScheduleEditor:
         ttk.Separator(self.sidebar_content_frame).pack(fill="x", pady=4)
         
         self._build_header_panel()
+        if IS_DMB:
+            self._build_days_panel()
         fav_frame = ttk.LabelFrame(self.sidebar_content_frame, text=" ⭐ 블록 파렛트 (관리 및 적용) ", padding=8)
         fav_frame.pack(fill="x", pady=4)
         
@@ -1658,8 +1812,13 @@ class ScheduleEditor:
                 self.time_rows_by_page[page_idx] = rows
                 self.time_ticks_by_page[page_idx] = time_ticks(rows)
                 _heads = [r.y0 for r, c in _fills if _is_header_color(c) and r.height >= 8]
-                self.header_found_by_page[page_idx] = detect_header(page.get_text("dict"), page.get_image_info(),
-                                                                    (min(_heads) - 1) if _heads else None, tuple(page.rect))
+                _td = page.get_text("dict")
+                _hf = detect_header(_td, page.get_image_info(), (min(_heads) - 1) if _heads else None, tuple(page.rect))
+                try:
+                    _hf["days"] = detect_day_headers(_td, _fills)
+                except Exception:
+                    _hf["days"] = []
+                self.header_found_by_page[page_idx] = _hf
             except Exception:
                 self.time_rows_by_page[page_idx] = []
                 self.time_ticks_by_page[page_idx] = []
@@ -3089,6 +3248,8 @@ class ScheduleEditor:
 
         _hst = self.header_edit.get(self.current_page) or {}
         _htexts = [_hst.get("title", "") if _hst.get("title_on") else "", _hst.get("date", "") if _hst.get("date_on") else ""]
+        if _hst.get("days_on"):
+            _htexts += [str(v.get("date", "")) + str(v.get("region", "")) for v in (_hst.get("days") or []) if isinstance(v, dict)]
         if font_name == "helv" and (any(not (b.get("title") or "").isascii() for b in blocks) or any(not t.isascii() for t in _htexts)):
             doc.close()
             raise RuntimeError("한글 폰트를 불러오지 못했습니다.\n설정(⚙️)에서 .ttf/.ttc 한글 폰트 파일을 지정해 주세요.")
@@ -3542,17 +3703,31 @@ class ScheduleEditor:
     def _header_state(self):
         st = self.header_edit.setdefault(self.current_page, {})
         found = self.header_found_by_page.get(self.current_page) or {}
-        st.setdefault("title_on", False)
+        st.setdefault("title_on", bool(IS_DMB and found.get("title")))   # DMB 는 제목을 늘 바꾼다
         st.setdefault("title", self._suggest_header_title())
         st.setdefault("title_size", 0)            # 0 = 자동
         st.setdefault("title_bold", True)
         st.setdefault("date_on", False)
         st.setdefault("date", ((found.get("date") or {}).get("text") or "").strip())
+        days = found.get("days") or []
+        cur = st.get("days")
+        if not isinstance(cur, list) or len(cur) != len(days):
+            prev = self.dmb_day_regions
+            st["days"] = [{"date": d["text"], "region": (prev[i] if i < len(prev) else "")} for i, d in enumerate(days)]
+        st.setdefault("days_on", bool(IS_DMB and any(v.get("region") for v in st["days"])))
         return st
 
     def _suggest_header_title(self):
-        """파일 이름 'MBC_10__3_2' -> '광주MBC 주간편성표 [ 10월 03주 확정 ]'."""
-        m = re.search(r"_(\d{1,2})__(\d)", os.path.basename(self.pdf_path or ""))
+        """파일 이름 'MBC_10__3_2' -> '광주MBC 주간편성표 [ 10월 03주 확정 ]'.
+        DMB: 'MBC_11__1__2' -> '광주 MYMBC 주간편성표 [ 11월 01주 2 ]' (뒤 번호가 없으면 '기본')"""
+        name = os.path.basename(self.pdf_path or "")
+        if IS_DMB:
+            m = re.search(r"_(\d{1,2})__(\d)(?:_+([0-9A-Za-z가-힣]+))?", name)
+            if m:
+                rev = m.group(3) or "기본"
+                return f"광주 MYMBC 주간편성표 [ {int(m.group(1))}월 {int(m.group(2)):02d}주 {rev} ]"
+            return self.header_title_presets[0] if self.header_title_presets else "광주 MYMBC 주간편성표"
+        m = re.search(r"_(\d{1,2})__(\d)", name)
         if m:
             return f"광주MBC 주간편성표 [ {int(m.group(1))}월 {int(m.group(2)):02d}주 확정 ]"
         return self.header_title_presets[0] if self.header_title_presets else "광주MBC 주간편성표"
@@ -3584,14 +3759,29 @@ class ScheduleEditor:
             w = measure(text, size)
             cxm = (x0 + x1) / 2
             tx = min(max(cxm - w / 2, pr[0] + 30), pr[2] - 30 - w)
-            out.append(((x0 - 1, y0 - 1, x1 + 1, y1 + 1), text, size, (tx, (y0 + y1) / 2 + size * 0.36), bool(st["title_bold"])))
+            out.append(((x0 - 1, y0 - 1, x1 + 1, y1 + 1), text, size, (tx, (y0 + y1) / 2 + size * 0.36), bool(st["title_bold"]), "#ffffff"))
         df = found.get("date")
         if st["date_on"] and df and st["date"].strip():
             x0, y0, x1, y1 = df["rect"]
             text = st["date"].strip()
             size = float(df.get("size") or (y1 - y0) * 0.8)
             w = measure(text, size)
-            out.append(((min(x0, x1 - w) - 1, y0 - 1, x1 + 1, y1 + 1), text, size, (x1 - w, (y0 + y1) / 2 + size * 0.36), False))
+            out.append(((min(x0, x1 - w) - 1, y0 - 1, x1 + 1, y1 + 1), text, size, (x1 - w, (y0 + y1) / 2 + size * 0.36), False, "#ffffff"))
+        days = found.get("days") or []
+        if st.get("days_on") and days:
+            for d, v in zip(days, st["days"]):
+                text = (str(v.get("date", "")).strip() + str(v.get("region", "")).strip())
+                if not text or text == d["text"]:
+                    continue
+                x0, y0, x1, y1 = d["rect"]
+                size = float(d.get("size") or (y1 - y0) * 0.8)
+                avail = d["cell_w"] - 4
+                while size > 4 and measure(text, size) > avail:
+                    size -= 0.25
+                w = measure(text, size)
+                half = max(d["cell_w"] / 2 - 1.5, (x1 - x0) / 2 + 0.5)
+                cover = (d["cx"] - half, y0 - 0.6, d["cx"] + half, y1 + 0.6)
+                out.append((cover, text, size, (d["cx"] - w / 2, d["cy"] + size * 0.36), False, d.get("fill") or "#B8CCE4"))
         return out
 
     def _draw_header_preview(self, c):
@@ -3604,10 +3794,10 @@ class ScheduleEditor:
             cache[px] = f
             return f.measure(text) / self.zoom
 
-        for cover, text, size, (tx, ty), bold in self._header_layout(measure):
+        for cover, text, size, (tx, ty), bold, bg in self._header_layout(measure):
             a = self._to_canvas(cover[0], cover[1])
             b = self._to_canvas(cover[2], cover[3])
-            c.create_rectangle(a[0], a[1], b[0], b[1], fill="#ffffff", outline="")
+            c.create_rectangle(a[0], a[1], b[0], b[1], fill=bg, outline="")
             px = max(4, int(round(size * self.zoom)))
             x, y = self._to_canvas(tx, ty)
             c.create_text(x, y, text=text, anchor="sw", fill="#111111",
@@ -3620,8 +3810,9 @@ class ScheduleEditor:
             except Exception:
                 return sum(size if ord(ch) > 127 else size * 0.5 for ch in text)
 
-        for cover, text, size, (tx, ty), bold in self._header_layout(measure):
-            page.draw_rect(fitz.Rect(cover), color=None, fill=(1, 1, 1))
+        for cover, text, size, (tx, ty), bold, bg in self._header_layout(measure):
+            bg = bg.lstrip("#")
+            page.draw_rect(fitz.Rect(cover), color=None, fill=tuple(int(bg[i:i + 2], 16) / 255 for i in (0, 2, 4)))
             kw = {"render_mode": 2, "border_width": 0.03} if bold else {}
             try:
                 page.insert_text(fitz.Point(tx, ty), text, fontsize=size, fontname=font_name, color=(0, 0, 0), fill=(0, 0, 0), **kw)
@@ -3708,6 +3899,96 @@ class ScheduleEditor:
         de = ttk.Entry(f, textvariable=d_var, font=(self.ui_font_family, 9))
         de.pack(fill="x", pady=2)
         d_var.trace_add("write", lambda *a: (d_on.set(True) if d_var.get().strip() != orig else None, changed()))
+
+    def _build_days_panel(self):
+        """DMB: 표 머리 요일 칸 '11/2(월)' -> '11/2(월)전주' (날짜는 고칠 수 있고, 지역은 목록에서 고른다)."""
+        f = ttk.LabelFrame(self.sidebar_content_frame, text=" 📅 요일 칸 (날짜 · 지역) ", padding=8)
+        f.pack(fill="x", pady=4)
+        found = self.header_found_by_page.get(self.current_page) or {}
+        days = found.get("days") or []
+        st = self._header_state()
+        small = (self.ui_font_family, 8)
+        on = tk.BooleanVar(value=bool(st.get("days_on")))
+        top = ttk.Frame(f)
+        top.pack(fill="x")
+        ttk.Checkbutton(top, text="요일 칸 바꾸기", variable=on, command=lambda: changed()).pack(side="left")
+        if not days:
+            ttk.Label(top, text="(요일 칸을 찾지 못함)", foreground="#b45309", font=small).pack(side="left")
+            return
+        if not self.dmb_regions:
+            self.dmb_regions = list(DMB_REGIONS)
+        rows = []
+        busy = [True]
+
+        def changed(*_a):
+            if busy[0]:
+                return
+            st["days"] = [{"date": dv.get(), "region": rv.get().strip()} for dv, rv, _cb in rows]
+            st["days_on"] = bool(on.get())
+            regions = [d["region"] for d in st["days"]]
+            if any(regions):
+                self.dmb_day_regions = regions
+            self.draw_pdf(refresh_sidebar=False)
+            self._schedule_autosave()
+
+        def turn_on(*_a):
+            if not busy[0] and not on.get():
+                on.set(True)
+            changed()
+
+        def remember_region(rv):
+            r = rv.get().strip()
+            if r and r not in self.dmb_regions:
+                self.dmb_regions.append(r)
+                for _dv, _rv, cb in rows:
+                    cb.config(values=self.dmb_regions)
+                self._schedule_autosave()
+
+        grid = ttk.Frame(f)
+        grid.pack(fill="x", pady=(3, 0))
+        for i, (d, v) in enumerate(zip(days, st["days"])):
+            dv = tk.StringVar(value=v.get("date", d["text"]))
+            rv = tk.StringVar(value=v.get("region", ""))
+            ttk.Entry(grid, textvariable=dv, width=10, font=(self.ui_font_family, 9)).grid(row=i, column=0, sticky="we", pady=1)
+            cb = ttk.Combobox(grid, textvariable=rv, values=self.dmb_regions, width=6, font=(self.ui_font_family, 9))
+            cb.grid(row=i, column=1, sticky="we", padx=(3, 0), pady=1)
+            cb.bind("<<ComboboxSelected>>", lambda e, _rv=rv: (remember_region(_rv), turn_on()))
+            cb.bind("<FocusOut>", lambda e, _rv=rv: remember_region(_rv))
+            cb.bind("<Return>", lambda e, _rv=rv: remember_region(_rv))
+            dv.trace_add("write", turn_on)
+            rv.trace_add("write", turn_on)
+            rows.append((dv, rv, cb))
+        grid.columnconfigure(0, weight=1)
+        grid.columnconfigure(1, weight=1)
+
+        def set_all(dates=None, regions=None):
+            busy[0] = True
+            for i, (dv, rv, _cb) in enumerate(rows):
+                if dates is not None:
+                    dv.set(dates[i] if i < len(dates) else "")
+                if regions is not None:
+                    rv.set(regions[i] if i < len(regions) else "")
+            busy[0] = False
+            on.set(True)
+            changed()
+
+        def edit_regions():
+            from tkinter import simpledialog
+            txt = simpledialog.askstring("지역 목록", "쉼표(,)로 나눠 적어 주세요.", initialvalue=", ".join(self.dmb_regions), parent=self.root)
+            if txt is None:
+                return
+            self.dmb_regions = [x.strip() for x in txt.split(",") if x.strip()] or list(DMB_REGIONS)
+            for _dv, _rv, cb in rows:
+                cb.config(values=self.dmb_regions)
+            self._schedule_autosave()
+
+        b = ttk.Frame(f)
+        b.pack(fill="x", pady=(4, 0))
+        ttk.Button(b, text="원래 날짜", command=lambda: set_all(dates=[d["text"] for d in days])).pack(side="left")
+        ttk.Button(b, text="지역 비우기", command=lambda: set_all(regions=[])).pack(side="left", padx=2)
+        ttk.Button(b, text="지역 목록…", command=edit_regions).pack(side="right")
+        ttk.Label(f, text="지역은 요일마다 지난번 것을 기억해 다음 PDF에 미리 넣습니다.", font=small, foreground="#64748b").pack(anchor="w", pady=(3, 0))
+        busy[0] = False
 
     def on_press_pdf(self, event):
         x, y = self.canvas.canvasx(event.x), self.canvas.canvasy(event.y)

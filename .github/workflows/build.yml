@@ -27,10 +27,10 @@ jobs:
         run: python -m pip install --upgrade pip pyinstaller pymupdf pillow openpyxl
 
       - name: 문법 검사 (두 프로그램 + 런처)
-        run: python -m py_compile apps/runsheet/pdf_data_editor.py apps/schedule/ui.py launcher/launcher.py
+        run: python -m py_compile apps/runsheet/pdf_data_editor.py apps/schedule/ui.py apps/schedule/dmb.py launcher/launcher.py
 
       - name: 빠진 import 등 정의 안 된 이름 검사
-        run: python tools/check_names.py apps/runsheet/pdf_data_editor.py apps/schedule/ui.py launcher/launcher.py
+        run: python tools/check_names.py apps/runsheet/pdf_data_editor.py apps/schedule/ui.py apps/schedule/dmb.py launcher/launcher.py
 
       - name: 편성표 블록 찾기 점검 (실제 편성표 PDF)
         run: python tests/test_schedule_detect.py
@@ -82,7 +82,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.pkg.outputs.tag }}
-          name: 편집 프로그램 ${{ steps.pkg.outputs.tag }} (운행표 ${{ steps.pkg.outputs.runsheet }} · 편성표 ${{ steps.pkg.outputs.schedule }} · 런처 ${{ steps.pkg.outputs.launcher }})
+          name: 편집 프로그램 ${{ steps.pkg.outputs.tag }} (운행표 ${{ steps.pkg.outputs.runsheet }} · 편성표·DMB ${{ steps.pkg.outputs.schedule }} · 런처 ${{ steps.pkg.outputs.launcher }})
           body: |
             처음 설치(둘 중 하나, 파이썬 필요 없음)
             - EDIT_setup_${{ steps.pkg.outputs.tag }}.exe 실행

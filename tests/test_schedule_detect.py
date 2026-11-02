@@ -105,3 +105,51 @@ if not ok:
 if fail2:
     sys.exit(f"시간 줄·머리글·나누기 점검 실패: {fail2}")
 print("시간 줄·머리글·나누기 점검 통과")
+
+
+# ---------------------------------------------------------------- DMB: 요일 칸 · 제목
+print()
+fail3 = []
+for fn in EXPECT:
+    doc = pymupdf.open(os.path.join(HERE, "pdfs", fn))
+    page = doc.load_page(0)
+    _s, fills = ui._drawing_parts(page.get_drawings())
+    days = ui.detect_day_headers(page.get_text("dict"), fills)
+    ok = (len(days) == 7 and [d["text"][-2] for d in days] == list("월화수목금토일")
+          and all(30 < d["cell_w"] < 120 for d in days) and all(d["fill"].lower() != "#ffffff" for d in days))
+    print(f"{'OK  ' if ok else 'FAIL'} 요일 칸 {fn:16s} {len(days)}개 {[d['text'] for d in days][:2]}… 폭 {round(days[0]['cell_w']) if days else 0} 색 {days[0]['fill'] if days else ''}")
+    if not ok:
+        fail3.append(fn)
+    doc.close()
+
+ui.IS_DMB = True
+doc = pymupdf.open(os.path.join(HERE, "pdfs", "mbc_11_1_2.pdf"))
+page = doc.load_page(0)
+_s, fills = ui._drawing_parts(page.get_drawings())
+heads = [r.y0 for r, c in fills if ui._is_header_color(c) and r.height >= 8]
+td = page.get_text("dict")
+hdr = ui.detect_header(td, page.get_image_info(), (min(heads) - 1) if heads else None, tuple(page.rect))
+hdr["days"] = ui.detect_day_headers(td, fills)
+D = ui.ScheduleEditor.__new__(ui.ScheduleEditor)
+D.current_page, D.page_rect, D.pdf_path = 0, tuple(page.rect), r"C:\x\MBC_11__1__2.pdf"
+D.header_found_by_page, D.header_edit, D.header_title_presets = {0: hdr}, {}, []
+D.dmb_day_regions = ["전주", "전주", "여수", "목포", "여수", "광주", "광주"]
+st = D._header_state()
+font = pymupdf.Font("cjk")
+page.insert_font(fontname="kr", fontbuffer=font.buffer)
+D._draw_header_pdf(page, "kr", font)
+text = page.get_text()
+ok = (st["title_on"] and st["days_on"] and st["title"] == "광주 MYMBC 주간편성표 [ 11월 01주 2 ]"
+      and all(w in text for w in ("전주", "여수", "목포", "광주", "MYMBC")))
+print(f"{'OK  ' if ok else 'FAIL'} DMB 제목 '{st['title']}' · 요일 칸 그리기")
+if not ok:
+    fail3.append("dmb-draw")
+D.pdf_path = "DMB_11__1.pdf"
+D.header_edit = {}
+if D._suggest_header_title() != "광주 MYMBC 주간편성표 [ 11월 01주 기본 ]":
+    fail3.append("dmb-title-basic")
+ui.IS_DMB = False
+doc.close()
+if fail3:
+    sys.exit(f"DMB 점검 실패: {fail3}")
+print("DMB 요일 칸·제목 점검 통과")
