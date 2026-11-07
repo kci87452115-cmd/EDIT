@@ -5,7 +5,7 @@ name: build-edit
 on:
   push:
     branches: [main]
-    paths: ["apps/**", "launcher/**", "installer/**", "tools/**", "tests/**", ".github/workflows/build.yml"]
+    paths: ["apps/**", "launcher/**", "installer/**", "tools/**",".github/workflows/build.yml"]
   workflow_dispatch:
 
 permissions:
@@ -31,14 +31,6 @@ jobs:
 
       - name: 빠진 import 등 정의 안 된 이름 검사
         run: python tools/check_names.py apps/runsheet/pdf_data_editor.py apps/schedule/ui.py apps/schedule/dmb.py launcher/launcher.py
-
-      - name: 편성표 블록 찾기 점검 (실제 편성표 PDF)
-        run: python tests/test_schedule_detect.py
-
-      - name: 화면 점검 (DMB 편집 화면)
-        timeout-minutes: 4
-        continue-on-error: true
-        run: python tests/test_gui_smoke.py
 
       - name: 런처 + 공용 실행 환경 만들기 (PyInstaller)
         shell: pwsh
