@@ -45,7 +45,7 @@ def schedule_badge_dir():
         return os.path.join(home, "데이터", "편성표", "badges")
     return os.path.abspath("badges")
 
-APP_VERSION = "3.11.0"
+APP_VERSION = "3.11.1"
 
 
 def _detect_profile():
@@ -2742,10 +2742,6 @@ class ScheduleEditor:
         
         c.create_rectangle(18, 18, 18 + page_width, 18 + page_height, fill="#ffffff", outline="")   # 종이 바탕(투명한 곳이 회색으로 보이지 않게)
         c.create_image(18, 18, image=self.photo, anchor="nw")
-        try:
-            self._draw_header_preview(c)
-        except Exception:
-            pass
         c.configure(scrollregion=(0, 0, page_width + 36, page_height + 36))
 
         self.item_map.clear()
@@ -2795,6 +2791,7 @@ class ScheduleEditor:
                 if b["id"] in ch:
                     x0, y0, x1, y1 = self._xy(b["rect"])
                     c.create_rectangle(x0 + 1, y0 + 1, x1 - 1, y1 - 1, outline="#dc2626", width=2, dash=(5, 3))
+        self._paint_header_on_canvas(c)       # 머리글(제목·날짜·요일 칸)은 맨 위에 - 블록에 가려지지 않게
         self._update_mod_count()
         if refresh_sidebar:
             self.update_sidebar_info()
@@ -4284,6 +4281,22 @@ class ScheduleEditor:
                 out.append((cover, text, size, (d["cx"] - w / 2, d["cy"] + size * 0.36), False, d.get("fill") or "#B8CCE4"))
         return out
 
+    def _paint_header_on_canvas(self, c):
+        """기본 화면에 머리글 바꾼 내용을 바로 보여 준다. 실패하면 한 번만 이유를 알려 준다."""
+        c.delete("hdrprev")
+        try:
+            self._draw_header_preview(c)
+            c.tag_raise("hdrprev")
+        except Exception as exc:
+            import traceback
+            traceback.print_exc()
+            if not getattr(self, "_hdr_err_shown", False):
+                self._hdr_err_shown = True
+                try:
+                    messagebox.showwarning("머리글 표시", f"기본 화면에 머리글을 그리지 못했습니다.\n(저장 PDF·미리보기에는 그대로 들어갑니다)\n\n{type(exc).__name__}: {exc}")
+                except Exception:
+                    pass
+
     def _draw_header_preview(self, c):
         from tkinter import font as tkfont
         cache = {}
@@ -4297,10 +4310,10 @@ class ScheduleEditor:
         for cover, text, size, (tx, ty), bold, bg in self._header_layout(measure):
             a = self._to_canvas(cover[0], cover[1])
             b = self._to_canvas(cover[2], cover[3])
-            c.create_rectangle(a[0], a[1], b[0], b[1], fill=bg, outline="")
+            c.create_rectangle(a[0], a[1], b[0], b[1], fill=bg, outline="", tags=("hdrprev",))
             px = max(4, int(round(size * self.zoom)))
             x, y = self._to_canvas(tx, ty)
-            c.create_text(x, y, text=text, anchor="sw", fill="#111111",
+            c.create_text(x, y, text=text, anchor="sw", fill="#111111", tags=("hdrprev",),
                           font=(self.ui_font_family, -px, "bold") if bold else (self.ui_font_family, -px))
 
     def _draw_header_pdf(self, page, font_name, measure_font):
