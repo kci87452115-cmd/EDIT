@@ -25,7 +25,7 @@ except ImportError:
     except ImportError:
         fitz = None
 
-APP_VERSION = "2.5.0"
+APP_VERSION = "2.6.0"
 APP_TITLE = f"운행표 데이터 편집기 v{APP_VERSION}"
 APP_MUTEX = "RunSheetEditor_Running"      # 설치 프로그램이 '실행 중'을 알아보는 이름 (setup.iss 의 AppMutex 와 같아야 함)
 RUN_BY_LAUNCHER = bool(os.environ.get("RADIO_LAUNCHER"))   # 편집 프로그램 런처로 실행됨 -> 업데이트는 런처가 한다
@@ -1063,6 +1063,60 @@ def export_schedule_xlsx(path, sheets):
 # ============================================================================
 VIEW_PORT_DEFAULT = 8080
 VIEW_DETAIL_LIMIT = 5000
+PREVIEW_DIR = os.path.join(DATA_DIR, "미리보기")      # 다른 PC 조회용 운행표 미리보기 PDF + 상태(status.json)
+PREVIEW_KEEP_DAYS = 7
+_PREVIEW_KEY_RE = re.compile(r"^(AM|FM)\d{8}$")
+
+
+def read_preview_status():
+    try:
+        with open(os.path.join(PREVIEW_DIR, "status.json"), "r", encoding="utf-8") as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def update_preview_status(key, **fields):
+    """운행표 하나의 상태를 고친다. (상태: '수정완료' / '편집중', dirty: 저장 안 된 수정이 있음)"""
+    try:
+        os.makedirs(PREVIEW_DIR, exist_ok=True)
+        d = read_preview_status()
+        cur = d.get(key) or {}
+        cur.update(fields)
+        cur["updated"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        d[key] = cur
+        cutoff = (datetime.date.today() - datetime.timedelta(days=PREVIEW_KEEP_DAYS)).isoformat()
+        for k in [k for k, v in d.items() if (v.get("air_date") or "9999") < cutoff]:   # 오래된 것 정리
+            d.pop(k, None)
+            try:
+                os.remove(os.path.join(PREVIEW_DIR, k + ".pdf"))
+            except OSError:
+                pass
+        tmp = os.path.join(PREVIEW_DIR, "status.json.tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(d, f, ensure_ascii=False, indent=1)
+        os.replace(tmp, os.path.join(PREVIEW_DIR, "status.json"))
+    except Exception:
+        pass
+
+
+def list_previews():
+    """조회 페이지용 목록: 최근 7일 + 앞으로의 운행표. 최신 방송일이 위."""
+    d = read_preview_status()
+    today = datetime.date.today()
+    cutoff = (today - datetime.timedelta(days=PREVIEW_KEEP_DAYS)).isoformat()
+    out = []
+    for k, v in d.items():
+        ad = v.get("air_date") or ""
+        if not _PREVIEW_KEY_RE.match(k) or ad < cutoff:
+            continue
+        rel = {0: "오늘", 1: "내일", -1: "어제"}.get((datetime.date.fromisoformat(ad) - today).days, "") if re.fullmatch(r"\d{4}-\d{2}-\d{2}", ad) else ""
+        out.append({"key": k, "media": v.get("media", ""), "air_date": ad, "rel": rel, "state": v.get("state", ""),
+                    "dirty": bool(v.get("dirty")), "saved_at": v.get("saved_at", ""), "updated": v.get("updated", ""),
+                    "has_pdf": os.path.exists(os.path.join(PREVIEW_DIR, k + ".pdf"))})
+    out.sort(key=lambda x: (x["air_date"], x["media"]), reverse=True)
+    return out
 
 
 def local_addresses():
@@ -1137,6 +1191,7 @@ tr.tot td{font-weight:bold;background:#f8fafc}
  </div>
 </div>
 <div class="row tabs"><button id="tA" class="on" onclick="tab('A')">합계</button><button id="tD" onclick="tab('D')">상세 목록</button>
+ <button id="tP" onclick="tab('P')">📄 운행표 미리보기 · 인쇄</button>
  <a id="csv" href="#" style="margin-left:auto">⬇ 상세 목록 CSV(엑셀) 내려받기</a></div>
 <div class="msg" id="msg"></div>
 <div class="scroll"><table id="tbl"></table></div>
@@ -1152,8 +1207,22 @@ function preset(k){const t=new Date();let a=new Date(t),b=new Date(t);
 function q(){const p=new URLSearchParams({from:$('from').value,to:$('to').value,media:$('media').value,grp:$('grp').value,kw:$('kw').value,target:$('target').value,by:$('by').value});return p.toString()}
 const num=v=>Number(v||0).toLocaleString('ko-KR');
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-function tab(k){cur=k;$('tA').className=k==='A'?'on':'';$('tD').className=k==='D'?'on':'';run()}
-async function run(){$('csv').href='api/detail.csv?'+q();$('msg').textContent='불러오는 중…';
+function tab(k){cur=k;for(const t of ['A','D','P'])$('t'+t).className=k===t?'on':'';run()}
+const WK='일월화수목금토';
+function dlabel(s){const d=new Date(s+'T00:00:00');return isNaN(d)?s:(s.slice(5).replace('-','/')+'('+WK[d.getDay()]+')')}
+async function previews(){$('msg').textContent='불러오는 중…';
+ try{const d=await (await fetch('api/runsheets')).json();
+  let h='<tr><th>방송일</th><th>매체</th><th>상태</th><th>마지막 저장</th><th>미리보기 · 인쇄</th></tr>';
+  for(const x of d.rows){
+   const st=x.dirty?'<b style="color:#c2410c">✏ 현재 편집중</b> <span style="color:#9a3412;font-size:12px">(저장 안 된 수정 있음 · 아래 미리보기는 마지막 저장 상태)</span>'
+     :(x.state==='수정완료'?'<b style="color:#15803d">✔ 수정완료</b>':'<b style="color:#c2410c">✏ 편집중</b> <span style="color:#9a3412;font-size:12px">(기록만 저장됨)</span>');
+   const rel=x.rel?'<b style="background:'+(x.rel==='오늘'?'#1e3a8a':'#64748b')+';color:#fff;border-radius:4px;padding:1px 6px;margin-right:6px">'+x.rel+'</b>':'';
+   h+='<tr'+(x.rel==='오늘'||x.rel==='내일'?' style="background:#f8fafc"':'')+'><td>'+rel+esc(dlabel(x.air_date))+'</td><td>'+esc(x.media)+'</td><td>'+st+'</td><td>'+esc((x.saved_at||'').slice(5,16))+'</td><td>'
+     +(x.has_pdf?'<a href="runsheet/'+esc(x.key)+'.pdf" target="_blank">📄 보기 · 인쇄</a>':'<span style="color:#9ca3af">미리보기 없음</span>')+'</td></tr>'}
+  $('tbl').innerHTML=h;$('msg').textContent=d.rows.length?'편집기에서 저장할 때마다 바뀝니다. 「보기 · 인쇄」를 누르면 새 창에서 열리고, 브라우저의 인쇄 버튼으로 인쇄합니다. (30초마다 새로고침)':'아직 미리보기가 없습니다. 편집기에서 운행표를 저장하면 여기에 나타납니다.'}
+ catch(e){$('msg').textContent='⚠ 편집기 PC에 연결하지 못했습니다.'}}
+setInterval(()=>{if(cur==='P'&&!document.hidden)previews()},30000);
+async function run(){if(cur==='P')return previews();$('csv').href='api/detail.csv?'+q();$('msg').textContent='불러오는 중…';
  try{const r=await fetch((cur==='A'?'api/aggregate?':'api/detail?')+q());const d=await r.json();
   if(d.error){$('msg').textContent='⚠ '+d.error;$('tbl').innerHTML='';return}
   let h='';
@@ -1265,6 +1334,16 @@ class ViewServer:
                     store = owner.get_store()
                     if store is None:
                         return self._json({"error": "편집기의 데이터 파일을 열 수 없습니다."}, 503)
+                    if route == "/api/runsheets":
+                        return self._json({"rows": list_previews()})
+                    if route.startswith("/runsheet/") and route.endswith(".pdf"):
+                        key = route[len("/runsheet/"):-4]
+                        path = os.path.join(PREVIEW_DIR, key + ".pdf")
+                        if not _PREVIEW_KEY_RE.match(key) or not os.path.exists(path):
+                            return self._json({"error": "미리보기가 없습니다."}, 404)
+                        with open(path, "rb") as f:
+                            data = f.read()
+                        return self._send(200, data, "application/pdf", {"Content-Disposition": f'inline; filename="{key}.pdf"'})
                     if route == "/api/info":
                         return self._json({"app": "runsheet-view", "host": owner.host_kind,
                                            "name": computer_name(), "version": APP_VERSION, "groups": store.distinct_groups(),
@@ -1361,7 +1440,13 @@ class DataEditor:
 
     @dirty.setter
     def dirty(self, v):
+        was = getattr(self, "_dirty", False)
         self._dirty = bool(v)
+        if bool(v) and not was and getattr(self, "doc", None) is not None:
+            try:
+                self._set_preview_dirty(True)          # 다른 PC 조회에 '현재 편집중' 알림
+            except Exception:
+                pass
         if getattr(self, "tabs", None):
             self._refresh_tab_titles()
 
@@ -2450,6 +2535,8 @@ Start-Process (Join-Path $prog 'RunSheetEditor.exe') -WorkingDirectory $prog
                 return False
             if ans and not self.export_pdf():
                 return False
+            if not ans:
+                self._set_preview_dirty(False)         # 저장하지 않고 닫음 -> 편집중 표시만 지운다
         same = self._media_tabs(self.media)            # 닫은 뒤에는 같은 매체의 옆 날짜로, 없으면 다른 매체로
         order = same if len(same) > 1 else self._sorted_tabs()
         idx = order.index(tab)
@@ -5020,7 +5107,40 @@ Start-Process (Join-Path $prog 'RunSheetEditor.exe') -WorkingDirectory $prog
                          "name": o["name"], "seconds": o["seconds"], "price": o["price"], "grp": o["grp"], "saved_at": o.get("saved_at") or ""})
         return recs
 
-    def save_records(self):
+    def _preview_key(self):
+        return f"{self.media}{(self.air_date or '').replace('-', '')}" if self.media and self.air_date else ""
+
+    def _publish_preview(self, state):
+        """다른 PC 조회용: 지금 입력이 들어간 운행표 PDF를 미리보기 폴더에 두고 상태를 적는다."""
+        key = self._preview_key()
+        if not key or not self.doc or not _PREVIEW_KEY_RE.match(key):
+            return
+        try:
+            data = self._build_output_bytes()
+            os.makedirs(PREVIEW_DIR, exist_ok=True)
+            tmp = os.path.join(PREVIEW_DIR, key + ".pdf.tmp")
+            with open(tmp, "wb") as f:
+                f.write(data)
+            os.replace(tmp, os.path.join(PREVIEW_DIR, key + ".pdf"))
+        except Exception:
+            pass                                    # 미리보기는 실패해도 저장은 계속
+        update_preview_status(key, media=self.media, air_date=self.air_date, state=state, dirty=False,
+                              saved_at=time.strftime("%Y-%m-%d %H:%M:%S"), pc=computer_name())
+
+    def _set_preview_dirty(self, v):
+        """편집 중 표시: 저장 안 된 수정이 생기면 '현재 편집중' (상태 파일에만, 가볍게)."""
+        key = self._preview_key()
+        if not key or not _PREVIEW_KEY_RE.match(key):
+            return
+        cur = read_preview_status().get(key) or {}
+        if v:
+            before = cur.get("state_before") if cur.get("dirty") else cur.get("state", "")
+            update_preview_status(key, media=self.media, air_date=self.air_date, dirty=True, state="편집중",
+                                  state_before=before or "", pc=computer_name())
+        elif cur.get("dirty"):                      # 저장하지 않고 버림 -> 마지막 저장 때 상태로 되돌린다
+            update_preview_status(key, dirty=False, state=cur.get("state_before") or cur.get("state", ""))
+
+    def save_records(self, state="편집중"):
         if not self.air_date or self.store is None:
             return False
         try:
@@ -5034,6 +5154,7 @@ Start-Process (Join-Path $prog 'RunSheetEditor.exe') -WorkingDirectory $prog
         self._load_removed()
         if self.doc:
             self.draw_page()
+        self._publish_preview(state)
         return True
 
     def save_records_only(self):
@@ -5298,7 +5419,7 @@ Start-Process (Join-Path $prog 'RunSheetEditor.exe') -WorkingDirectory $prog
         except Exception as exc:
             messagebox.showerror("저장 실패", f"PDF 파일 저장 실패:\n{exc}")
             return False
-        if not self.save_records():
+        if not self.save_records(state="수정완료"):
             messagebox.showwarning("기록 저장 실패", "PDF는 저장했지만 입력 기록은 저장하지 못했습니다.\n[기록만 저장]으로 다시 시도해 주세요.")
             return False
         self.dirty = False
@@ -5306,6 +5427,16 @@ Start-Process (Join-Path $prog 'RunSheetEditor.exe') -WorkingDirectory $prog
         return True
 
     def _finish_exit(self):
+        try:                                       # 저장하지 않고 끈 탭: 다른 PC 조회의 '현재 편집중' 표시를 지운다
+            for t in list(getattr(self, "tabs", [])):
+                i = self._tab_info(t)
+                if i["dirty"] and i["media"] and i["air_date"]:
+                    k = f"{i['media']}{i['air_date'].replace('-', '')}"
+                    cur = read_preview_status().get(k) or {}
+                    if cur.get("dirty"):
+                        update_preview_status(k, dirty=False, state=cur.get("state_before") or cur.get("state", ""))
+        except Exception:
+            pass
         try:
             self.view_server.stop()
         except Exception:
