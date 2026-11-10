@@ -45,7 +45,7 @@ def schedule_badge_dir():
         return os.path.join(home, "데이터", "편성표", "badges")
     return os.path.abspath("badges")
 
-APP_VERSION = "3.12.2"
+APP_VERSION = "3.12.3"
 
 
 def _detect_profile():
@@ -4181,7 +4181,7 @@ class ScheduleEditor:
             else:
                 cut = {"ratio": round((b["rect"][0] - gx0) / max(gx1 - gx0, 1e-6), 4)}
             cuts.append(cut)
-        keep = ("title", "color", "text_color", "font_size_offset", "text_dx", "text_dy", "options")
+        keep = ("title",)                                 # 나누기 + 프로그램 이름만 (시간·뱃지는 사용자가 따로)
         style = {"axis": axis, "cuts": cuts, "parts": [{k: copy.deepcopy(b.get(k)) for k in keep if k in b} for b in parts]}
         src = self._text_in_rect((gx0, gy0, gx1, gy1))
         toks = [w for w in src.split() if not re.fullmatch(r"\d{1,2}|UHD|ALL|L|자|수|해|재|\d{1,2}세?", w)]
@@ -4213,11 +4213,10 @@ class ScheduleEditor:
         ttk.Label(f, text="원본 편성표 칸에 이 글자가 들어 있으면 적용합니다 (띄어쓰기는 무시). 짧고 확실한 말로 줄여 주세요.\n예: '뉴스투데이 2부', '뉴스데스크'",
                   font=(self.ui_font_family, 8), foreground="#64748b", justify="left").grid(row=2, column=1, sticky="w")
         if style["cuts"]:
-            how = ", ".join((f"{c['clock'] // 60:02d}:{c['clock'] % 60:02d} (없으면 시작 {c['min']}분 뒤)" if "clock" in c
-                             else f"{round(c['ratio'] * 100)}%") for c in style["cuts"])
+            how = ", ".join(f"{round(c['ratio'] * 100)}% 자리" for c in style["cuts"])
             desc = f"{'위아래' if style['axis'] == 'h' else '좌우'} {len(style['parts'])}칸으로 나눔 ({how})"
         else:
-            desc = "나누지 않음 (이름·옵션만)"
+            desc = "나누지 않음 (이름만)"
         lines = [desc] + [f"  #{i + 1} {(p.get('title') or '(이름 없음)').replace(chr(10), ' ')}" for i, p in enumerate(style["parts"])]
         ttk.Label(f, text="\n".join(lines), justify="left").grid(row=3, column=0, columnspan=2, sticky="w", pady=(8, 4))
 
@@ -4259,13 +4258,6 @@ class ScheduleEditor:
             return False, "글자 다름"
         if len(txt) > len(kw) * 2 + 6:                   # 칸 안에 다른 프로그램 글자가 많이 섞여 있음 (여러 칸이 한 칸으로 잡힌 경우)
             return False, "다른 프로그램이 섞인 칸"
-        dur = style.get("dur")
-        if dur and style.get("axis", "h") == "h":
-            m0, m1 = self._minutes_at(b["rect"][1]), self._minutes_at(b["rect"][3])
-            if m0 is not None and m1 is not None:
-                d = (m1 - m0) % 1440 or 1440
-                if abs(d - dur) > max(10, dur * 0.25):    # 길이가 많이 다름 (예: 50분짜리 스타일을 30분 칸에)
-                    return False, f"길이 다름({d}분, 스타일 {dur}분)"
         return True, ""
 
     def _style_targets(self, style, skipped=None):
@@ -4300,21 +4292,7 @@ class ScheduleEditor:
             lo, hi = y0, y1
         else:
             lo, hi = x0, x1
-        pos = []
-        for c in cuts:
-            p = None
-            if axis == "h" and "clock" in c:            # 같은 시각(예: 7:30)이 이 칸 안에 있으면 그 시각에서
-                m0 = self._minutes_at(y0)
-                if m0 is not None:
-                    off = (int(c["clock"]) - m0) % 1440
-                    q = self._y_at_offset(y0, off) if off < 720 else None
-                    if q is not None and lo + 2.5 <= q <= hi - 2.5:
-                        p = q
-            if p is None and axis == "h" and "min" in c:    # 아니면 시작에서 같은 분만큼 뒤
-                p = self._y_at_offset(y0, c["min"])
-            if p is None:
-                p = lo + (hi - lo) * float(c.get("ratio", 0.5))
-            pos.append(p)
+        pos = [lo + (hi - lo) * float(c.get("ratio", 0.5)) for c in cuts]   # 같은 비율로 나눈다 (시간 계산 없음)
         bounds = [lo] + pos + [hi]
         if any(bounds[i + 1] - bounds[i] < 2.5 for i in range(len(bounds) - 1)):
             return None                                   # 이 칸은 너무 짧아 같은 자리에서 나눌 수 없음
@@ -4331,14 +4309,7 @@ class ScheduleEditor:
                 r = (x0, bounds[i], x1, bounds[i + 1]) if axis == "h" else (bounds[i], y0, bounds[i + 1], y1)
                 nb["rect"] = nb["orig_rect"] = r
                 nb["group_id"] = gid
-            for k, v in sp.items():
-                nb[k] = copy.deepcopy(v)
-            opts = nb.setdefault("options", {})
-            tm, bm = self._auto_minutes(nb)               # 시간(분)은 이 칸 자리에서 다시 읽는다 (보이기는 스타일 그대로)
-            if tm is not None:
-                opts["top_time_val"] = tm
-            if bm is not None:
-                opts["bottom_time_val"] = bm
+            nb["title"] = sp.get("title", "")             # 프로그램 이름만 넣는다 (시간·뱃지 등은 사용자가 따로)
             new.append(nb)
         i = self.blocks.index(block)
         self.blocks[i:i + 1] = new
