@@ -45,7 +45,7 @@ def schedule_badge_dir():
         return os.path.join(home, "데이터", "편성표", "badges")
     return os.path.abspath("badges")
 
-APP_VERSION = "3.18.0"
+APP_VERSION = "3.18.1"
 
 
 def _detect_profile():
@@ -3072,15 +3072,23 @@ class ScheduleEditor:
                 cyl = y0 + bh / 2 + b.get("text_dy", 0) * self.zoom
                 pad = 3 * self.zoom
                 fill_c = b.get("text_color", "#000000")
-                ids = [c.create_text(x0 + pad, cyl, text=parts[0], anchor="w", font=fnt, fill=fill_c)]
                 if len(parts) == 3:
-                    ids.append(c.create_text((x0 + x1) / 2 + b.get("text_dx", 0) * self.zoom, cyl, text=parts[1], anchor="center", font=fnt, fill=fill_c))
-                ids.append(c.create_text(x1 - pad, cyl, text=parts[-1], anchor="e", font=fnt, fill=fill_c))
+                    # 가운데 이름을 기준으로 바로 옆에:  R/L···이름···R/L  (한 덩어리로 가운데 맞춤)
+                    ids = [c.create_text(0, cyl, text=t_, anchor="w", font=fnt, fill=fill_c) for t_ in parts]
+                    ws = [(c.bbox(i_)[2] - c.bbox(i_)[0]) if c.bbox(i_) else 0 for i_ in ids]
+                    gap = lfs * self.zoom * 1.7
+                    xs = (x0 + x1) / 2 + b.get("text_dx", 0) * self.zoom - (sum(ws) + 2 * gap) / 2
+                    for i_, w_ in zip(ids, ws):
+                        c.move(i_, xs, 0)
+                        xs += w_ + gap
+                else:
+                    ids = [c.create_text(x0 + pad, cyl, text=parts[0], anchor="w", font=fnt, fill=fill_c),
+                           c.create_text(x1 - pad, cyl, text=parts[-1], anchor="e", font=fnt, fill=fill_c)]
                 boxes = [c.bbox(i_) for i_ in ids]
                 for a_, b_ in zip(boxes, boxes[1:]):          # 글자 사이를 점선으로
                     if a_ and b_ and b_[0] - a_[2] > 6:
-                        c.create_line(a_[2] + 3, cyl + lfs * self.zoom * 0.25, b_[0] - 3, cyl + lfs * self.zoom * 0.25,
-                                      fill=fill_c, dash=(1, 3), width=max(1, round(self.zoom * 0.6)))
+                        c.create_line(a_[2] + 2, cyl + lfs * self.zoom * 0.25, b_[0] - 2, cyl + lfs * self.zoom * 0.25,
+                                      fill=fill_c, dash=(1, 2), width=max(1, round(self.zoom * 0.7)))
                 text_id = ids[0]
             formatted_text, f_size = self._format_smart_text(b["title"], bw / self.zoom, bh / self.zoom, size_offset=b.get("font_size_offset", 0), abs_size=self._abs_font(b))
             
@@ -4440,20 +4448,26 @@ class ScheduleEditor:
                         except Exception:
                             return sum(lfs if ord(ch) > 127 else lfs * 0.5 for ch in t)
                     base_y = r.y0 + bh / 2 + lfs * 0.35 + b.get("text_dy", 0)
-                    spans = [(r.x0 + 2, parts[0])]
-                    if len(parts) == 3:
-                        spans.append(((r.x0 + r.x1) / 2 - _tw(parts[1]) / 2 + b.get("text_dx", 0), parts[1]))
-                    spans.append((r.x1 - 2 - _tw(parts[-1]), parts[-1]))
+                    if len(parts) == 3:                # 가운데 이름 바로 옆에:  R/L···이름···R/L (한 덩어리로 가운데)
+                        gap = lfs * 1.7
+                        ws = [_tw(t_) for t_ in parts]
+                        sx = (r.x0 + r.x1) / 2 + b.get("text_dx", 0) - (sum(ws) + 2 * gap) / 2
+                        spans = []
+                        for t_, w_ in zip(parts, ws):
+                            spans.append((sx, t_))
+                            sx += w_ + gap
+                    else:
+                        spans = [(r.x0 + 2, parts[0]), (r.x1 - 2 - _tw(parts[-1]), parts[-1])]
                     for sx, st_ in spans:
                         try:
                             page.insert_text(fitz.Point(sx, base_y), st_, fontsize=lfs, fontname=font_name, color=txt_rgb, fill=txt_rgb, **bold)
                         except TypeError:
                             page.insert_text(fitz.Point(sx, base_y), st_, fontsize=lfs, fontname=font_name, color=txt_rgb)
                     for (ax, at), (bx, _bt) in zip(spans, spans[1:]):
-                        d0, d1 = ax + _tw(at) + 1.5, bx - 1.5
-                        if d1 - d0 > 3:
+                        d0, d1 = ax + _tw(at) + 1.0, bx - 1.0
+                        if d1 - d0 > 1.5:
                             page.draw_line(fitz.Point(d0, base_y - lfs * 0.08), fitz.Point(d1, base_y - lfs * 0.08),
-                                           color=txt_rgb, width=max(0.4, lfs * 0.09), dashes="[0.4 1.2] 0", lineCap=1)
+                                           color=txt_rgb, width=max(0.5, lfs * 0.12), dashes="[0.1 1.1] 0", lineCap=1)
                     continue
                 formatted_text, f_size = self._format_smart_text(b["title"], bw, bh, size_offset=b.get("font_size_offset", 0), abs_size=self._abs_font(b))
                 
