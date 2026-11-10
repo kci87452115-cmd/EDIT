@@ -45,7 +45,7 @@ def schedule_badge_dir():
         return os.path.join(home, "데이터", "편성표", "badges")
     return os.path.abspath("badges")
 
-APP_VERSION = "3.19.7"
+APP_VERSION = "3.19.8"
 
 
 def _detect_profile():
@@ -2732,10 +2732,7 @@ class ScheduleEditor:
         warn = getattr(self, "_clear_fill_warning", None)
         if warn:
             messagebox.showwarning("채우기 제거 안내", warn)
-        try:
-            self.offer_carry_over()
-        except Exception:
-            pass
+        # (PDF를 열 때 '이전 판 작업 가져오기'를 자동으로 묻던 것은 없앴다 - 툴바 [📥 이전 판 가져오기]로 필요할 때만)
         if self.split_styles_auto and self.split_styles:
             try:
                 self.apply_split_styles(quiet=True)
