@@ -45,7 +45,7 @@ def schedule_badge_dir():
         return os.path.join(home, "데이터", "편성표", "badges")
     return os.path.abspath("badges")
 
-APP_VERSION = "3.14.4"
+APP_VERSION = "3.15.0"
 
 
 def _detect_profile():
@@ -852,7 +852,8 @@ def _area(r):
     return max(0.0, r[2] - r[0]) * max(0.0, r[3] - r[1])
 
 
-_EDIT_KEYS = (("title", ""), ("color", ""), ("text_color", "#000000"), ("font_size_offset", 0), ("text_dx", 0), ("text_dy", 0))
+_EDIT_KEYS = (("title", ""), ("color", ""), ("text_color", "#000000"), ("font_size_offset", 0), ("text_dx", 0), ("text_dy", 0),
+              ("font_auto", True), ("font_size_abs", None))
 
 
 def _is_edited(b, initial):
@@ -1356,6 +1357,8 @@ class ScheduleEditor:
                 "color": b["color"],
                 "text_color": b.get("text_color", "#000000"),
                 "font_size_offset": b.get("font_size_offset", 0),
+                "font_auto": b.get("font_auto", True),
+                "font_size_abs": b.get("font_size_abs"),
                 "text_dx": b.get("text_dx", 0),
                 "text_dy": b.get("text_dy", 0),
                 "options": copy.deepcopy(b.get("options", {})),
@@ -2300,6 +2303,8 @@ class ScheduleEditor:
                 block["color"] = preset["color"]
                 block["text_color"] = preset.get("text_color", "#000000")
                 block["font_size_offset"] = preset.get("font_size_offset", 0)
+                block["font_auto"] = preset.get("font_auto", True)
+                block["font_size_abs"] = preset.get("font_size_abs")
                 block["text_dx"] = preset.get("text_dx", 0)
                 block["text_dy"] = preset.get("text_dy", 0)
                 if "options" in preset:
@@ -2333,6 +2338,8 @@ class ScheduleEditor:
             "text_color": txt_color, 
             "h": h,
             "font_size_offset": font_offset,
+            "font_auto": block.get("font_auto", True),
+            "font_size_abs": block.get("font_size_abs"),
             "text_dx": block.get("text_dx", 0),
             "text_dy": block.get("text_dy", 0),
             "options": options
@@ -2701,9 +2708,24 @@ class ScheduleEditor:
                 18 + (r.x1 - x_off) * self.zoom, 
                 18 + (r.y1 - y_off) * self.zoom)
 
-    def _format_smart_text(self, text, block_width, block_height, size_offset=0):
+    def _abs_font(self, b):
+        """글자 크기 '자동'을 끈 칸이면 그 절대 크기(pt), 아니면 None."""
+        if b is not None and b.get("font_auto", True) is False and b.get("font_size_abs"):
+            return float(b["font_size_abs"])
+        return None
+
+    def _format_smart_text(self, text, block_width, block_height, size_offset=0, abs_size=None):
         if not text:
             return "", 8
+        if abs_size:                                      # 자동 끔: 정한 크기 그대로 (줄이지 않음). 한 줄 이름은 너비에 맞춰 줄만 나눈다
+            fs = max(3.0, float(abs_size))
+            if "\n" in text:
+                return text, fs
+            char_w = 0.55 if text.isascii() else 1.0
+            per_line = max(int(block_width / (fs * char_w)), 3)
+            if len(text) <= per_line:
+                return text, fs
+            return "\n".join(text[i:i + per_line] for i in range(0, len(text), per_line)), fs
         
         if "\n" in text:
             lines = text.split("\n")
@@ -2817,7 +2839,7 @@ class ScheduleEditor:
                     self.shape_canvas.create_line(dx0, sy0, dx0 + dw, sy0, fill="#ef4444", dash=(2, 2))
                 sub_t = self.split_titles.get(i, block["title"] if i == 0 else "")
                 if sub_t:
-                    formatted_sub, fs = self._format_smart_text(sub_t, dw / scale, sub_h / scale, size_offset=block.get("font_size_offset", 0))
+                    formatted_sub, fs = self._format_smart_text(sub_t, dw / scale, sub_h / scale, size_offset=block.get("font_size_offset", 0), abs_size=self._abs_font(block))
                     preview_sub_fs = max(4, int(fs * scale * 0.75))
                     self.shape_canvas.create_text(dx0 + dw / 2 + _tdx, (sy0 + sy1) / 2 + _tdy, text=formatted_sub, font=(self.ui_font_family, preview_sub_fs, "bold"), fill=text_c, anchor="center", justify="center")
                 curr_dy += sub_h
@@ -2832,7 +2854,7 @@ class ScheduleEditor:
                     self.shape_canvas.create_line(sx0, dy0, sx0, dy0 + dh, fill="#10b981", dash=(2, 2))
                 sub_t = self.split_titles.get(i, block["title"] if i == 0 else "")
                 if sub_t:
-                    formatted_sub, fs = self._format_smart_text(sub_t, sub_w / scale, dh / scale, size_offset=block.get("font_size_offset", 0))
+                    formatted_sub, fs = self._format_smart_text(sub_t, sub_w / scale, dh / scale, size_offset=block.get("font_size_offset", 0), abs_size=self._abs_font(block))
                     preview_sub_fs = max(4, int(fs * scale * 0.75))
                     self.shape_canvas.create_text((sx0 + sx1) / 2 + _tdx, dy0 + dh / 2 + _tdy, text=formatted_sub, font=(self.ui_font_family, preview_sub_fs, "bold"), fill=text_c, anchor="center", justify="center")
                 curr_dx += sub_w
@@ -2842,7 +2864,7 @@ class ScheduleEditor:
             else:
                 self.shape_canvas.create_rectangle(dx0, dy0, dx0 + dw, dy0 + dh, fill="", outline="#2563eb", width=2)
             if block["title"]:
-                formatted_p_text, p_size = self._format_smart_text(block["title"], bw, bh, size_offset=block.get("font_size_offset", 0))
+                formatted_p_text, p_size = self._format_smart_text(block["title"], bw, bh, size_offset=block.get("font_size_offset", 0), abs_size=self._abs_font(block))
                 preview_font_size = max(4, int(p_size * scale * 0.75))
                 self.shape_canvas.create_text(
                     dx0 + dw / 2 + _tdx, dy0 + dh / 2 + _tdy,
@@ -2868,7 +2890,7 @@ class ScheduleEditor:
                 sub_h = total_h * ratio
                 sub_t = self.split_titles.get(i, b["title"] if i == 0 else "")
                 if sub_t:
-                    formatted, f_size = self._format_smart_text(sub_t, (x1 - x0) / self.zoom, sub_h / self.zoom, size_offset=offset)
+                    formatted, f_size = self._format_smart_text(sub_t, (x1 - x0) / self.zoom, sub_h / self.zoom, size_offset=offset, abs_size=self._abs_font(b))
                     last_id = c.create_text(
                         x0 + (x1 - x0) / 2 + dxp, curr_y + sub_h / 2 + dyp,
                         text=formatted, anchor="center",
@@ -2884,7 +2906,7 @@ class ScheduleEditor:
                 sub_w = total_w * ratio
                 sub_t = self.split_titles.get(i, b["title"] if i == 0 else "")
                 if sub_t:
-                    formatted, f_size = self._format_smart_text(sub_t, sub_w / self.zoom, (y1 - y0) / self.zoom, size_offset=offset)
+                    formatted, f_size = self._format_smart_text(sub_t, sub_w / self.zoom, (y1 - y0) / self.zoom, size_offset=offset, abs_size=self._abs_font(b))
                     last_id = c.create_text(
                         curr_x + sub_w / 2 + dxp, y0 + (y1 - y0) / 2 + dyp,
                         text=formatted, anchor="center",
@@ -2984,7 +3006,7 @@ class ScheduleEditor:
         elif b["title"]:
             bw = x1 - x0
             bh = y1 - y0
-            formatted_text, f_size = self._format_smart_text(b["title"], bw / self.zoom, bh / self.zoom, size_offset=b.get("font_size_offset", 0))
+            formatted_text, f_size = self._format_smart_text(b["title"], bw / self.zoom, bh / self.zoom, size_offset=b.get("font_size_offset", 0), abs_size=self._abs_font(b))
             
             cx = x0 + bw / 2
             offset_y = 0
@@ -3265,12 +3287,14 @@ class ScheduleEditor:
             font_row.pack(fill="x", pady=2)
             ttk.Label(font_row, text="글자 크기 미세 조절:", font=(self.ui_font_family, 8, "bold")).pack(side="left")
             
-            current_offset = block.get("font_size_offset", 0)
             # 다른 크기 조절(시간·뱃지)과 같은 순서: [-] 값 [+]  (오른쪽부터 쌓으므로 + 를 먼저)
             ttk.Button(font_row, text="+", width=2, command=lambda: self.modify_font_offset(block, 1)).pack(side="right", padx=1)
-            self.font_offset_lbl = ttk.Label(font_row, text=f"{'+' if current_offset > 0 else ''}{current_offset}", width=5, anchor="center", font=(self.ui_font_family, 8, "bold"), background="#f1f5f9")
+            self.font_offset_lbl = ttk.Label(font_row, text=self._font_size_text(block), width=7, anchor="center", font=(self.ui_font_family, 8, "bold"), background="#f1f5f9")
             self.font_offset_lbl.pack(side="right", padx=1)
             ttk.Button(font_row, text="-", width=2, command=lambda: self.modify_font_offset(block, -1)).pack(side="right", padx=1)
+            self.font_auto_var = tk.BooleanVar(value=block.get("font_auto", True) is not False)
+            ttk.Checkbutton(font_row, text="자동", variable=self.font_auto_var,
+                            command=lambda: self.set_font_auto(block, self.font_auto_var.get())).pack(side="right", padx=(0, 6))
 
             pos_rows = (
                 ("y", "글자 위치 상하(pt):", "text_dy_lbl", "▲", "▼", -block.get("text_dy", 0)),
@@ -3387,7 +3411,47 @@ class ScheduleEditor:
         self._paint_shape_preview(block)
         self.draw_pdf(refresh_sidebar=False)
 
+    def _font_size_text(self, block):
+        if block.get("font_auto", True) is False and block.get("font_size_abs"):
+            return f"{float(block['font_size_abs']):g} pt"
+        v = block.get("font_size_offset", 0)
+        return f"{'+' if v > 0 else ''}{v}"
+
+    def _auto_font_size_now(self, block):
+        """자동일 때 지금 실제 글자 크기 (자동을 끌 때 그 크기에서 시작하려고)."""
+        x0, y0, x1, y1 = block["rect"]
+        try:
+            _t, fs = self._format_smart_text(block.get("title") or "가", x1 - x0, y1 - y0, size_offset=block.get("font_size_offset", 0))
+            return float(fs)
+        except Exception:
+            return 10.0
+
+    def set_font_auto(self, block, auto):
+        """글자 크기 '자동' 켜기/끄기. 끄면 지금 크기에서 시작해 [-]/[+] 로 0.5pt씩 절대 크기(최소 3pt)를 정한다."""
+        self._push_coalesced("opt")
+        if auto:
+            block["font_auto"] = True
+        else:
+            block["font_auto"] = False
+            if not block.get("font_size_abs"):
+                block["font_size_abs"] = self._auto_font_size_now(block)
+        if hasattr(self, "font_offset_lbl") and self.font_offset_lbl.winfo_exists():
+            self.font_offset_lbl.config(text=self._font_size_text(block))
+        self._paint_shape_preview(block)
+        self.draw_pdf(refresh_sidebar=False)
+
     def modify_font_offset(self, block, delta):
+        if block.get("font_auto", True) is False:          # 자동 끔: 절대 크기를 0.5pt씩 (3 ~ 40pt)
+            cur = float(block.get("font_size_abs") or self._auto_font_size_now(block))
+            new_abs = max(3.0, min(40.0, cur + 0.5 * delta))
+            if new_abs != cur:
+                self._push_coalesced("opt")
+            block["font_size_abs"] = new_abs
+            if hasattr(self, "font_offset_lbl") and self.font_offset_lbl.winfo_exists():
+                self.font_offset_lbl.config(text=self._font_size_text(block))
+            self._paint_shape_preview(block)
+            self.draw_pdf(refresh_sidebar=False)
+            return
         current = block.get("font_size_offset", 0)
         new_val = max(FONT_OFFSET_MIN, min(20, current + delta))
         if new_val != current:
@@ -3395,8 +3459,7 @@ class ScheduleEditor:
         block["font_size_offset"] = new_val
         
         if hasattr(self, "font_offset_lbl") and self.font_offset_lbl.winfo_exists():
-            disp = f"{'+' if new_val > 0 else ''}{new_val}"
-            self.font_offset_lbl.config(text=disp)
+            self.font_offset_lbl.config(text=self._font_size_text(block))
             
         self._paint_shape_preview(block)
         self.draw_pdf(refresh_sidebar=False)
@@ -3688,6 +3751,8 @@ class ScheduleEditor:
                         "color": color,
                         "text_color": text_color,
                         "font_size_offset": block.get("font_size_offset", 0),
+                        "font_auto": block.get("font_auto", True),
+                        "font_size_abs": block.get("font_size_abs"),
                         "text_dx": block.get("text_dx", 0),
                         "text_dy": block.get("text_dy", 0),
                         "border_color": block.get("border_color"),
@@ -3723,6 +3788,8 @@ class ScheduleEditor:
                         "color": color,
                         "text_color": text_color,
                         "font_size_offset": block.get("font_size_offset", 0),
+                        "font_auto": block.get("font_auto", True),
+                        "font_size_abs": block.get("font_size_abs"),
                         "text_dx": block.get("text_dx", 0),
                         "text_dy": block.get("text_dy", 0),
                         "border_color": block.get("border_color"),
@@ -4205,7 +4272,7 @@ class ScheduleEditor:
                     txt_rgb = tuple(int(hex_txt[i:i+2], 16)/255.0 for i in (0, 2, 4))
                     
                 bw, bh = r.width, r.height
-                formatted_text, f_size = self._format_smart_text(b["title"], bw, bh, size_offset=b.get("font_size_offset", 0))
+                formatted_text, f_size = self._format_smart_text(b["title"], bw, bh, size_offset=b.get("font_size_offset", 0), abs_size=self._abs_font(b))
                 
                 lines = formatted_text.split("\n")
                 total_text_h = len(lines) * (f_size * 1.15)
