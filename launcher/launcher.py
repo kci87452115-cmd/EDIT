@@ -25,9 +25,10 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 import zipfile
 
-LAUNCHER_VERSION = "1.1.0"
+LAUNCHER_VERSION = "1.2.0"
 RUNTIME = 1                         # 공용 실행 환경 세대. 필요한 부품이 바뀌면 올린다 (앱의 runtime 값과 비교)
 EXE_NAME = "EditLauncher.exe"
 MUTEX = "EditLauncher_Running"      # 설치 프로그램(setup)이 '실행 중'을 알아보는 이름
@@ -509,11 +510,238 @@ def migrate_old_radio(ask):
 
 
 # ============================================================================ 화면
+# ------------------------------------------------------------------ 사내망에서 서로 찾기 (UDP 알림)
+DISCOVERY_PORT = 50808
+TV_VIEW_PORT_DEFAULT = 8081
+_TV_KEY_RE = re.compile(r"^(schedule|dmb)-[0-9A-Za-z가-힣_\-]{1,60}$")
+
+
+def _pc_name():
+    import socket
+    return os.environ.get("COMPUTERNAME") or socket.gethostname() or "PC"
+
+
+class Discovery:
+    """같은 네트워크의 다른 런처가 '여기 TV 편성표 조회 있음'을 알리면 기억한다 (사용자 설정 없이 서로 찾기)."""
+
+    def __init__(self):
+        import threading
+        self.peers = {}
+        self.lock = threading.Lock()
+        self.started = False
+
+    def start(self):
+        if self.started:
+            return
+        self.started = True
+        import threading
+        threading.Thread(target=self._listen, daemon=True).start()
+
+    def _listen(self):
+        import socket
+        try:
+            sk = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sk.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sk.bind(("", DISCOVERY_PORT))
+        except Exception:
+            return
+        while True:
+            try:
+                data, addr = sk.recvfrom(2048)
+                d = json.loads(data.decode("utf-8"))
+                if d.get("app") != "edit-view" or not isinstance(d.get("port"), int):
+                    continue
+                with self.lock:
+                    self.peers[(addr[0], d["port"], str(d.get("kind")))] = {
+                        "ip": addr[0], "port": d["port"], "kind": str(d.get("kind")), "name": str(d.get("name", ""))[:40],
+                        "seen": time.time()}
+            except Exception:
+                time.sleep(0.5)
+
+    def announce(self, kind, port):
+        import socket
+        msg = json.dumps({"app": "edit-view", "kind": kind, "port": int(port), "name": _pc_name()}).encode("utf-8")
+        try:
+            sk = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sk.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            sk.sendto(msg, ("255.255.255.255", DISCOVERY_PORT))
+            sk.close()
+        except Exception:
+            pass
+
+    def list(self, kind=None):
+        now = time.time()
+        with self.lock:
+            for k in [k for k, v in self.peers.items() if now - v["seen"] > 30]:
+                self.peers.pop(k, None)
+            rows = [dict(v) for v in self.peers.values() if kind is None or v["kind"] == kind]
+        seen, out = set(), []
+        for r in sorted(rows, key=lambda r: r["name"]):          # 같은 PC가 여러 주소로 알려도 하나만
+            if (r["name"], r["port"]) not in seen:
+                seen.add((r["name"], r["port"]))
+                r.pop("seen", None)
+                out.append(r)
+        return out
+
+
+_TV_HTML = r"""<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TV 주간 편성표 (조회 전용)</title><style>
+body{font-family:"Malgun Gothic","맑은 고딕",sans-serif;margin:0;background:#f5f6f8;color:#1f2937;font-size:14px}
+header{background:#7c2d12;color:#fff;padding:10px 18px}header b{font-size:17px}main{padding:14px 18px;max-width:1000px}
+table{border-collapse:collapse;width:100%;background:#fff}th,td{border:1px solid #e5e7eb;padding:6px 8px;text-align:left}th{background:#fff7ed}
+.msg{color:#6b7280;font-size:12px;margin:6px 0}</style></head><body>
+<header><b>📺 TV 주간 편성표</b> <span id="who"></span></header><main><div class="msg" id="msg">불러오는 중…</div><table id="tbl"></table></main>
+<script>
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+async function load(){try{const d=await (await fetch('api/tv')).json();document.getElementById('who').textContent=' — '+d.name;
+ let h='<tr><th>편성표</th><th>종류</th><th>상태</th><th>마지막 저장</th><th>미리보기 · 인쇄</th></tr>';
+ for(const x of d.rows){const st=x.dirty?'<b style="color:#c2410c">✏ 현재 편집중</b> <span style="font-size:12px;color:#9a3412">(미리보기는 마지막 저장 상태)</span>':(x.state==='수정완료'?'<b style="color:#15803d">✔ 수정완료</b>':'<b style="color:#c2410c">✏ 편집중</b>');
+  h+='<tr><td>'+esc(x.title||x.src)+'</td><td>'+esc(x.kind)+'</td><td>'+st+'</td><td>'+esc((x.saved_at||'').slice(5,16))+'</td><td>'+(x.has_pdf?'<a target="_blank" href="tv/'+esc(x.key)+'.pdf">📄 보기 · 인쇄</a>':'<span style="color:#9ca3af">아직 저장 전</span>')+'</td></tr>'}
+ document.getElementById('tbl').innerHTML=h;document.getElementById('msg').textContent=d.rows.length?'TV 편집기에서 PDF를 저장할 때마다 바뀝니다. (30초마다 새로고침)':'아직 저장된 편성표가 없습니다.'}
+ catch(e){document.getElementById('msg').textContent='⚠ 연결하지 못했습니다.'}}
+load();setInterval(()=>{if(!document.hidden)load()},30000);
+</script></body></html>"""
+
+
+class TvViewHost:
+    """TV PC: 런처가 TV/DMB 편집기가 저장한 주간 편성표 미리보기를 사내망에 보여 주고, 다른 런처에 알린다."""
+
+    def __init__(self, discovery):
+        self.discovery = discovery
+        self.httpd = None
+        self.port = None
+        self.error = ""
+        self.last_announce = 0
+
+    def preview_dir(self):
+        return os.path.join(data_dir("tv"), "미리보기")
+
+    def rows(self):
+        d = self.preview_dir()
+        try:
+            with open(os.path.join(d, "status.json"), "r", encoding="utf-8") as f:
+                st = json.load(f)
+        except Exception:
+            st = {}
+        out = []
+        for k, v in (st.items() if isinstance(st, dict) else []):
+            if not _TV_KEY_RE.match(k):
+                continue
+            out.append({"key": k, "kind": v.get("kind", ""), "title": v.get("title", ""), "src": v.get("src", ""),
+                        "state": v.get("state", ""), "dirty": bool(v.get("dirty")), "saved_at": v.get("saved_at", ""),
+                        "updated": v.get("updated", ""), "has_pdf": os.path.exists(os.path.join(d, k + ".pdf"))})
+        out.sort(key=lambda r: r.get("saved_at") or r.get("updated") or "", reverse=True)
+        return out
+
+    def stop(self):
+        h, self.httpd = self.httpd, None
+        if h is not None:
+            try:
+                h.shutdown()
+                h.server_close()
+            except Exception:
+                pass
+
+    def start(self, port):
+        self.stop()
+        import threading
+        from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
+        host = self
+
+        class H(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def _send(self, code, data, ctype, extra=None):
+                data = data.encode("utf-8") if isinstance(data, str) else data
+                self.send_response(code)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Access-Control-Allow-Origin", "*")      # 라디오 조회 페이지에서 이 목록을 읽을 수 있게 (읽기 전용)
+                for k, v in (extra or {}).items():
+                    self.send_header(k, v)
+                self.end_headers()
+                if self.command != "HEAD":
+                    self.wfile.write(data)
+
+            def do_HEAD(self):
+                self.do_GET()
+
+            def do_GET(self):
+                try:
+                    path = self.path.split("?", 1)[0].rstrip("/") or "/"
+                    if path == "/":
+                        return self._send(200, _TV_HTML, "text/html; charset=utf-8")
+                    if path == "/api/tv":
+                        body = json.dumps({"app": "edit-tv-view", "name": _pc_name(), "rows": host.rows()}, ensure_ascii=False)
+                        return self._send(200, body, "application/json; charset=utf-8")
+                    if path.startswith("/tv/") and path.endswith(".pdf"):
+                        from urllib.parse import unquote
+                        key = unquote(path[4:-4])
+                        f = os.path.join(host.preview_dir(), key + ".pdf")
+                        if _TV_KEY_RE.match(key) and os.path.exists(f):
+                            with open(f, "rb") as fh:
+                                return self._send(200, fh.read(), "application/pdf", {"Content-Disposition": "inline"})
+                    return self._send(404, '{"error":"없음"}', "application/json; charset=utf-8")
+                except Exception:
+                    try:
+                        self._send(500, '{"error":"오류"}', "application/json; charset=utf-8")
+                    except Exception:
+                        pass
+
+            def _deny(self):
+                self._send(405, '{"error":"조회 전용"}', "application/json; charset=utf-8")
+
+            do_POST = do_PUT = do_DELETE = do_PATCH = _deny
+
+        class S(ThreadingHTTPServer):
+            allow_reuse_address = os.name != "nt"
+            daemon_threads = True
+
+        try:
+            self.httpd = S(("0.0.0.0", int(port)), H)
+        except OSError as exc:
+            self.httpd = None
+            self.error = f"{port}번 포트를 열 수 없습니다 ({exc})"
+            return False
+        self.port, self.error = int(port), ""
+        threading.Thread(target=self.httpd.serve_forever, kwargs={"poll_interval": 0.5}, daemon=True).start()
+        return True
+
+    def tick(self, on, port):
+        tv_installed = installed_info("schedule", "tv") or installed_info("dmb", "tv")
+        if not on or not tv_installed:
+            self.stop()
+            return ""
+        if self.httpd is None or self.port != port:
+            if not self.start(port):
+                return "⚠ TV 편성표 조회: " + self.error
+        if time.time() - self.last_announce > 4:
+            self.discovery.announce("tv", self.port)
+            self.last_announce = time.time()
+        return f"📺 TV 주간 편성표 다른 PC 조회 중: http://{_lan_ip() or _pc_name()}:{self.port}"
+
+
+def _lan_ip():
+    import socket
+    try:
+        s_ = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s_.connect(("10.255.255.255", 1))
+            return s_.getsockname()[0]
+        finally:
+            s_.close()
+    except Exception:
+        return ""
+
+
 class RadioViewHost:
     """운행표 편집기를 켜지 않아도, 런처만 켜 두면 '다른 PC 조회'(정산/검색 웹 페이지)를 연다.
     켜기·포트·데이터 위치는 운행표 편집기 설정(⚙️ 다른 PC 조회 허용)을 그대로 따른다. 조회 코드는 설치된 운행표 편집기에서 불러온다."""
 
-    def __init__(self):
+    def __init__(self, discovery=None):
+        self.discovery = discovery
         self.mod = None
         self.mod_key = None
         self.srv = None
@@ -580,7 +808,11 @@ class RadioViewHost:
                 except Exception as exc:
                     self.state = f"⚠ 운행표 조회: 데이터 파일을 열 수 없습니다 ({exc})"
                     return self.state
-                self.srv = mod.ViewServer(lambda: self.store, "런처")
+                try:
+                    self.srv = mod.ViewServer(lambda: self.store, "런처",
+                                              peers_fn=(lambda: self.discovery.list("tv")) if self.discovery else None)
+                except TypeError:                                   # 예전 운행표 편집기
+                    self.srv = mod.ViewServer(lambda: self.store, "런처")
                 if not self.srv.start(port):
                     self.state = "⚠ 운행표 조회: " + (self.srv.error.splitlines()[0] if self.srv.error else "켜지 못함")
                     self.srv = None
@@ -655,11 +887,48 @@ class LauncherApp:
         self.status.pack(fill="x")
         self.view_lbl = tk.Label(self.root, text="", fg="#1e3a8a", font=(self.font, 9, "bold"), anchor="w", padx=14, pady=4, cursor="hand2")
         self.view_lbl.bind("<Button-1>", lambda e: self._copy_view_addr())
-        self.view_host = RadioViewHost()
+        self.discovery = Discovery()
+        self.discovery.start()
+        self.view_host = RadioViewHost(self.discovery)
+        self.tv_host = TvViewHost(self.discovery)
+        self.tv_lbl = tk.Label(self.root, text="", fg="#7c2d12", font=(self.font, 9, "bold"), anchor="w", padx=14, pady=2, cursor="hand2")
+        self.tv_lbl.bind("<Button-1>", lambda e: self._copy_addr(self.tv_lbl))
+        self.tv_on_var = tk.BooleanVar(value=bool(self.settings.get("tv_view_on", False)))
+        ttk.Checkbutton(bot, text="📺 TV 편성표 다른 PC에서 보기 허용", variable=self.tv_on_var,
+                        command=self._save_tv_view).pack(side="right", padx=8)
         self.root.after(1500, self._view_tick)
 
+    def _save_tv_view(self):
+        self.settings["tv_view_on"] = bool(self.tv_on_var.get())
+        save_settings(self.settings)
+        self._tv_tick_once()
+
+    def _tv_tick_once(self):
+        try:
+            port = int(self.settings.get("tv_view_port", TV_VIEW_PORT_DEFAULT))
+            txt = self.tv_host.tick(bool(self.settings.get("tv_view_on", False)), port)
+        except Exception as exc:
+            txt = f"⚠ TV 편성표 조회: {exc}"
+        try:
+            if txt:
+                self.tv_lbl.config(text=txt + ("   (눌러서 주소 복사)" if txt.startswith("📺") else ""))
+                if not self.tv_lbl.winfo_ismapped():
+                    self.tv_lbl.pack(fill="x", before=self.status)
+            elif self.tv_lbl.winfo_ismapped():
+                self.tv_lbl.pack_forget()
+        except Exception:
+            pass
+
+    def _copy_addr(self, lbl):
+        m = re.search(r"http://\S+", lbl.cget("text"))
+        if m:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(m.group(0))
+            self.status.config(text=f"주소를 복사했습니다: {m.group(0)}", foreground="#15803d")
+
     def _view_tick(self):
-        """10초마다: 운행표 편집기 설정을 보고 다른 PC 조회 페이지를 켜고 끈다."""
+        """10초마다: 운행표 편집기 설정을 보고 다른 PC 조회 페이지를 켜고 끈다. TV 편성표 조회·알림도."""
+        self._tv_tick_once()
         try:
             txt = self.view_host.tick()
         except Exception as exc:
@@ -673,7 +942,7 @@ class LauncherApp:
                 self.view_lbl.pack_forget()
         except Exception:
             pass
-        self.root.after(10000, self._view_tick)
+        self.root.after(5000, self._view_tick)
 
     def _copy_view_addr(self):
         txt = self.view_lbl.cget("text")

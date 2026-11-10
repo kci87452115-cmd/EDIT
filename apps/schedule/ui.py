@@ -45,7 +45,7 @@ def schedule_badge_dir():
         return os.path.join(home, "데이터", "편성표", "badges")
     return os.path.abspath("badges")
 
-APP_VERSION = "3.12.7"
+APP_VERSION = "3.13.0"
 
 
 def _detect_profile():
@@ -63,6 +63,44 @@ APP_TITLE = (f"DMB 편성 편집기 v{APP_VERSION}" if IS_DMB
 # 편성표 편집기와 DMB 편집기가 같이 쓰는 것 (나머지 설정·자동 저장·머리글은 따로)
 SHARED_KEYS = ("title_presets", "favorite_presets", "custom_badge_paths", "global_font_path")
 DMB_REGIONS = ["광주", "전주", "여수", "목포"]
+
+
+def tv_preview_dir():
+    """다른 PC 조회용 주간 편성표 미리보기 폴더 (런처로 실행할 때만): C:\\EDIT\\TV\\데이터\\미리보기"""
+    home = os.environ.get("RADIO_HOME")
+    return os.path.join(home, "데이터", "미리보기") if home else ""
+
+
+def update_tv_preview_status(key, **fields):
+    d = tv_preview_dir()
+    if not d:
+        return
+    try:
+        os.makedirs(d, exist_ok=True)
+        path = os.path.join(d, "status.json")
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                st = json.load(f)
+            if not isinstance(st, dict):
+                st = {}
+        except Exception:
+            st = {}
+        cur = st.get(key) or {}
+        cur.update(fields)
+        cur["updated"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        st[key] = cur
+        if len(st) > 30:                          # 오래된 주는 정리 (최근 30개만)
+            for k in sorted(st, key=lambda k: st[k].get("updated", ""))[:-30]:
+                st.pop(k, None)
+                try:
+                    os.remove(os.path.join(d, k + ".pdf"))
+                except OSError:
+                    pass
+        with open(path + ".tmp", "w", encoding="utf-8") as f:
+            json.dump(st, f, ensure_ascii=False, indent=1)
+        os.replace(path + ".tmp", path)
+    except Exception:
+        pass
 
 
 def schedule_settings_path():
@@ -1203,6 +1241,10 @@ class ScheduleEditor:
         self.save_autosave()
 
     def _exit_clean(self):
+        try:
+            self._tv_preview_mark(force_clear=True)     # 끄면 '현재 편집중' 표시를 지운다
+        except Exception:
+            pass
         self._clean_exit = True
         self.save_autosave()
         self.root.destroy()
@@ -1331,6 +1373,11 @@ class ScheduleEditor:
             pass
         self._save_shared()
         self._save_work_record()
+        try:
+            if not getattr(self, "_clean_exit", False):
+                self._tv_preview_mark()
+        except Exception:
+            pass
 
     # ------------------------------------------------------------ PDF 별 작업 기록 (다음 판으로 옮길 때 씀)
     def _work_dir(self):
@@ -3815,11 +3862,52 @@ class ScheduleEditor:
             with open(out_path, "wb") as f:
                 f.write(pdf_bytes)
             self._mark_saved()
+            self._publish_tv_preview(pdf_bytes)
             messagebox.showinfo("저장 완료", f"PDF 파일이 성공적으로 저장되었습니다:\n{out_path}")
             return True
         except Exception as e:
             messagebox.showerror("저장 실패", f"PDF 파일 저장 실패:\n{str(e)}")
             return False
+
+    def _tv_preview_key(self):
+        stem = os.path.splitext(os.path.basename(self.pdf_path or ""))[0]
+        stem = re.sub(r"[^0-9A-Za-z가-힣_\-]", "_", stem)[:60]
+        return f"{PROFILE}-{stem}" if stem else ""
+
+    def _tv_preview_title(self):
+        st = self.header_edit.get(self.current_page) or {}
+        if st.get("title_on") and (st.get("title") or "").strip():
+            return st["title"].strip()
+        return self._suggest_header_title()
+
+    def _publish_tv_preview(self, pdf_bytes):
+        """다른 PC 조회용: 저장한 주간 편성표 PDF를 미리보기 폴더에 두고 '수정완료'로 적는다."""
+        d, key = tv_preview_dir(), self._tv_preview_key()
+        if not d or not key:
+            return
+        try:
+            os.makedirs(d, exist_ok=True)
+            with open(os.path.join(d, key + ".pdf.tmp"), "wb") as f:
+                f.write(pdf_bytes)
+            os.replace(os.path.join(d, key + ".pdf.tmp"), os.path.join(d, key + ".pdf"))
+        except Exception:
+            return
+        update_tv_preview_status(key, kind=("DMB" if IS_DMB else "TV"), title=self._tv_preview_title(), state="수정완료", dirty=False,
+                                 saved_at=datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                 src=os.path.basename(self.pdf_path or ""))
+        self._tv_pv_dirty = False
+
+    def _tv_preview_mark(self, force_clear=False):
+        """저장 안 한 수정이 생기면 '현재 편집중', 없어지면 지운다 (바뀔 때만 파일을 고친다)."""
+        key = self._tv_preview_key()
+        if not tv_preview_dir() or not key:
+            return
+        dirty = False if force_clear else self._has_unsaved_work()
+        if dirty == getattr(self, "_tv_pv_dirty", None):
+            return
+        self._tv_pv_dirty = dirty
+        f = {"dirty": dirty, "kind": ("DMB" if IS_DMB else "TV"), "title": self._tv_preview_title(), "src": os.path.basename(self.pdf_path or "")}
+        update_tv_preview_status(key, **f)
 
     def _default_save_name(self):
         """저장 이름 제안. DMB: 'MBC_11__1__2.pdf' -> 'DMB_11__1__2.pdf' / 편성표: 원래 이름 그대로"""

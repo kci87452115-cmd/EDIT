@@ -25,7 +25,7 @@ except ImportError:
     except ImportError:
         fitz = None
 
-APP_VERSION = "2.6.0"
+APP_VERSION = "2.7.0"
 APP_TITLE = f"운행표 데이터 편집기 v{APP_VERSION}"
 APP_MUTEX = "RunSheetEditor_Running"      # 설치 프로그램이 '실행 중'을 알아보는 이름 (setup.iss 의 AppMutex 와 같아야 함)
 RUN_BY_LAUNCHER = bool(os.environ.get("RADIO_LAUNCHER"))   # 편집 프로그램 런처로 실행됨 -> 업데이트는 런처가 한다
@@ -1192,6 +1192,7 @@ tr.tot td{font-weight:bold;background:#f8fafc}
 </div>
 <div class="row tabs"><button id="tA" class="on" onclick="tab('A')">합계</button><button id="tD" onclick="tab('D')">상세 목록</button>
  <button id="tP" onclick="tab('P')">📄 운행표 미리보기 · 인쇄</button>
+ <button id="tT" onclick="tab('T')">📺 TV 주간 편성표</button>
  <a id="csv" href="#" style="margin-left:auto">⬇ 상세 목록 CSV(엑셀) 내려받기</a></div>
 <div class="msg" id="msg"></div>
 <div class="scroll"><table id="tbl"></table></div>
@@ -1207,7 +1208,24 @@ function preset(k){const t=new Date();let a=new Date(t),b=new Date(t);
 function q(){const p=new URLSearchParams({from:$('from').value,to:$('to').value,media:$('media').value,grp:$('grp').value,kw:$('kw').value,target:$('target').value,by:$('by').value});return p.toString()}
 const num=v=>Number(v||0).toLocaleString('ko-KR');
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-function tab(k){cur=k;for(const t of ['A','D','P'])$('t'+t).className=k===t?'on':'';run()}
+function tab(k){cur=k;for(const t of ['A','D','P','T'])$('t'+t).className=k===t?'on':'';run()}
+function tvManual(){const v=prompt('TV 편성표 PC 주소 (예: http://192.168.0.20:8081)\n자동으로 못 찾을 때만 넣으세요. 비우면 지웁니다.',localStorage.getItem('tvaddr')||'');
+ if(v===null)return;try{v.trim()?localStorage.setItem('tvaddr',v.trim().replace(/\/+$/,'')):localStorage.removeItem('tvaddr')}catch(e){}tvsheets()}
+async function tvsheets(){$('msg').textContent='TV 편성표 PC를 찾는 중…';
+ let bases=[];try{const p=await (await fetch('api/peers')).json();for(const x of p.rows)bases.push({url:'http://'+x.ip+':'+x.port,name:x.name})}catch(e){}
+ let man='';try{man=localStorage.getItem('tvaddr')||''}catch(e){}
+ if(man&&!bases.some(b=>b.url===man))bases.push({url:man,name:'직접 넣은 주소'});
+ let h='<tr><th>편성표</th><th>종류</th><th>상태</th><th>마지막 저장</th><th>미리보기 · 인쇄</th><th>TV PC</th></tr>',n=0,bad=[];
+ for(const b of bases){try{const d=await (await fetch(b.url+'/api/tv')).json();
+   for(const x of d.rows){n++;const st=x.dirty?'<b style="color:#c2410c">✏ 현재 편집중</b>':(x.state==='수정완료'?'<b style="color:#15803d">✔ 수정완료</b>':'<b style="color:#c2410c">✏ 편집중</b>');
+    h+='<tr><td>'+esc(x.title||x.src)+'</td><td>'+esc(x.kind)+'</td><td>'+st+'</td><td>'+esc((x.saved_at||'').slice(5,16))+'</td><td>'
+     +(x.has_pdf?'<a target="_blank" href="'+esc(b.url)+'/tv/'+encodeURIComponent(x.key)+'.pdf">📄 보기 · 인쇄</a>':'<span style="color:#9ca3af">아직 저장 전</span>')+'</td><td>'+esc(d.name||b.name)+'</td></tr>'}}
+  catch(e){bad.push(b.url)}}
+ $('tbl').innerHTML=h;
+ $('msg').innerHTML=(bases.length?(n?'TV 편집기에서 PDF를 저장할 때마다 바뀝니다. (30초마다 새로고침)':'TV 편성표 PC는 찾았지만 저장된 편성표가 아직 없습니다.')
+   :'TV 편성표 PC를 찾지 못했습니다. TV PC의 편집 프로그램 런처에서 「📺 TV 편성표 다른 PC에서 보기 허용」을 켜 주세요.')
+  +(bad.length?' ⚠ 연결 안 됨: '+esc(bad.join(', ')):'')+' <a href="#" onclick="tvManual();return false">주소 직접 넣기</a>'}
+setInterval(()=>{if(cur==='T'&&!document.hidden)tvsheets()},30000);
 const WK='일월화수목금토';
 function dlabel(s){const d=new Date(s+'T00:00:00');return isNaN(d)?s:(s.slice(5).replace('-','/')+'('+WK[d.getDay()]+')')}
 async function previews(){$('msg').textContent='불러오는 중…';
@@ -1222,7 +1240,7 @@ async function previews(){$('msg').textContent='불러오는 중…';
   $('tbl').innerHTML=h;$('msg').textContent=d.rows.length?'편집기에서 저장할 때마다 바뀝니다. 「보기 · 인쇄」를 누르면 새 창에서 열리고, 브라우저의 인쇄 버튼으로 인쇄합니다. (30초마다 새로고침)':'아직 미리보기가 없습니다. 편집기에서 운행표를 저장하면 여기에 나타납니다.'}
  catch(e){$('msg').textContent='⚠ 편집기 PC에 연결하지 못했습니다.'}}
 setInterval(()=>{if(cur==='P'&&!document.hidden)previews()},30000);
-async function run(){if(cur==='P')return previews();$('csv').href='api/detail.csv?'+q();$('msg').textContent='불러오는 중…';
+async function run(){if(cur==='P')return previews();if(cur==='T')return tvsheets();$('csv').href='api/detail.csv?'+q();$('msg').textContent='불러오는 중…';
  try{const r=await fetch((cur==='A'?'api/aggregate?':'api/detail?')+q());const d=await r.json();
   if(d.error){$('msg').textContent='⚠ '+d.error;$('tbl').innerHTML='';return}
   let h='';
@@ -1275,9 +1293,10 @@ class ViewServer:
     """읽기 전용 조회 서버. start() 로 켜고 stop() 으로 끈다.
     같은 포트를 런처(또는 편집기)가 이미 열어 두었으면 그것을 쓴다 (external)."""
 
-    def __init__(self, get_store, host_kind="편집기"):
+    def __init__(self, get_store, host_kind="편집기", peers_fn=None):
         self.get_store = get_store
         self.host_kind = host_kind
+        self.peers_fn = peers_fn          # 런처가 사내망에서 찾은 TV 편성표 조회 PC 목록
         self.httpd = None
         self.port = None
         self.error = ""
@@ -1331,9 +1350,18 @@ class ViewServer:
                     route = u.path.rstrip("/") or "/"
                     if route == "/":
                         return self._send(200, _VIEW_HTML, "text/html; charset=utf-8")
-                    store = owner.get_store()
-                    if store is None:
+                    if route in ("/api/peers", "/api/runsheets") or route.startswith("/runsheet/"):
+                        store = None
+                    else:
+                        store = owner.get_store()
+                    if store is None and not (route in ("/api/peers", "/api/runsheets") or route.startswith("/runsheet/")):
                         return self._json({"error": "편집기의 데이터 파일을 열 수 없습니다."}, 503)
+                    if route == "/api/peers":
+                        try:
+                            peers = owner.peers_fn() if owner.peers_fn else []
+                        except Exception:
+                            peers = []
+                        return self._json({"rows": peers, "auto": owner.peers_fn is not None})
                     if route == "/api/runsheets":
                         return self._json({"rows": list_previews()})
                     if route.startswith("/runsheet/") and route.endswith(".pdf"):
