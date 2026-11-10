@@ -25,7 +25,7 @@ except ImportError:
     except ImportError:
         fitz = None
 
-APP_VERSION = "2.4.1"
+APP_VERSION = "2.4.2"
 APP_TITLE = f"운행표 데이터 편집기 v{APP_VERSION}"
 APP_MUTEX = "RunSheetEditor_Running"      # 설치 프로그램이 '실행 중'을 알아보는 이름 (setup.iss 의 AppMutex 와 같아야 함)
 RUN_BY_LAUNCHER = bool(os.environ.get("RADIO_LAUNCHER"))   # 편집 프로그램 런처로 실행됨 -> 업데이트는 런처가 한다
@@ -1408,6 +1408,16 @@ class DataEditor:
 
     def apply_view_server(self, quiet=False, parent=None):
         """설정대로 조회 서버를 켜거나 끈다."""
+        was = self.view_server.running
+        self._apply_view_server(quiet, parent)
+        if self.view_server.running != was:
+            self._rebuild_toolbar()
+        if self.view_server.running:
+            self._write_view_address_file()
+            if not was and not quiet:                 # 방금 켰으면 접속 주소를 바로 알려 준다
+                self.root.after(150, lambda: self.show_view_addresses(parent if parent is not None and parent.winfo_exists() else None))
+
+    def _apply_view_server(self, quiet=False, parent=None):
         if self.view_on:
             if not (self.view_server.running and self.view_server.port == self.view_port):
                 if not self.view_server.start(self.view_port) and not quiet:
@@ -1925,9 +1935,92 @@ Start-Process (Join-Path $prog 'RunSheetEditor.exe') -WorkingDirectory $prog
         for w in self.sidebar_content_frame.winfo_children():
             w.destroy()
 
+    def _add_view_badge(self, t):
+        """다른 PC 조회가 켜져 있으면 툴바 오른쪽 끝에 접속 주소 버튼."""
+        if self.view_server.running:
+            urls = self.view_server.urls()
+            ttk.Button(t, text=f"🌐 조회 주소: {urls[-1] if len(urls) > 1 else urls[0]}",
+                       command=self.show_view_addresses).pack(side="right", padx=4)
+
+    def _rebuild_toolbar(self):
+        try:
+            if getattr(self, "_pdf_ui", False):
+                self._build_pdf_toolbar()
+            else:
+                self._build_default_toolbar()
+        except Exception:
+            pass
+
+    def show_view_addresses(self, parent=None):
+        """다른 PC에서 들어올 주소를 보여 주고 복사·열기. 주소는 데이터 폴더의 '다른PC_조회주소.txt' 에도 남긴다."""
+        owner = parent or self.root
+        urls = self.view_server.urls()
+        if not urls:
+            messagebox.showinfo("다른 PC 조회", "다른 PC 조회가 꺼져 있습니다.\n⚙️ 설정에서 켜 주세요.", parent=owner)
+            return
+        win = tk.Toplevel(owner)
+        win.title("🌐 다른 PC 조회 주소")
+        win.transient(owner)
+        try:
+            win.grab_set()                                # 설정 창이 잡고 있어도 이 창을 쓸 수 있게
+        except Exception:
+            pass
+        f = ttk.Frame(win, padding=14)
+        f.pack(fill="both", expand=True)
+        ttk.Label(f, text="다른 PC의 브라우저(크롬·엣지) 주소창에 아래 주소 중 하나를 넣으면 정산/검색을 볼 수 있습니다.",
+                  wraplength=520, justify="left").pack(anchor="w", pady=(0, 8))
+        order = urls[1:] + urls[:1]                       # IP 주소를 먼저, PC 이름 주소는 마지막
+        for i, u in enumerate(order):
+            r = ttk.Frame(f)
+            r.pack(fill="x", pady=2)
+            e = ttk.Entry(r, width=36, font=(self.ui_font_family, 11))
+            e.insert(0, u)
+            e.configure(state="readonly")
+            e.pack(side="left", padx=(0, 6))
+            ttk.Button(r, text="복사", width=6, command=lambda u_=u: (win.clipboard_clear(), win.clipboard_append(u_), done_lbl.config(text=f"복사했습니다: {u_}"))).pack(side="left")
+            ttk.Button(r, text="열어 보기", width=8, command=lambda u_=u: self._open_url(u_)).pack(side="left", padx=4)
+            ttk.Label(r, text=("← 권장 (IP)" if i == 0 and len(order) > 1 else "PC 이름 (IP가 바뀌어도 됨)" if u == urls[0] else ""),
+                      foreground="#64748b", font=(self.ui_font_family, 8)).pack(side="left")
+        done_lbl = ttk.Label(f, text="", foreground="#15803d")
+        done_lbl.pack(anchor="w", pady=(6, 0))
+        path = self._write_view_address_file()
+        ttk.Label(f, text=("주소를 '" + path + "' 에도 적어 두었습니다." if path else "") +
+                          "\n안 열리면: 이 PC가 켜져 있고 편집기가 실행 중인지, 방화벽에서 '허용'했는지 확인해 주세요.",
+                  foreground="#64748b", font=(self.ui_font_family, 8), wraplength=520, justify="left").pack(anchor="w", pady=(4, 0))
+        ttk.Button(f, text="닫기", command=win.destroy).pack(pady=(10, 0))
+
+    @staticmethod
+    def _open_url(url):
+        try:
+            os.startfile(url)                             # 윈도우: 기본 브라우저로
+        except Exception:
+            try:
+                import webbrowser
+                webbrowser.open(url)
+            except Exception:
+                pass
+
+    def _write_view_address_file(self):
+        urls = self.view_server.urls()
+        if not urls:
+            return ""
+        path = os.path.join(DATA_DIR, "다른PC_조회주소.txt")
+        try:
+            os.makedirs(DATA_DIR, exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("운행표 정산/검색 - 다른 PC에서 조회하는 주소\n")
+                f.write(f"편집기 PC: {computer_name()}   (기록: {time.strftime('%Y-%m-%d %H:%M')})\n\n")
+                for u in urls[1:] + urls[:1]:
+                    f.write(u + "\n")
+                f.write("\n다른 PC의 브라우저 주소창에 위 주소 중 하나를 넣으세요. 편집기가 켜져 있을 때만 열립니다.\n")
+            return path
+        except Exception:
+            return ""
+
     def _build_default_toolbar(self):
         self.clear_toolbar()
         t = self.toolbar
+        self._add_view_badge(t)
         ttk.Button(t, text="PDF 열기", command=self.open_pdf).pack(side="left", padx=3)
         ttk.Button(t, text="⚙️ 설정", command=self.open_settings_window).pack(side="left", padx=3)
         ttk.Button(t, text="💰 정산 / 검색", command=self.show_report).pack(side="left", padx=3)
@@ -1936,6 +2029,7 @@ Start-Process (Join-Path $prog 'RunSheetEditor.exe') -WorkingDirectory $prog
     def _build_pdf_toolbar(self):
         self.clear_toolbar()
         t = self.toolbar
+        self._add_view_badge(t)
         ttk.Button(t, text="PDF 열기", command=self.open_pdf).pack(side="left", padx=3)
         ttk.Button(t, text="⚙️ 설정", command=self.open_settings_window).pack(side="left", padx=3)
         ttk.Separator(t, orient="vertical").pack(side="left", fill="y", padx=5)
