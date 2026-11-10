@@ -45,7 +45,7 @@ def schedule_badge_dir():
         return os.path.join(home, "데이터", "편성표", "badges")
     return os.path.abspath("badges")
 
-APP_VERSION = "3.12.1"
+APP_VERSION = "3.12.2"
 
 
 def _detect_profile():
@@ -2469,9 +2469,8 @@ class ScheduleEditor:
         m.add_command(label="🧩 이 칸을 작업 스타일로 저장…", command=self.save_split_style)
         sm = tk.Menu(m, tearoff=0, font=fnt)
         fresh = block.get("group_id") is None and self._orig_match(block) is not None
-        kw_txt = self._norm_kw(self._text_in_rect(block["rect"]))
         for st in self.split_styles:
-            hit = bool(self._norm_kw(st.get("keyword"))) and self._norm_kw(st.get("keyword")) in kw_txt
+            hit = self._style_fits(block, st)[0]
             sm.add_command(label=("✔ " if hit else "    ") + st.get("name", ""),
                            state="normal" if fresh else "disabled",
                            command=lambda s_=st: self._apply_style_here(block, s_))
@@ -4187,6 +4186,10 @@ class ScheduleEditor:
         src = self._text_in_rect((gx0, gy0, gx1, gy1))
         toks = [w for w in src.split() if not re.fullmatch(r"\d{1,2}|UHD|ALL|L|자|수|해|재|\d{1,2}세?", w)]
         style["keyword"] = " ".join(toks).strip() or (parts[0].get("title") or "")
+        m_bot = self._minutes_at(gy1)
+        if m_top is not None and m_bot is not None:
+            style["dur"] = (m_bot - m_top) % 1440 or 1440      # 원래 칸 길이(분) - 길이가 다른 칸에는 적용하지 않으려고
+        style["height"] = round((gy1 - gy0) if axis == "h" else (gx1 - gx0), 2)
         style["name"] = " / ".join((p.get("title") or "").replace("\n", " ") for p in style["parts"] if p.get("title")) or style["keyword"]
         return style, ""
 
@@ -4241,15 +4244,51 @@ class ScheduleEditor:
         ttk.Button(b, text="취소", command=win.destroy).pack(side="left", padx=4)
         win.bind("<Return>", ok)
 
-    def _style_targets(self, style):
+    def _program_text(self, rect):
+        """칸 안 원본 글자에서 분 숫자·뱃지 글자를 뺀 것 (띄어쓰기 없이)."""
+        toks = [w for w in self._text_in_rect(rect).split() if not re.fullmatch(r"\d{1,2}|UHD|ALL|L|자|수|해|재|\d{1,2}세?", w)]
+        return self._norm_kw(" ".join(toks))
+
+    def _style_fits(self, b, style):
+        """이 칸에 스타일을 걸어도 되는지. (맞음, 이유)"""
         kw = self._norm_kw(style.get("keyword"))
+        if not kw:
+            return False, "찾을 글자 없음"
+        txt = self._program_text(b["rect"])
+        if kw not in txt:
+            return False, "글자 다름"
+        if len(txt) > len(kw) * 2 + 6:                   # 칸 안에 다른 프로그램 글자가 많이 섞여 있음 (여러 칸이 한 칸으로 잡힌 경우)
+            return False, "다른 프로그램이 섞인 칸"
+        dur = style.get("dur")
+        if dur and style.get("axis", "h") == "h":
+            m0, m1 = self._minutes_at(b["rect"][1]), self._minutes_at(b["rect"][3])
+            if m0 is not None and m1 is not None:
+                d = (m1 - m0) % 1440 or 1440
+                if abs(d - dur) > max(10, dur * 0.25):    # 길이가 많이 다름 (예: 50분짜리 스타일을 30분 칸에)
+                    return False, f"길이 다름({d}분, 스타일 {dur}분)"
+        return True, ""
+
+    def _style_targets(self, style, skipped=None):
         out = []
         for b in self.blocks:
             if b.get("group_id") is not None or self._orig_match(b) is None:
                 continue                                  # 이미 나눈 칸·옮긴 칸은 건드리지 않는다
-            if kw and kw in self._norm_kw(self._text_in_rect(b["rect"])):
+            ok, why = self._style_fits(b, style)
+            if ok:
                 out.append(b)
+            elif skipped is not None and why != "글자 다름":
+                skipped.append((b, style, why))
         return out
+
+    def _block_when(self, b):
+        """'10/24(토) 20:00~20:40' 같은 칸 설명."""
+        t0, t1 = self._time_label(b["rect"][1]), self._time_label(b["rect"][3])
+        day = ""
+        for d in (self.header_found_by_page.get(self.current_page) or {}).get("days") or []:
+            if abs(d["cx"] - (b["rect"][0] + b["rect"][2]) / 2) <= d.get("cell_w", 60) / 2:
+                day = d["text"] + " "
+                break
+        return f"{day}{t0}~{t1}" if t0 else day.strip() or "칸"
 
     def _apply_style_to(self, block, style):
         """한 칸에 스타일 적용. 성공하면 새 칸 목록, 못 하면 None."""
@@ -4312,16 +4351,24 @@ class ScheduleEditor:
         styles = list(self.split_styles) if styles is None else styles
         if not self.pdf_path or not styles:
             return 0
-        plan = [(st, b) for st in styles for b in self._style_targets(st)]
+        skipped = []
+        plan = [(st, b) for st in styles for b in self._style_targets(st, skipped)]
         seen, todo = set(), []
         for st, b in plan:                                # 한 칸에 스타일 두 개가 걸리면 먼저 저장한 것만
             if b["id"] not in seen:
                 seen.add(b["id"])
                 todo.append((st, b))
+        skip_txt = ""
+        if skipped:
+            skip_txt = "\n\n건너뛴 칸 (글자는 맞지만):\n" + "\n".join(f"  · {st['name']} — {self._block_when(b)}: {why}" for b, st, why in skipped[:12])
         if not todo:
             if not quiet:
-                messagebox.showinfo("작업 스타일", "이 페이지에서 적용할 칸을 찾지 못했습니다.\n(이미 나눈 칸은 건너뜁니다. '찾을 원본 글자'를 확인해 주세요.)")
+                messagebox.showinfo("작업 스타일", "이 페이지에서 적용할 칸을 찾지 못했습니다.\n(이미 나눈 칸은 건너뜁니다. '찾을 원본 글자'를 확인해 주세요.)" + skip_txt)
             return 0
+        if not quiet:
+            lst = "\n".join(f"  · {st['name']} — {self._block_when(b)}" for st, b in todo[:20]) + ("\n  …" if len(todo) > 20 else "")
+            if not messagebox.askyesno("작업 스타일 적용", f"아래 {len(todo)}칸에 적용합니다.\n\n{lst}{skip_txt}\n\n계속할까요?"):
+                return 0
         self.push_history()
         done, skip, names = 0, 0, {}
         for st, b in todo:
@@ -4336,6 +4383,8 @@ class ScheduleEditor:
         self.save_autosave()
         if not quiet or done:
             msg = "\n".join(f"· {n}: {c}칸" for n, c in names.items()) or "적용한 칸 없음"
+            if quiet and skipped:
+                msg += skip_txt
             if skip:
                 msg += f"\n\n칸이 짧아 나누지 못한 {skip}칸은 건너뛰었습니다."
             messagebox.showinfo("작업 스타일 적용", msg + "\n\nCtrl+Z 로 한 번에 되돌릴 수 있습니다.")
