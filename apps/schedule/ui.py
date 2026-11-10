@@ -45,7 +45,7 @@ def schedule_badge_dir():
         return os.path.join(home, "데이터", "편성표", "badges")
     return os.path.abspath("badges")
 
-APP_VERSION = "3.14.0"
+APP_VERSION = "3.14.1"
 
 
 def _detect_profile():
@@ -2940,14 +2940,7 @@ class ScheduleEditor:
 
         right_x = x1 - 4
         badge_y = y0 + 3
-        active_badge_keys = []
-        if opts.get("uhd", False): active_badge_keys.append("uhd")
-        if opts.get("local", False): active_badge_keys.append("local")
-        if opts.get("sign", False): active_badge_keys.append("sign")
-        if opts.get("sub", False): active_badge_keys.append("sub")
-        if opts.get("des", False): active_badge_keys.append("des")
-        age = opts.get("age", "none")
-        if age in ["all", "7", "12", "15", "19"]: active_badge_keys.append(age)
+        active_badge_keys = self._badge_draw_keys(opts)
 
         for bk in active_badge_keys:
             img_path = self.custom_badge_paths.get(bk, os.path.join(self.badge_folder, f"{bk}.png"))
@@ -3468,6 +3461,32 @@ class ScheduleEditor:
         self._paint_shape_preview(block)
         self.draw_pdf(refresh_sidebar=False)
 
+    BADGE_KEYS_LTR = ("des", "sub", "sign", "local", "uhd")    # 예전 표시 순서 (왼쪽 -> 오른쪽)
+
+    def _badge_order(self, opts):
+        """켜진 뱃지를 왼쪽부터 보일 순서로. 체크한 순서(badge_order)를 따르고, 기록이 없으면 예전 순서."""
+        on = [k for k in self.BADGE_KEYS_LTR if opts.get(k)]
+        order = [k for k in (opts.get("badge_order") or []) if k in on]
+        return order + [k for k in on if k not in order]
+
+    def _badge_draw_keys(self, opts):
+        """그리는 순서 (오른쪽 끝부터 왼쪽으로). 연령 뱃지는 예전처럼 맨 왼쪽."""
+        keys = list(reversed(self._badge_order(opts)))
+        age = opts.get("age", "none")
+        if age in ("all", "7", "12", "15", "19"):
+            keys.append(age)
+        return keys
+
+    def _keep_badge_order(self, block, new_opts):
+        """체크박스를 누른 순서대로 뱃지를 보이게: 새로 켠 것은 맨 뒤(오른쪽)에 붙고, 끈 것은 빠진다."""
+        prev = block.get("options") or {}
+        prev_order = self._badge_order(prev)
+        on_now = [k for k in self.BADGE_KEYS_LTR if new_opts.get(k)]
+        order = [k for k in prev_order if k in on_now] + [k for k in on_now if k not in prev_order]
+        if "badge_order" in prev or set(on_now) != set(prev_order):
+            new_opts["badge_order"] = order
+        return new_opts
+
     def on_option_changed(self, block):
         if not hasattr(self, "opt_top_time_enabled_var"):
             return
@@ -3490,6 +3509,7 @@ class ScheduleEditor:
             "age": self.age_var.get()
         }
         self._keep_auto_flags(block, new_opts)
+        self._keep_badge_order(block, new_opts)
         if new_opts != block.get("options"):
             self._push_coalesced("opt")
             block["options"] = new_opts
@@ -3605,7 +3625,7 @@ class ScheduleEditor:
             top_fs = block.get("options", {}).get("top_time_font_size", DEFAULT_TIME_FONT_SIZE)
             bottom_fs = block.get("options", {}).get("bottom_time_font_size", DEFAULT_TIME_FONT_SIZE)
             badge_sz = block.get("options", {}).get("badge_size", 12)
-            block["options"] = self._keep_auto_flags(block, {
+            block["options"] = self._keep_badge_order(block, self._keep_auto_flags(block, {
                 "top_time_enabled": self.opt_top_time_enabled_var.get(),
                 "top_time_val": self.top_time_val_var.get(),
                 "top_time_font_size": top_fs,
@@ -3619,7 +3639,7 @@ class ScheduleEditor:
                 "des": self.opt_des_var.get(),
                 "local": self.opt_local_var.get(),
                 "age": self.age_var.get()
-            })
+            }))
         for i, var in getattr(self, "split_title_vars", {}).items():
             try:
                 self.split_titles[i] = var.get()
@@ -4158,14 +4178,7 @@ class ScheduleEditor:
 
             right_x = r.x1 - 2
             badge_y = r.y0 + 2
-            active_badge_keys = []
-            if opts.get("uhd", False): active_badge_keys.append("uhd")
-            if opts.get("local", False): active_badge_keys.append("local")
-            if opts.get("sign", False): active_badge_keys.append("sign")
-            if opts.get("sub", False): active_badge_keys.append("sub")
-            if opts.get("des", False): active_badge_keys.append("des")
-            age = opts.get("age", "none")
-            if age in ["all", "7", "12", "15", "19"]: active_badge_keys.append(age)
+            active_badge_keys = self._badge_draw_keys(opts)
 
             for bk in active_badge_keys:
                 img_path = self.custom_badge_paths.get(bk, os.path.join(self.badge_folder, f"{bk}.png"))
