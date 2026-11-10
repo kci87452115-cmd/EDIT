@@ -25,7 +25,7 @@ except ImportError:
     except ImportError:
         fitz = None
 
-APP_VERSION = "2.7.0"
+APP_VERSION = "2.7.1"
 APP_TITLE = f"운행표 데이터 편집기 v{APP_VERSION}"
 APP_MUTEX = "RunSheetEditor_Running"      # 설치 프로그램이 '실행 중'을 알아보는 이름 (setup.iss 의 AppMutex 와 같아야 함)
 RUN_BY_LAUNCHER = bool(os.environ.get("RADIO_LAUNCHER"))   # 편집 프로그램 런처로 실행됨 -> 업데이트는 런처가 한다
@@ -3252,7 +3252,9 @@ Start-Process (Join-Path $prog 'RunSheetEditor.exe') -WorkingDirectory $prog
                 body += f"\n(오늘 {gone[0]['removed_at'][11:16]}에 '{gone[0]['seconds']} {gone[0]['name']}' 지움)"
         chk = self.row_check(row)
         extra = ""
-        tag = " (설정)" if self.row_is_custom(row) else ""
+        tag = " (설정)" if any(self.row_is_custom(r) for r in self.linked_rows(row)) else ""
+        if len(self.linked_rows(row)) > 1:
+            tag += "  [" + " + ".join(r["program"] for r in self.linked_rows(row)) + " 합산]"
         if chk:
             sold, cap, added, total = chk
             rt = self.remain_text(cap, total, bool(tag))
@@ -3278,15 +3280,35 @@ Start-Process (Join-Path $prog 'RunSheetEditor.exe') -WorkingDirectory $prog
     def row_is_custom(self, row):
         return (row["time"], row["program"]) in self.caps
 
+    _LINK_SPOT = re.compile(r"(?i)^\s*spot\s*(\d{2}59)\s*$")
+    _LINK_CAMP = re.compile(r"^\s*(\d{2}59)\s*캠페인\s*$")
+
+    def _link_key(self, row):
+        """'Spot 0659' 와 '0659캠페인' 처럼 **59 Spot·캠페인은 같은 자리 -> 같은 열쇠('0659')."""
+        p = row.get("program") or ""
+        m = self._LINK_SPOT.match(p) or self._LINK_CAMP.match(p)
+        return m.group(1) if m else None
+
+    def linked_rows(self, row):
+        """같은 자리로 묶이는 행들 (이 행 포함). 묶이지 않으면 [row]."""
+        k = self._link_key(row)
+        if not k:
+            return [row]
+        out = [r for r in self.rows.get(row.get("page"), []) if self._link_key(r) == k]
+        return out if row in out else [row] + out
+
     def row_check(self, row, extra_key=None, extra_sec=0):
         """(원본 판매, 재원, 추가한 초, 합계). 재원을 못 읽은 행은 None.
-        extra_key 칸의 기존 입력은 빼고 extra_sec 를 더해 '넣으면 어떻게 되는지'를 미리 계산할 수 있다."""
-        amt = self.row_amount(row)
-        if amt is None:
+        extra_key 칸의 기존 입력은 빼고 extra_sec 를 더해 '넣으면 어떻게 되는지'를 미리 계산할 수 있다.
+        **59 Spot 과 **59캠페인은 한 자리로 보고 판매·추가 초를 합치고, 재원은 둘 중 큰 것을 쓴다."""
+        group = self.linked_rows(row)
+        amts = [a for a in (self.row_amount(r) for r in group) if a]
+        if not amts:
             return None
-        sold, cap = amt
-        rk = (row["page"], row["time"], row["program"])
-        added = sum(e["seconds"] for k, e in self.entries.items() if k[:3] == rk and k != extra_key) + extra_sec
+        sold = sum(a[0] for a in amts)
+        cap = max(a[1] for a in amts)
+        rks = {(r["page"], r["time"], r["program"]) for r in group}
+        added = sum(e["seconds"] for k, e in self.entries.items() if k[:3] in rks and k != extra_key) + extra_sec
         return sold, cap, added, sold + added
 
     @staticmethod
