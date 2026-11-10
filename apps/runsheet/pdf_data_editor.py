@@ -25,7 +25,7 @@ except ImportError:
     except ImportError:
         fitz = None
 
-APP_VERSION = "2.9.3"
+APP_VERSION = "2.9.4"
 APP_TITLE = f"운행표 데이터 편집기 v{APP_VERSION}"
 APP_MUTEX = "RunSheetEditor_Running"      # 설치 프로그램이 '실행 중'을 알아보는 이름 (setup.iss 의 AppMutex 와 같아야 함)
 RUN_BY_LAUNCHER = bool(os.environ.get("RADIO_LAUNCHER"))   # 편집 프로그램 런처로 실행됨 -> 업데이트는 런처가 한다
@@ -5549,8 +5549,14 @@ Start-Process (Join-Path $prog 'RunSheetEditor.exe') -WorkingDirectory $prog
         ttk.Button(nav, text="◀", width=3, command=lambda: goto(st["page"] - 1)).pack(side="left")
         ttk.Label(nav, textvariable=pv, width=10, anchor="center").pack(side="left")
         ttk.Button(nav, text="▶", width=3, command=lambda: goto(st["page"] + 1)).pack(side="left")
-        ttk.Button(nav, text="🔍-", width=4, command=lambda: zoom(-1)).pack(side="left", padx=(12, 2))
-        ttk.Button(nav, text="🔍+", width=4, command=lambda: zoom(1)).pack(side="left")
+        ttk.Button(nav, text="🔍-", width=4, command=lambda: set_zoom(st["zoom"] / 1.25)).pack(side="left", padx=(12, 2))
+        zl = ttk.Label(nav, text="", width=6, anchor="center", font=(self.ui_font_family, 9, "bold"))
+        zl.pack(side="left")
+        ttk.Button(nav, text="🔍+", width=4, command=lambda: set_zoom(st["zoom"] * 1.25)).pack(side="left")
+        ttk.Button(nav, text="⤢ 전체 보기", command=lambda: set_zoom(fit_zoom())).pack(side="left", padx=(10, 2))
+        ttk.Button(nav, text="↔ 너비 맞춤", command=lambda: set_zoom(fit_zoom(True))).pack(side="left", padx=2)
+        ttk.Button(nav, text="100%", command=lambda: set_zoom(1.0)).pack(side="left", padx=2)
+        ttk.Label(nav, text="Ctrl + 휠: 확대/축소", foreground="#64748b", font=(self.ui_font_family, 8)).pack(side="right")
 
         mid = ttk.Frame(win)
         mid.pack(fill="both", expand=True, pady=4)
@@ -5590,6 +5596,7 @@ Start-Process (Join-Path $prog 'RunSheetEditor.exe') -WorkingDirectory $prog
             cv.create_image(M, M, image=st["photo"], anchor="nw")
             cv.configure(scrollregion=(0, 0, pg.rect.width * z + 2 * M, pg.rect.height * z + 2 * M))
             pv.set(f"{st['page'] + 1} / {pdoc.page_count}")
+            zl.config(text=f"{round(z * 100)}%")
 
         def goto(i):
             i = max(0, min(st["doc"].page_count - 1, i))
@@ -5605,8 +5612,37 @@ Start-Process (Join-Path $prog 'RunSheetEditor.exe') -WorkingDirectory $prog
                 st["zoom"] = ZOOM_LEVELS[tgt]
                 draw()
 
+        def fit_zoom(width_only=False):
+            win.update_idletasks()
+            pg = st["doc"].load_page(st["page"])
+            cw, ch = max(100, cv.winfo_width() - 2 * M), max(100, cv.winfo_height() - 2 * M)
+            zw = cw / pg.rect.width
+            return zw if width_only else min(zw, ch / pg.rect.height)
+
+        def set_zoom(z):
+            z = max(0.25, min(6.0, z))               # 25% ~ 600% (100% = PDF 실제 크기)
+            if abs(z - st["zoom"]) < 1e-3:
+                return
+            fx, fy = cv.xview()[0], cv.yview()[0]
+            st["zoom"] = z
+            draw()
+            cv.xview_moveto(fx)
+            cv.yview_moveto(fy)
+
         def wheel(e):
-            cv.yview_scroll(-1 if (e.delta > 0 or e.num == 4) else 1, "units")
+            up = e.delta > 0 or getattr(e, "num", None) == 4
+            if e.state & 0x0004:                     # Ctrl + 휠: 확대/축소
+                set_zoom(st["zoom"] * (1.15 if up else 1 / 1.15))
+            elif e.state & 0x0001:
+                cv.xview_scroll(-1 if up else 1, "units")
+            else:
+                cv.yview_scroll(-1 if up else 1, "units")
+            return "break"
+
+        win.bind("<Control-plus>", lambda e: set_zoom(st["zoom"] * 1.25))
+        win.bind("<Control-equal>", lambda e: set_zoom(st["zoom"] * 1.25))
+        win.bind("<Control-minus>", lambda e: set_zoom(st["zoom"] / 1.25))
+        win.bind("<Control-0>", lambda e: set_zoom(fit_zoom()))
 
         cv.bind("<MouseWheel>", wheel)
         cv.bind("<Button-4>", wheel)
