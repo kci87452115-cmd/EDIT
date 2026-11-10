@@ -45,7 +45,7 @@ def schedule_badge_dir():
         return os.path.join(home, "데이터", "편성표", "badges")
     return os.path.abspath("badges")
 
-APP_VERSION = "3.11.1"
+APP_VERSION = "3.11.2"
 
 
 def _detect_profile():
@@ -2087,6 +2087,7 @@ class ScheduleEditor:
                 block["text_dy"] = preset.get("text_dy", 0)
                 if "options" in preset:
                     block["options"] = copy.deepcopy(preset["options"])
+                self._fill_auto_times(block)       # 시간 값은 파렛트 것이 아니라 이 블록 위치의 분으로 (보이기는 체크 상태를 따른다)
                 
         self.draw_pdf()
         self.save_autosave()
@@ -2882,7 +2883,7 @@ class ScheduleEditor:
             row_top_time = ttk.Frame(opt_frame)
             row_top_time.pack(fill="x", pady=2)
             
-            ttk.Checkbutton(row_top_time, text="상단시간(위):", variable=self.opt_top_time_enabled_var, command=lambda: self.on_option_changed(block)).pack(side="left", padx=(0, 2))
+            ttk.Checkbutton(row_top_time, text="상단시간(위):", variable=self.opt_top_time_enabled_var, command=lambda: self._on_time_check(block, "top")).pack(side="left", padx=(0, 2))
             top_entry = ttk.Entry(row_top_time, textvariable=self.top_time_val_var, width=4, font=(self.ui_font_family, 8))
             top_entry.pack(side="left", padx=(0, 4))
             top_entry.bind("<KeyRelease>", lambda e: self.on_option_changed(block))
@@ -2898,7 +2899,7 @@ class ScheduleEditor:
             row_bottom_time = ttk.Frame(opt_frame)
             row_bottom_time.pack(fill="x", pady=2)
             
-            ttk.Checkbutton(row_bottom_time, text="하단시간(아래):", variable=self.opt_bottom_time_enabled_var, command=lambda: self.on_option_changed(block)).pack(side="left", padx=(0, 2))
+            ttk.Checkbutton(row_bottom_time, text="하단시간(아래):", variable=self.opt_bottom_time_enabled_var, command=lambda: self._on_time_check(block, "bottom")).pack(side="left", padx=(0, 2))
             bottom_entry = ttk.Entry(row_bottom_time, textvariable=self.bottom_time_val_var, width=4, font=(self.ui_font_family, 8))
             bottom_entry.pack(side="left", padx=(0, 4))
             bottom_entry.bind("<KeyRelease>", lambda e: self.on_option_changed(block))
@@ -3915,6 +3916,45 @@ class ScheduleEditor:
                 hh, mm = (h + m // 60) % 24, m % 60
                 return f"{hh:02d}:{mm:02d}"
         return ""
+
+    def _auto_minutes(self, block):
+        """블록 위·아래 끝의 시각에서 '분'만 ('20'). 시간 줄을 못 찾으면 None.
+        1분 안쪽으로 어긋난 것은 가까운 5분 눈금에 맞춘다 (선 굵기 때문에 19분·21분으로 읽히는 것 막기)."""
+        out = []
+        for y in (block["rect"][1], block["rect"][3]):
+            lab = self._time_label(y)
+            if not lab:
+                out.append(None)
+                continue
+            m = int(lab[3:])
+            r5 = int(round(m / 5.0) * 5) % 60
+            if abs(m - r5) <= 1 or abs(m - r5) >= 59:
+                m = r5
+            out.append(f"{m:02d}")
+        return tuple(out)
+
+    def _fill_auto_times(self, block, top=True, bottom=True):
+        """블록 옵션의 위·아래 시간 값을 위치에서 읽은 분으로 채운다. 채운 게 있으면 True."""
+        tm, bm = self._auto_minutes(block)
+        opts = block.setdefault("options", {})
+        done = False
+        if top and tm is not None:
+            opts["top_time_val"] = tm
+            done = True
+        if bottom and bm is not None:
+            opts["bottom_time_val"] = bm
+            done = True
+        return done
+
+    def _on_time_check(self, block, which):
+        """상단/하단 시간 체크: 켜면 블록 위치에서 분을 자동으로 넣고, 끄면 숨긴다(값은 남겨 둔다)."""
+        var = self.opt_top_time_enabled_var if which == "top" else self.opt_bottom_time_enabled_var
+        if var.get():
+            tm, bm = self._auto_minutes(block)
+            val = tm if which == "top" else bm
+            if val is not None:
+                (self.top_time_val_var if which == "top" else self.bottom_time_val_var).set(val)
+        self.on_option_changed(block)
 
     def toggle_split_mode(self, on=None):
         if not self.pdf_path:
