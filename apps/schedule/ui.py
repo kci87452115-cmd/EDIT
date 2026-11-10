@@ -45,7 +45,7 @@ def schedule_badge_dir():
         return os.path.join(home, "데이터", "편성표", "badges")
     return os.path.abspath("badges")
 
-APP_VERSION = "3.19.8"
+APP_VERSION = "3.20.0"
 
 
 def _detect_profile():
@@ -4317,34 +4317,66 @@ class ScheduleEditor:
             try:
                 with PDF_LOCK:
                     out_bytes = self._generate_pdf_bytes(for_preview=True, blocks=blocks_snap)
-                    doc = fitz.open(stream=out_bytes, filetype="pdf")
-                    page = doc.load_page(min(page_no, doc.page_count - 1))
-                    pix = page.get_pixmap(dpi=150)
-                    img_data = pix.tobytes("png")
-                    doc.close()
-                
-                self.root.after(0, show_img, preview_win, lbl, img_data)
+                self.root.after(0, show_img, preview_win, lbl, out_bytes)
             except Exception as e:
                 self.root.after(0, show_err, preview_win, str(e))
 
-        def show_img(win, old_lbl, img_bytes):
+        def show_img(win, old_lbl, pdf_bytes):
             old_lbl.destroy()
-            photo = tk.PhotoImage(data=base64.b64encode(img_bytes).decode("ascii"))
-            
-            c = tk.Canvas(win, bg="#64748b", yscrollincrement=30, xscrollincrement=30)
+            st = {"zoom": None, "photo": None}
+            try:
+                doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+                page = doc.load_page(min(page_no, doc.page_count - 1))
+            except Exception as e:
+                show_err(win, str(e))
+                return
+            win.bind("<Destroy>", lambda e: e.widget is win and doc.close())
+
+            bar = ttk.Frame(win, padding=(6, 4))
+            bar.grid(row=0, column=0, columnspan=2, sticky="ew")
+            zlbl = ttk.Label(bar, text="", width=7, anchor="center", font=(self.ui_font_family, 9, "bold"))
+            ttk.Button(bar, text="🔍-", width=4, command=lambda: set_zoom(st["zoom"] / 1.25)).pack(side="left")
+            zlbl.pack(side="left", padx=2)
+            ttk.Button(bar, text="🔍+", width=4, command=lambda: set_zoom(st["zoom"] * 1.25)).pack(side="left")
+            ttk.Button(bar, text="⤢ 전체 보기", command=lambda: set_zoom(fit_zoom())).pack(side="left", padx=(10, 2))
+            ttk.Button(bar, text="↔ 너비 맞춤", command=lambda: set_zoom(fit_zoom(width_only=True))).pack(side="left", padx=2)
+            ttk.Button(bar, text="100%", command=lambda: set_zoom(1.0)).pack(side="left", padx=2)
+            ttk.Label(bar, text="Ctrl + 휠: 확대/축소", foreground="#64748b", font=(self.ui_font_family, 8)).pack(side="right")
+
+            c = tk.Canvas(win, bg="#64748b", yscrollincrement=30, xscrollincrement=30, highlightthickness=0)
             v = ttk.Scrollbar(win, orient="vertical", command=c.yview)
             h = ttk.Scrollbar(win, orient="horizontal", command=c.xview)
             c.configure(yscrollcommand=v.set, xscrollcommand=h.set)
-            
-            c.grid(row=0, column=0, sticky="nsew")
-            v.grid(row=0, column=1, sticky="ns")
-            h.grid(row=1, column=0, sticky="ew")
-            win.rowconfigure(0, weight=1)
+            c.grid(row=1, column=0, sticky="nsew")
+            v.grid(row=1, column=1, sticky="ns")
+            h.grid(row=2, column=0, sticky="ew")
+            win.rowconfigure(1, weight=1)
             win.columnconfigure(0, weight=1)
-            
-            c.create_image(20, 20, image=photo, anchor="nw")
-            c.image = photo
-            c.configure(scrollregion=(0, 0, photo.width() + 40, photo.height() + 40))
+            M = 20
+
+            def fit_zoom(width_only=False):
+                win.update_idletasks()
+                cw, ch = max(100, c.winfo_width() - 2 * M), max(100, c.winfo_height() - 2 * M)
+                zw = cw / page.rect.width
+                return zw if width_only else min(zw, ch / page.rect.height)
+
+            def set_zoom(z):
+                z = max(0.25, min(6.0, z))           # 25% ~ 600% (100% = PDF 실제 크기)
+                if st["zoom"] is not None and abs(z - st["zoom"]) < 1e-3:
+                    return
+                fx = c.xview()[0] if st["zoom"] else 0
+                fy = c.yview()[0] if st["zoom"] else 0
+                st["zoom"] = z
+                with PDF_LOCK:
+                    pix = page.get_pixmap(matrix=fitz.Matrix(z, z), alpha=False)
+                    png = pix.tobytes("png")
+                st["photo"] = tk.PhotoImage(data=base64.b64encode(png).decode("ascii"))
+                c.delete("all")
+                c.create_image(M, M, image=st["photo"], anchor="nw")
+                c.configure(scrollregion=(0, 0, st["photo"].width() + 2 * M, st["photo"].height() + 2 * M))
+                c.xview_moveto(fx)
+                c.yview_moveto(fy)
+                zlbl.config(text=f"{round(z * 100)}%")
 
             def _on_preview_wheel(event):
                 if getattr(event, "num", None) == 4:
@@ -4353,7 +4385,9 @@ class ScheduleEditor:
                     step = 1
                 else:
                     step = -1 if event.delta > 0 else 1
-                if event.state & 0x0001:
+                if event.state & 0x0004:            # Ctrl + 휠: 확대/축소
+                    set_zoom(st["zoom"] * (1.15 if step < 0 else 1 / 1.15))
+                elif event.state & 0x0001:
                     c.xview_scroll(step * 3, "units")
                 else:
                     c.yview_scroll(step * 3, "units")
@@ -4362,6 +4396,11 @@ class ScheduleEditor:
             win.bind("<MouseWheel>", _on_preview_wheel)
             win.bind("<Button-4>", _on_preview_wheel)
             win.bind("<Button-5>", _on_preview_wheel)
+            win.bind("<Control-plus>", lambda e: set_zoom(st["zoom"] * 1.25))
+            win.bind("<Control-equal>", lambda e: set_zoom(st["zoom"] * 1.25))
+            win.bind("<Control-minus>", lambda e: set_zoom(st["zoom"] / 1.25))
+            win.bind("<Control-0>", lambda e: set_zoom(fit_zoom()))
+            win.after(50, lambda: set_zoom(fit_zoom()))   # 처음엔 한 장 전체가 보이게
 
         def show_err(win, err_msg):
             messagebox.showerror("미리보기 실패", err_msg, parent=win)
