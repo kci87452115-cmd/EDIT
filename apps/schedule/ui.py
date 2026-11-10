@@ -45,7 +45,7 @@ def schedule_badge_dir():
         return os.path.join(home, "데이터", "편성표", "badges")
     return os.path.abspath("badges")
 
-APP_VERSION = "3.17.0"
+APP_VERSION = "3.17.1"
 
 
 def _detect_profile():
@@ -2727,7 +2727,10 @@ class ScheduleEditor:
         left, right = ((x.strip() for x in t.split("|", 1)) if "|" in t else (t, t))
         x0, y0, x1, y1 = b["rect"]
         fs = min(8.0, max(4.5, (y1 - y0) * 0.22))
-        return left, right, fs, min((y1 - y0) * 0.45, fs * 1.6)
+        # 글자 크기 조절과 연동: 미세 조절 값만큼 같이 커지고/작아지며, 자동을 끄면 절대 크기의 85%
+        ab = self._abs_font(b)
+        fs = max(3.0, ab * 0.85) if ab else max(3.0, fs + b.get("font_size_offset", 0))
+        return left, right, fs, min((y1 - y0) * 0.5, fs * 1.6)
 
     def _leader_parts(self, b):
         """'양끝 + 점선' 칸의 (왼쪽 글자, 오른쪽 글자, 글자 크기 pt). 이름에 '|' 가 있으면 왼쪽|오른쪽, 없으면 양쪽에 같은 글자."""
@@ -3040,10 +3043,11 @@ class ScheduleEditor:
             if b.get("foot_bg"):
                 c.create_rectangle(x0 + 1, band_top, x1 - 1, y1 - 1, fill=b["foot_bg"], outline="")
             fnt = (self.ui_font_family, -max(4, int(round(ffs * self.zoom))))
-            fcy = (band_top + y1) / 2
+            fcy = (band_top + y1) / 2 + b.get("text_dy", 0) * self.zoom          # 글자 위치 상하와 연동
+            fdx = b.get("text_dx", 0) * self.zoom                                # 좌우: 줄 전체를 같이 옮긴다
             fc = b.get("text_color", "#000000")
-            lid_ = c.create_text(x0 + 3 * self.zoom, fcy, text=flt, anchor="w", font=fnt, fill=fc)
-            rid_ = c.create_text(x1 - 3 * self.zoom, fcy, text=frt, anchor="e", font=fnt, fill=fc)
+            lid_ = c.create_text(x0 + 3 * self.zoom + fdx, fcy, text=flt, anchor="w", font=fnt, fill=fc)
+            rid_ = c.create_text(x1 - 3 * self.zoom + fdx, fcy, text=frt, anchor="e", font=fnt, fill=fc)
             lb_, rb_ = c.bbox(lid_), c.bbox(rid_)
             if lb_ and rb_ and rb_[0] - lb_[2] > 6:
                 c.create_line(lb_[2] + 3, fcy + ffs * self.zoom * 0.25, rb_[0] - 3, fcy + ffs * self.zoom * 0.25,
@@ -4388,8 +4392,9 @@ class ScheduleEditor:
                         return measure_font.text_length(t, fontsize=ffs)
                     except Exception:
                         return sum(ffs if ord(ch) > 127 else ffs * 0.5 for ch in t)
-                fy = (band.y0 + band.y1) / 2 + ffs * 0.35
-                flx, frx = band.x0 + 2, band.x1 - 2 - _fw(frt)
+                fy = (band.y0 + band.y1) / 2 + ffs * 0.35 + b.get("text_dy", 0)      # 글자 위치 상하와 연동
+                _fdx = b.get("text_dx", 0)
+                flx, frx = band.x0 + 2 + _fdx, band.x1 - 2 - _fw(frt) + _fdx
                 page.insert_text(fitz.Point(flx, fy), flt, fontsize=ffs, fontname=font_name, color=frgb)
                 page.insert_text(fitz.Point(frx, fy), frt, fontsize=ffs, fontname=font_name, color=frgb)
                 fd0, fd1 = flx + _fw(flt) + 1.5, frx - 1.5
