@@ -45,7 +45,7 @@ def schedule_badge_dir():
         return os.path.join(home, "데이터", "편성표", "badges")
     return os.path.abspath("badges")
 
-APP_VERSION = "3.11.4"
+APP_VERSION = "3.11.5"
 
 
 def _detect_profile():
@@ -3034,73 +3034,9 @@ class ScheduleEditor:
                     ttk.Button(erow, text=plus_txt, width=3, command=lambda e=edge: self.modify_block_edge(block, e, 1)).pack(side="right", padx=1)
                     ttk.Button(erow, text=minus_txt, width=3, command=lambda e=edge: self.modify_block_edge(block, e, -1)).pack(side="right", padx=1)
 
-            split_frame = ttk.LabelFrame(self.info_frame, text=" ✂ 선택적 블록 분할 ", padding=6)
-            split_frame.pack(fill="x", pady=4)
-            
-            h_row = ttk.Frame(split_frame)
-            h_row.pack(fill="x", pady=1)
-            ttk.Button(h_row, text="-", width=2, command=lambda: self.adjust_split_count('h', -1)).pack(side="left")
-            self.h_split_lbl = ttk.Label(h_row, text=f"가로 {self.h_split_count}분할", anchor="center", font=(self.ui_font_family, 8, "bold"))
-            self.h_split_lbl.pack(side="left", fill="x", expand=True)
-            ttk.Button(h_row, text="+", width=2, command=lambda: self.adjust_split_count('h', 1)).pack(side="left")
-
-            if self.h_split_count == 2:
-                h_ratio_row = ttk.Frame(split_frame)
-                h_ratio_row.pack(fill="x", pady=2)
-                ttk.Label(h_ratio_row, text="상하 비율:", font=(self.ui_font_family, 7, "bold")).pack(side="left")
-                ttk.Button(h_ratio_row, text="-", width=2, command=lambda: self.adjust_h_ratio(-0.01)).pack(side="left", padx=1)
-                curr_h_ratio = self.split_ratios[0] if len(self.split_ratios) > 0 else 0.5
-                self.h_ratio_scale = ttk.Scale(h_ratio_row, from_=0.1, to=0.9, value=curr_h_ratio, command=lambda v: self.on_h_ratio_slider_change(v))
-                self.h_ratio_scale.pack(side="left", fill="x", expand=True, padx=2)
-                ttk.Button(h_ratio_row, text="+", width=2, command=lambda: self.adjust_h_ratio(0.01)).pack(side="left", padx=1)
-            
-            v_row = ttk.Frame(split_frame)
-            v_row.pack(fill="x", pady=1)
-            ttk.Button(v_row, text="-", width=2, command=lambda: self.adjust_split_count('v', -1)).pack(side="left")
-            self.v_split_lbl = ttk.Label(v_row, text=f"세로 {self.v_split_count}분할", anchor="center", font=(self.ui_font_family, 8, "bold"))
-            self.v_split_lbl.pack(side="left", fill="x", expand=True)
-            ttk.Button(v_row, text="+", width=2, command=lambda: self.adjust_split_count('v', 1)).pack(side="left")
-
-            if self.v_split_count == 2:
-                v_ratio_row = ttk.Frame(split_frame)
-                v_ratio_row.pack(fill="x", pady=2)
-                ttk.Label(v_ratio_row, text="좌우 비율:", font=(self.ui_font_family, 7, "bold")).pack(side="left")
-                ttk.Button(v_ratio_row, text="-", width=2, command=lambda: self.adjust_v_ratio(-0.01)).pack(side="left", padx=1)
-                curr_ratio = self.split_ratios[0] if len(self.split_ratios) > 0 else 0.5
-                self.ratio_scale = ttk.Scale(v_ratio_row, from_=0.1, to=0.9, value=curr_ratio, command=lambda v: self.on_ratio_slider_change(v))
-                self.ratio_scale.pack(side="left", fill="x", expand=True, padx=2)
-                ttk.Button(v_ratio_row, text="+", width=2, command=lambda: self.adjust_v_ratio(0.01)).pack(side="left", padx=1)
-
-            total_splits = max(self.h_split_count, self.v_split_count)
-            self.split_title_vars = {}
-            if total_splits > 1:
-                sub_input_frame = ttk.Frame(split_frame)
-                sub_input_frame.pack(fill="x", pady=(4, 2))
-                ttk.Label(sub_input_frame, text=f"분할된 {total_splits}개 영역별 명칭 입력:", font=(self.ui_font_family, 7, "bold"), foreground="#2563eb").pack(anchor="w", pady=(1, 2))
-                
-                first_split_entry = None
-                for idx in range(total_splits):
-                    if idx not in self.split_titles:
-                        self.split_titles[idx] = block["title"] if idx == 0 else ""
-                        
-                    s_row = ttk.Frame(sub_input_frame)
-                    s_row.pack(fill="x", pady=1)
-                    ttk.Label(s_row, text=f"#{idx+1}", width=3, font=(self.ui_font_family, 7)).pack(side="left")
-                    
-                    st_var = tk.StringVar(value=self.split_titles[idx])
-                    self.split_title_vars[idx] = st_var
-                    sub_entry = ttk.Entry(s_row, textvariable=st_var, font=(self.ui_font_family, 8))
-                    sub_entry.pack(side="left", fill="x", expand=True, padx=2)
-                    if first_split_entry is None:
-                        first_split_entry = sub_entry
-                    
-                    sub_entry.bind("<KeyRelease>", lambda e, i=idx, v=st_var: self.confirm_split_title(i, v.get()))
-                    sub_entry.bind("<Return>", lambda e, i=idx, v=st_var: self.confirm_split_title(i, v.get()))
-                    sub_entry.bind("<FocusOut>", lambda e, i=idx, v=st_var: self.confirm_split_title(i, v.get(), immediate=True))
-
-                if first_split_entry is not None:
-                    first_split_entry.focus_set()
-                    first_split_entry.icursor(tk.END)
+            self.split_title_vars = {}             # (예전 '선택적 블록 분할' 패널은 툴바 '✂ 나누기 (S)' 로 하나로 합침)
+            ttk.Label(self.info_frame, text="✂ 칸 나누기: 툴바의 [✂ 나누기 (S)]를 켜거나 S 키 → 칸 안을 클릭 (5분 눈금에 맞춤, Shift+클릭 = 좌우)",
+                      font=(self.ui_font_family, 8), foreground="#64748b", wraplength=330, justify="left").pack(anchor="w", pady=(4, 0))
 
             btn_row = ttk.Frame(self.info_frame)
             btn_row.pack(fill="x", pady=4)
