@@ -45,7 +45,7 @@ def schedule_badge_dir():
         return os.path.join(home, "데이터", "편성표", "badges")
     return os.path.abspath("badges")
 
-APP_VERSION = "3.11.2"
+APP_VERSION = "3.11.3"
 
 
 def _detect_profile():
@@ -4338,10 +4338,15 @@ class ScheduleEditor:
                     pass
 
     def _draw_header_preview(self, c):
-        from tkinter import font as tkfont
+        try:
+            from tkinter import font as tkfont
+        except Exception:          # 예전 런처(실행 환경)에 tkinter.font 가 빠져 있으면 글자 폭을 어림으로 잰다
+            tkfont = None
         cache = {}
 
         def measure(text, size):
+            if tkfont is None:
+                return sum(size if ord(ch) > 127 else size * 0.55 for ch in text)
             px = max(4, int(round(size * self.zoom)))
             f = cache.get(px) or tkfont.Font(family=self.ui_font_family, size=-px)
             cache[px] = f

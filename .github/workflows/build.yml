@@ -39,7 +39,7 @@ jobs:
           if (Test-Path launcher\icon.ico) { $icon = @("--icon", "launcher\icon.ico") }
           python -m PyInstaller --noconfirm --clean --windowed --onedir --name EditLauncher @icon `
             --collect-all pymupdf --collect-submodules openpyxl --collect-submodules PIL `
-            --hidden-import tkinter.colorchooser --hidden-import tkinter.simpledialog `
+            --hidden-import tkinter.colorchooser --hidden-import tkinter.simpledialog --hidden-import tkinter.font `
             launcher\launcher.py
           if (-not (Test-Path dist\EditLauncher\EditLauncher.exe)) { throw "런처 exe 가 만들어지지 않았습니다" }
 

@@ -27,7 +27,7 @@ import sys
 import tempfile
 import zipfile
 
-LAUNCHER_VERSION = "1.0.2"
+LAUNCHER_VERSION = "1.0.3"
 RUNTIME = 1                         # 공용 실행 환경 세대. 필요한 부품이 바뀌면 올린다 (앱의 runtime 값과 비교)
 EXE_NAME = "EditLauncher.exe"
 MUTEX = "EditLauncher_Running"      # 설치 프로그램(setup)이 '실행 중'을 알아보는 이름
@@ -87,7 +87,7 @@ def _bundle_hint():
     import openpyxl  # noqa
     import openpyxl.styles  # noqa
     from PIL import Image, ImageDraw, ImageFont, ImageTk  # noqa
-    from tkinter import colorchooser, simpledialog  # noqa
+    from tkinter import colorchooser, simpledialog, font  # noqa
     import winreg  # noqa
 
 
@@ -876,7 +876,7 @@ Start-Process (Join-Path $cur '{EXE_NAME}') -WorkingDirectory $cur
 
 def selftest(out_path):
     """빌드 점검용: 앱들이 쓰는 부품이 실행 환경에 다 들어 있는지 실제로 불러 본다."""
-    mods = ["tkinter", "tkinter.ttk", "tkinter.colorchooser", "tkinter.simpledialog", "tkinter.filedialog", "sqlite3", "csv",
+    mods = ["tkinter", "tkinter.ttk", "tkinter.colorchooser", "tkinter.simpledialog", "tkinter.filedialog", "tkinter.font", "sqlite3", "csv",
             "calendar", "colorsys", "ctypes", "winreg", "pymupdf", "fitz", "openpyxl", "openpyxl.styles",
             "PIL.Image", "PIL.ImageDraw", "PIL.ImageFont", "PIL.ImageTk"]
     import importlib
