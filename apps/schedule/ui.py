@@ -45,7 +45,7 @@ def schedule_badge_dir():
         return os.path.join(home, "데이터", "편성표", "badges")
     return os.path.abspath("badges")
 
-APP_VERSION = "3.12.6"
+APP_VERSION = "3.12.7"
 
 
 def _detect_profile():
@@ -1008,6 +1008,7 @@ class ScheduleEditor:
         self.shade_target = "mod"              # 음영 넣을 칸: mod=수정한 칸 / unmod=수정 안 한 칸 / both=둘 다(색 따로)
         self.unmod_shade_color = "#60a5fa"     # 수정 안 한 칸 음영 색
         self.pick_shade_last = "#fde047"       # 고른 칸 음영: 마지막에 쓴 색
+        self.shade_color_counts = {}           # 칸 음영 색별로 쓴 횟수 -> '자주 쓴 색' 줄
         self.pick_shade_in_export = True       # 고른 칸 음영을 저장 PDF에도 넣기
         self.mod_border_width = None           # 수정 블록 공통 테두리 두께(pt), None = 원본 유지
         self._mod_ids = set()
@@ -1307,6 +1308,7 @@ class ScheduleEditor:
                 "shade_target": self.shade_target,
                 "unmod_shade_color": self.unmod_shade_color,
                 "pick_shade_last": self.pick_shade_last,
+                "shade_color_counts": self.shade_color_counts,
                 "pick_shade_in_export": self.pick_shade_in_export,
                 "mod_border_width": self.mod_border_width,
                 "lock_move": bool(self.lock_move.get()),
@@ -1558,6 +1560,9 @@ class ScheduleEditor:
                     self.mod_shade_enabled = data["mod_shade_enabled"]
                 if isinstance(data.get("mod_shade_in_export"), bool):
                     self.mod_shade_in_export = data["mod_shade_in_export"]
+                if isinstance(data.get("shade_color_counts"), dict):
+                    self.shade_color_counts = {k.lower(): int(v) for k, v in data["shade_color_counts"].items()
+                                               if isinstance(k, str) and re.fullmatch(r"#[0-9a-fA-F]{6}", k) and isinstance(v, (int, float))}
                 if isinstance(data.get("pick_shade_last"), str) and re.fullmatch(r"#[0-9a-fA-F]{6}", data["pick_shade_last"]):
                     self.pick_shade_last = data["pick_shade_last"]
                 if isinstance(data.get("pick_shade_in_export"), bool):
@@ -1929,6 +1934,19 @@ class ScheduleEditor:
 
         ttk.Button(row, text="색…", width=4, command=custom).pack(side="left", padx=(3, 0))
         ttk.Button(row, text="빼기", width=5, command=lambda: self.shade_selected(None)).pack(side="right")
+        freq = self._frequent_shades()
+        if freq:                                   # 자주 쓴 색 (많이 쓴 순서, 최대 8개). 오른쪽 클릭: 목록에서 빼기
+            rowf = ttk.Frame(f)
+            rowf.pack(fill="x", pady=(3, 0))
+            ttk.Label(rowf, text="자주 쓴 색:", font=(self.ui_font_family, 8)).pack(side="left", padx=(0, 3))
+            for col in freq:
+                bt = tk.Button(rowf, bg=col, activebackground=col, width=2,
+                               relief="sunken" if col == self.pick_shade_last.lower() else "raised",
+                               command=lambda c=col: self.shade_selected(c))
+                bt.pack(side="left", padx=1)
+                bt.bind("<Button-3>", lambda e, c=col: self._forget_shade(c))
+                bt.bind("<Button-2>", lambda e, c=col: self._forget_shade(c))
+            ttk.Label(rowf, text="(오른쪽 클릭: 빼기)", font=(self.ui_font_family, 7), foreground="#94a3b8").pack(side="right")
         row2 = ttk.Frame(f)
         row2.pack(fill="x", pady=(3, 0))
         ex = tk.BooleanVar(value=self.pick_shade_in_export)
@@ -1953,8 +1971,22 @@ class ScheduleEditor:
                 b.pop("shade", None)
         if color:
             self.pick_shade_last = color
+            k = color.lower()
+            self.shade_color_counts[k] = self.shade_color_counts.get(k, 0) + 1     # 자주 쓴 색 세기
         self.draw_pdf()
         self.save_autosave()
+
+    def _frequent_shades(self, n=8):
+        """많이 쓴 음영 색 (기본 6색은 위 줄에 있으니 빼고), 많이 쓴 순서."""
+        base = {c.lower() for c in self.PICK_SHADE_COLORS}
+        items = [(c, k) for c, k in self.shade_color_counts.items() if c not in base and k > 0]
+        items.sort(key=lambda t: -t[1])
+        return [c for c, _k in items[:n]]
+
+    def _forget_shade(self, color):
+        self.shade_color_counts.pop(color.lower(), None)
+        self.save_autosave()
+        self.update_sidebar_info()
 
     def toggle_pick_shade(self):
         targets = [b for b in self.blocks if b["id"] in self.selected]
