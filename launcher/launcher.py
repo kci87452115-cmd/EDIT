@@ -28,7 +28,7 @@ import tempfile
 import time
 import zipfile
 
-LAUNCHER_VERSION = "1.2.1"
+LAUNCHER_VERSION = "1.2.2"
 RUNTIME = 1                         # 공용 실행 환경 세대. 필요한 부품이 바뀌면 올린다 (앱의 runtime 값과 비교)
 EXE_NAME = "EditLauncher.exe"
 MUTEX = "EditLauncher_Running"      # 설치 프로그램(setup)이 '실행 중'을 알아보는 이름
@@ -894,6 +894,7 @@ class LauncherApp:
         self.tv_lbl = tk.Label(self.root, text="", fg="#7c2d12", font=(self.font, 9, "bold"), anchor="w", padx=14, pady=2, cursor="hand2")
         self.tv_lbl.bind("<Button-1>", lambda e: self._copy_addr(self.tv_lbl))
         self.root.after(1500, self._view_tick)
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)          # X: 바로 닫지 않고 물어본다
 
     def _tv_view_config(self):
         """TV 편성표 편집기 ⚙️ 설정의 '다른 PC에서 보기'(미리보기\\view.json)를 따른다.
@@ -927,6 +928,31 @@ class LauncherApp:
             self.root.clipboard_clear()
             self.root.clipboard_append(m.group(0))
             self.status.config(text=f"주소를 복사했습니다: {m.group(0)}", foreground="#15803d")
+
+    def _on_close(self):
+        from tkinter import messagebox
+        serving = []
+        try:
+            if self.view_host.srv is not None and self.view_host.srv.httpd is not None:
+                serving.append("라디오 정산/검색")
+        except Exception:
+            pass
+        try:
+            if self.tv_host.httpd is not None:
+                serving.append("TV 주간 편성표")
+        except Exception:
+            pass
+        msg = "편집 프로그램 런처를 닫을까요?"
+        if serving:
+            msg += "\n\n이 런처가 다른 PC 조회(" + " · ".join(serving) + ")를 열고 있습니다.\n닫으면 다른 PC에서 볼 수 없게 됩니다."
+        msg += "\n\n(실행 중인 편집기는 닫히지 않습니다)"
+        if messagebox.askyesno("런처 닫기", msg, icon="warning" if serving else "question", parent=self.root):
+            try:
+                self.view_host.stop()
+                self.tv_host.stop()
+            except Exception:
+                pass
+            self.root.destroy()
 
     def _view_tick(self):
         """10초마다: 운행표 편집기 설정을 보고 다른 PC 조회 페이지를 켜고 끈다. TV 편성표 조회·알림도."""
