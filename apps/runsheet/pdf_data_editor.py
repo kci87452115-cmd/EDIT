@@ -25,7 +25,7 @@ except ImportError:
     except ImportError:
         fitz = None
 
-APP_VERSION = "2.2.1"
+APP_VERSION = "2.3.0"
 APP_TITLE = f"운행표 데이터 편집기 v{APP_VERSION}"
 APP_MUTEX = "RunSheetEditor_Running"      # 설치 프로그램이 '실행 중'을 알아보는 이름 (setup.iss 의 AppMutex 와 같아야 함)
 RUN_BY_LAUNCHER = bool(os.environ.get("RADIO_LAUNCHER"))   # 편집 프로그램 런처로 실행됨 -> 업데이트는 런처가 한다
@@ -601,6 +601,12 @@ class Store:
                 time TEXT NOT NULL, program TEXT NOT NULL, cap INTEGER NOT NULL,
                 base_sold INTEGER NOT NULL DEFAULT 0, base_cap INTEGER NOT NULL DEFAULT 0, saved_at TEXT,
                 PRIMARY KEY(time, program))""")
+            # 지운 기록 (다시 불러올 때 '오늘 지운 것'을 보여 주는 데 쓴다. 30일이 지나면 정리)
+            c.execute("""CREATE TABLE IF NOT EXISTS removed_records(
+                id INTEGER PRIMARY KEY AUTOINCREMENT, air_date TEXT NOT NULL, media TEXT NOT NULL DEFAULT '',
+                page INTEGER, time TEXT, program TEXT, line INTEGER NOT NULL DEFAULT 0, cell INTEGER NOT NULL,
+                name TEXT NOT NULL, seconds INTEGER NOT NULL DEFAULT 0, removed_at TEXT)""")
+            c.execute("CREATE INDEX IF NOT EXISTS ix_rm_date ON removed_records(air_date)")
             # 예전에 입력한 그룹 이름도 목록에 합쳐 둔다
             c.execute("INSERT OR IGNORE INTO groups(name) SELECT DISTINCT grp FROM presets WHERE grp<>''")
 
@@ -721,19 +727,50 @@ class Store:
                 cur = c.execute("SELECT * FROM records WHERE air_date=? ORDER BY time,line,cell", (air_date,))
             return [dict(r) for r in cur.fetchall()]
 
+    @staticmethod
+    def _rec_ident(r):
+        return (r["time"], r["program"], int(r.get("line") or 0), int(r["cell"]), r["name"], int(r.get("seconds") or 0))
+
     def replace_records(self, air_date, recs, src_file, media=""):
-        """해당 방송일(과 매체)의 기록을 현재 입력 내용으로 통째로 바꾼다."""
+        """해당 방송일(과 매체)의 기록을 현재 입력 내용으로 통째로 바꾼다.
+        - 그대로 둔 기록은 처음 저장한 시각(saved_at)을 그대로 지킨다 -> 다시 불러오면 '오늘 고친 것'만 따로 표시할 수 있다.
+        - 없어진 기록은 removed_records 에 남긴다 -> '오늘 지운 것'을 표시할 수 있다."""
         now = time.strftime("%Y-%m-%d %H:%M:%S")
         with self._conn() as c:
             if media:
-                c.execute("DELETE FROM records WHERE air_date=? AND (media=? OR media='')", (air_date, media))
+                where, par = "air_date=? AND (media=? OR media='')", (air_date, media)
             else:
-                c.execute("DELETE FROM records WHERE air_date=?", (air_date,))
+                where, par = "air_date=?", (air_date,)
+            old = [dict(r) for r in c.execute(f"SELECT * FROM records WHERE {where}", par)]
+            new_ids = {self._rec_ident(r) for r in recs}
+            for o in old:
+                if self._rec_ident(o) not in new_ids:
+                    c.execute("""INSERT INTO removed_records(air_date,media,page,time,program,line,cell,name,seconds,removed_at)
+                                 VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                              (air_date, o.get("media") or media, o.get("page"), o["time"], o["program"], o.get("line") or 0,
+                               o["cell"], o["name"], o["seconds"], now))
+            for r in recs:                     # 지웠다가 다시 넣은 것은 '지운 것'에서 뺀다
+                c.execute(f"""DELETE FROM removed_records WHERE {where} AND time=? AND program=? AND line=? AND cell=? AND name=? AND seconds=?""",
+                          par + self._rec_ident(r))
+            c.execute("DELETE FROM removed_records WHERE removed_at < ?", (time.strftime("%Y-%m-%d", time.localtime(time.time() - 30 * 86400)),))
+            c.execute(f"DELETE FROM records WHERE {where}", par)
             for r in recs:
                 c.execute("""INSERT OR REPLACE INTO records(air_date,media,page,time,program,line,cell,name,seconds,price,grp,src_file,saved_at)
                              VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                           (air_date, r.get("media") or media, r.get("page"), r["time"], r["program"], r.get("line", 0), r["cell"], r["name"],
-                           int(r.get("seconds", 0)), float(r.get("price", 0)), r.get("grp", ""), src_file, now))
+                           int(r.get("seconds", 0)), float(r.get("price", 0)), r.get("grp", ""), src_file, r.get("saved_at") or now))
+        return now
+
+    def load_removed(self, air_date, media="", day=None):
+        """해당 방송일(과 매체)에서 day(기본: 오늘) 에 지운 기록."""
+        day = day or time.strftime("%Y-%m-%d")
+        with self._conn() as c:
+            if media:
+                cur = c.execute("SELECT * FROM removed_records WHERE air_date=? AND (media=? OR media='') AND substr(removed_at,1,10)=? ORDER BY time,line,cell",
+                                (air_date, media, day))
+            else:
+                cur = c.execute("SELECT * FROM removed_records WHERE air_date=? AND substr(removed_at,1,10)=? ORDER BY time,line,cell", (air_date, day))
+            return [dict(r) for r in cur.fetchall()]
 
     @staticmethod
     def _where(date_from, date_to, keyword, grp, media="", target="both"):
@@ -1027,7 +1064,7 @@ class DataEditor:
     def _blank_state():
         return {"doc": None, "src_bytes": None, "pdf_path": None, "page_count": 0, "cur": 0, "zoom": 1.0,
                 "page_origin": (0.0, 0.0), "page_size": (595.0, 842.0), "rows": {}, "cells": {}, "cell_by_key": {},
-                "entries": {}, "orphans": [], "history": [], "selected_key": None, "air_date": "", "media": "",
+                "entries": {}, "orphans": [], "removed": [], "history": [], "selected_key": None, "air_date": "", "media": "",
                 "_dirty": False, "cap_flag": set(), "_bg_key": None, "_bg_photo": None, "_coal": None}
 
     @property
@@ -1089,6 +1126,7 @@ class DataEditor:
         self.show_caps = tk.BooleanVar(value=True)
         self.preview_var = tk.BooleanVar(value=True)
         self.highlight_var = tk.BooleanVar(value=False)   # 저장·출력 PDF에도 추가한 칸을 형광펜처럼 강조
+        self.show_today = tk.BooleanVar(value=True)       # 화면에만: 오늘 넣거나 고친 칸(초록)·오늘 지운 칸(회색 취소선)
         self.preset_cols = self._default_preset_cols()   # 미리 만든 데이터 목록의 열 순서·숨김·너비
         self.mark_opts = self._default_mark_opts()        # 이름표·강조 표시 설정
         self.cap_flag = set()       # 원본 재원이 설정 때와 달라진 행 (시각, 프로그램명)
@@ -1136,6 +1174,7 @@ class DataEditor:
             self.sort_desc = bool(data.get("sort_desc", False))
             self.preview_var.set(bool(data.get("preview_before_save", True)))
             self.highlight_var.set(bool(data.get("highlight_output", False)))
+            self.show_today.set(bool(data.get("show_today", True)))
             self.preset_cols = self._clean_preset_cols(data.get("preset_cols"))
             self.mark_opts = self._clean_mark_opts(data.get("mark_opts"))
             self.update_dir = data.get("update_dir") or UPDATE_DIR_DEFAULT
@@ -1146,7 +1185,7 @@ class DataEditor:
     def _save_settings(self):
         try:
             with open(self.settings_path, "w", encoding="utf-8") as f:
-                json.dump({"font_path": self.font_path, "db_path": self.db_path, "sort_key": self.sort_key, "sort_desc": self.sort_desc, "preview_before_save": self.preview_var.get(), "highlight_output": self.highlight_var.get(), "preset_cols": self.preset_cols, "mark_opts": self.mark_opts,
+                json.dump({"font_path": self.font_path, "db_path": self.db_path, "sort_key": self.sort_key, "sort_desc": self.sort_desc, "preview_before_save": self.preview_var.get(), "highlight_output": self.highlight_var.get(), "show_today": self.show_today.get(), "preset_cols": self.preset_cols, "mark_opts": self.mark_opts,
                            "backup_dir": self.backup_dir, "backup_keep": self.backup_keep, "backup_on": self.backup_on,
                            "update_dir": self.update_dir, "update_check": self.update_check, "app_version": APP_VERSION}, f, ensure_ascii=False, indent=1)
         except Exception:
@@ -1581,6 +1620,8 @@ Start-Process (Join-Path $prog 'RunSheetEditor.exe') -WorkingDirectory $prog
         ttk.Separator(t, orient="vertical").pack(side="left", fill="y", padx=5)
         ttk.Checkbutton(t, text="칸 표시", variable=self.show_cells, command=self.draw_page).pack(side="left", padx=3)
         ttk.Checkbutton(t, text="재원 표시", variable=self.show_caps, command=self.draw_page).pack(side="left", padx=3)
+        ttk.Checkbutton(t, text="오늘 수정 표시", variable=self.show_today, command=lambda: (self._save_settings(), self.draw_page())).pack(side="left", padx=3)
+        ttk.Button(t, text="📝 오늘 수정 목록", command=self.show_today_list).pack(side="left", padx=3)
         ttk.Button(t, text="↩ 되돌리기 (Ctrl+Z)", command=self.undo_action).pack(side="left", padx=3)
         ttk.Button(t, text="📥 다른 날 가져오기", command=self.import_dialog).pack(side="left", padx=3)
         ttk.Separator(t, orient="vertical").pack(side="left", fill="y", padx=5)
@@ -1729,6 +1770,9 @@ Start-Process (Join-Path $prog 'RunSheetEditor.exe') -WorkingDirectory $prog
             t = f"· {self._tab_title(res['media'], res['air_date'])}  ({res['page_count']}쪽, {res['total']}행)"
             if loaded:
                 t += f" — 저장된 입력 {loaded}건 불러옴"
+            n_t, n_d = self.today_counts()
+            if n_t or n_d:
+                t += f"\n     📝 오늘 수정: 넣거나 고친 것 {n_t}건" + (f", 지운 것 {n_d}건" if n_d else "") + " (화면에 초록/회색으로 표시)"
             if lost:
                 t += f" (자리 못 찾은 {lost}건은 저장 때 보존)"
             lines.append(t)
@@ -2170,13 +2214,46 @@ Start-Process (Join-Path $prog 'RunSheetEditor.exe') -WorkingDirectory $prog
         for r in self.store.load_records(self.air_date, self.media):
             key = (r["page"], r["time"], r["program"], r["line"], r["cell"] - 1)
             cd = self.cell_by_key.get(key)
-            entry = {"name": r["name"], "seconds": r["seconds"], "price": r["price"], "grp": r["grp"]}
+            entry = {"name": r["name"], "seconds": r["seconds"], "price": r["price"], "grp": r["grp"], "saved_at": r.get("saved_at") or ""}
             if cd is not None and not cd["text"]:
                 self.entries[key] = entry
                 loaded += 1
             else:
                 self.orphans.append(dict(r))
+        self._load_removed()
         return loaded, len(self.orphans)
+
+    # ------------------------------------------------------------------ 오늘 고친 것 표시
+    def _load_removed(self):
+        try:
+            self.removed = self.store.load_removed(self.air_date, self.media) if self.store else []
+        except Exception:
+            self.removed = []
+
+    @staticmethod
+    def is_today_entry(ent):
+        """오늘 넣거나 고친 칸인가. 아직 저장하지 않은 것(saved_at 없음)도 오늘 것으로 본다."""
+        sa = (ent or {}).get("saved_at") or ""
+        return not sa or sa[:10] == today_iso()
+
+    def removed_ghosts(self, page):
+        """오늘 지웠고 지금은 비어 있는 칸. [(key, 지운 기록)]"""
+        out = []
+        for r in getattr(self, "removed", []) or []:
+            if r.get("page") != page:
+                continue
+            key = (r["page"], r["time"], r["program"], r.get("line") or 0, int(r["cell"]) - 1)
+            if key[4] >= 4 or key in self.entries or (key[:4] + (key[4] + 4,)) in self.entries:
+                continue
+            cd = self.cell_by_key.get(key)
+            if cd is None or cd["text"]:
+                continue
+            out.append((key, r))
+        return out
+
+    def today_counts(self):
+        n = sum(1 for e in self.entries.values() if self.is_today_entry(e))
+        return n, len(getattr(self, "removed", []) or [])
 
     def _commit_date(self):
         v = self.date_var.get().strip()
@@ -2330,23 +2407,41 @@ Start-Process (Join-Path $prog 'RunSheetEditor.exe') -WorkingDirectory $prog
                 a, b = self.d2c(x0, y0)
                 cc, d = self.d2c(x1, y1)
                 c.create_rectangle(a, b, cc, d, outline="#cbd5e1", dash=(2, 3))
+        show_today = self.show_today.get()
+        if show_today:                                    # 오늘 지운 칸: 회색 점선 + 취소선 (화면에만)
+            for key, r in self.removed_ghosts(self.cur):
+                x0, y0, x1, y1 = self.cell_by_key[key]["rect"]
+                a, b = self.d2c(x0, y0)
+                cc, d = self.d2c(x1, y1)
+                c.create_rectangle(a, b, cc, d, outline="#9ca3af", dash=(3, 2))
+                px = max(4, int(round(FONT_SIZE * 0.85 * z)))
+                c.create_text(a + TEXT_INSET * z, (b + d) / 2, text=f"{r['seconds']} {r['name']}", anchor="w",
+                              font=(self.ui_font_family, -px, "overstrike"), fill="#9ca3af")
         for it in items:
             x0, y0, x1, y1 = it["rect"]
             a, b = self.d2c(x0, y0)
             cc, d = self.d2c(x1, y1)
             over = self.is_over(self.row_check(self.cell_by_key[it["key"]]["row"]))
-            c.create_rectangle(a, b, cc, d, outline="#fca5a5" if over else "#93c5fd")
+            today = show_today and self.is_today_entry(self.entries.get(it["key"]))
+            if today:                                     # 오늘 넣거나 고친 칸: 연초록 바탕 (화면에만)
+                c.create_rectangle(a, b, cc, d, fill="#dcfce7", outline="#fca5a5" if over else "#16a34a", width=max(1, round(1.2 * z)))
+            else:
+                c.create_rectangle(a, b, cc, d, outline="#fca5a5" if over else "#93c5fd")
             px = max(4, int(round(it["fs"] * it["xs"] * z)))
-            c.create_text(a + it["inset"] * z, (b + d) / 2, text=it["text"], anchor="w", font=(self.ui_font_family, -px), fill="#dc2626" if over else "#1d4ed8")
+            c.create_text(a + it["inset"] * z, (b + d) / 2, text=it["text"], anchor="w", font=(self.ui_font_family, -px),
+                          fill="#dc2626" if over else "#15803d" if today else "#1d4ed8")
         for m in marks:
             mx, my = self.d2c(MARK_X, m["cy"])
-            c.create_text(mx, my, text=f"+{m['n']}", anchor="w", font=(self.ui_font_family, -max(5, int(round(7 * z))), "bold"), fill="#2563eb")
-        for lb in self.over_labels(marks):                 # 칸이 모자란 줄의 추가 광고 이름표 (저장 PDF와 같은 자리)
+            today = show_today and any(self.is_today_entry(self.entries.get(k_)) for k_ in m["keys"])
+            c.create_text(mx, my, text=f"+{m['n']}", anchor="w", font=(self.ui_font_family, -max(5, int(round(7 * z))), "bold"),
+                          fill="#15803d" if today else "#2563eb")
+        for m, lb in zip(marks, self.over_labels(marks)):   # 칸이 모자란 줄의 추가 광고 이름표 (저장 PDF와 같은 자리)
             x0, y0, x1, y1 = lb["rect"]
             a, b = self.d2c(x0, y0)
             cc, d = self.d2c(x1, y1)
             hl_on = self.highlight_var.get()
-            c.create_rectangle(a, b, cc, d, fill="#ffffff" if self.mark_opts["fill"] else "",
+            today = show_today and any(self.is_today_entry(self.entries.get(k_)) for k_ in m["keys"])
+            c.create_rectangle(a, b, cc, d, fill="#dcfce7" if today else "#ffffff" if self.mark_opts["fill"] else "",
                                outline="#1d4ed8" if hl_on else "#93c5fd", width=max(1, round(self.mark_opts["hl_width"] * z)) if hl_on else 1)
             lx, ly = self.d2c(lb["x0"], lb["yc"])
             c.create_text(lx, ly, text=lb["text"], anchor="w", font=(self.ui_font_family, -max(4, int(round(lb["fs"] * lb["xs"] * z * 1.05)))), fill="#1d4ed8")
@@ -2551,9 +2646,14 @@ Start-Process (Join-Path $prog 'RunSheetEditor.exe') -WorkingDirectory $prog
         if cd["text"]:
             body = f"원본에 이미 내용이 있는 칸입니다:\n{cd['text']}"
         elif ent:
-            body = f"추가한 내용: {self.entry_text(ent)}  (그룹 {ent['grp'] or '-'})\n" + self.count_text(ent["name"], ent["seconds"])
+            sa = ent.get("saved_at") or ""
+            when = ("아직 저장 안 함" if not sa else f"오늘 {sa[11:16]} 저장" if sa[:10] == today_iso() else f"{short_date(sa[:10])} {sa[11:16]} 저장")
+            body = f"추가한 내용: {self.entry_text(ent)}  (그룹 {ent['grp'] or '-'})\n🕒 {when}\n" + self.count_text(ent["name"], ent["seconds"])
         else:
             body = "비어 있음 — 넣을 데이터를 골라 주세요."
+            gone = [r for k_, r in self.removed_ghosts(key[0]) if k_ == key]
+            if gone:
+                body += f"\n(오늘 {gone[0]['removed_at'][11:16]}에 '{gone[0]['seconds']} {gone[0]['name']}' 지움)"
         chk = self.row_check(row)
         extra = ""
         tag = " (설정)" if self.row_is_custom(row) else ""
@@ -2631,6 +2731,12 @@ Start-Process (Join-Path $prog 'RunSheetEditor.exe') -WorkingDirectory $prog
             if x0 <= x < x1 and y0 <= y < y1 and (it["compressed"] or it["text"] != it["full"] or it["xs"] < 0.999):
                 self._show_tip(cx, cy_, it["full"], x > 300)
                 return
+        if self.show_today.get():
+            for key, r in self.removed_ghosts(self.cur):
+                x0, y0, x1, y1 = self.cell_by_key[key]["rect"]
+                if x0 <= x < x1 and y0 <= y < y1:
+                    self._show_tip(cx, cy_, f"오늘 {r['removed_at'][11:16]}에 지움: {r['seconds']} {r['name']}", x > 300)
+                    return
         for m in marks:
             if MARK_X - 2 <= x <= MARK_X + 14 and abs(y - m["cy"]) <= CELL_HALF_H:
                 self._show_tip(cx, cy_, "행 오른쪽 '+N' 표시 (칸이 모자라 줄 아래에 이름표로 표시)\n" + "\n".join(m["names"]), True)
@@ -3521,6 +3627,76 @@ Start-Process (Join-Path $prog 'RunSheetEditor.exe') -WorkingDirectory $prog
             self.refresh_presets()
 
     # ------------------------------------------------------------------ 읽은 데이터 표
+    def show_today_list(self):
+        """지금 탭에서 오늘 넣거나 고친 것 / 오늘 지운 것 목록. 더블클릭하면 그 칸으로 간다."""
+        if not self.doc:
+            return
+        win = tk.Toplevel(self.root)
+        win.title(f"📝 오늘 수정 목록 — {self._tab_title(self.media, self.air_date)}  ({today_iso()})")
+        win.geometry("760x520")
+        cols = ("kind", "when", "page", "time", "program", "where", "data")
+        heads = ("구분", "시각", "쪽", "시분초", "프로그램명", "자리", "데이터")
+        widths = (70, 70, 40, 80, 200, 90, 200)
+        tf = ttk.Frame(win)
+        tf.pack(fill="both", expand=True)
+        tree = ttk.Treeview(tf, columns=cols, show="headings", selectmode="browse")
+        for c_, h, w in zip(cols, heads, widths):
+            tree.heading(c_, text=h)
+            tree.column(c_, width=w, anchor="w" if c_ in ("program", "data") else "center")
+        vs = ttk.Scrollbar(tf, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=vs.set)
+        tree.pack(side="left", fill="both", expand=True)
+        vs.pack(side="right", fill="y")
+        tree.tag_configure("add", foreground="#15803d")
+        tree.tag_configure("new", foreground="#b45309")
+        tree.tag_configure("del", foreground="#6b7280")
+
+        def where(k):
+            if k < 4:
+                return f"{k + 1}칸"
+            if k < 8:
+                return f"{k - 3}칸 오른쪽"
+            return f"+N ({k - 7})"
+
+        rows, keys = [], {}
+        for key, ent in self.entries.items():
+            if not self.is_today_entry(ent):
+                continue
+            sa = ent.get("saved_at") or ""
+            rows.append((("new" if not sa else "add"), ("저장 전" if not sa else sa[11:16]), key, self.entry_text(ent)))
+        for r in getattr(self, "removed", []) or []:
+            key = (r["page"], r["time"], r["program"], r.get("line") or 0, int(r["cell"]) - 1)
+            rows.append(("del", r["removed_at"][11:16], key, f"{r['seconds']} {r['name']}"))
+        rows.sort(key=lambda t: (t[2][0] if t[2][0] is not None else 999, t[2][1], t[2][3], t[2][4]))
+        label = {"add": "넣음/고침", "new": "저장 전", "del": "지움"}
+        for kind, when, key, data in rows:
+            p, tm, prog, li, k = key
+            iid = tree.insert("", "end", values=(label[kind], when, (p + 1) if p is not None else "", tm, prog,
+                                                  where(k) + (" (둘째 줄)" if li else ""), data), tags=(kind,))
+            keys[iid] = key
+
+        def goto(event=None):
+            sel = tree.selection()
+            if not sel:
+                return
+            key = keys[sel[0]]
+            cd = self.cell_by_key.get(key)
+            if cd is None:
+                messagebox.showinfo("이동", "이 운행표에서 그 칸을 찾지 못했습니다.", parent=win)
+                return
+            self.goto_page(key[0])
+            self.select_cell(key)
+            self._scroll_to_cell(cd)
+
+        tree.bind("<Double-Button-1>", goto)
+        n_add = sum(1 for r in rows if r[0] != "del")
+        n_del = sum(1 for r in rows if r[0] == "del")
+        ttk.Label(win, text=f"오늘 넣거나 고친 것 {n_add}건 · 오늘 지운 것 {n_del}건   — 더블클릭하면 그 칸으로 이동합니다."
+                            "\n화면에서 초록 바탕은 오늘 넣거나 고친 칸, 회색 취소선은 오늘 지운 칸입니다. (저장 PDF에는 나오지 않습니다)",
+                  font=(self.ui_font_family, 8), foreground="#555", justify="left").pack(anchor="w", padx=8, pady=4)
+        if not rows:
+            tree.insert("", "end", values=("", "", "", "", "오늘 수정한 내용이 없습니다.", "", ""))
+
     def show_table(self):
         if not self.doc:
             return
@@ -4350,21 +4526,28 @@ Start-Process (Join-Path $prog 'RunSheetEditor.exe') -WorkingDirectory $prog
         for key, ent in self.entries.items():
             p, tm, prog, line, cell = key
             recs.append({"page": p, "time": tm, "program": prog, "line": line, "cell": cell + 1,
-                         "name": ent["name"], "seconds": ent["seconds"], "price": ent["price"], "grp": ent["grp"], "media": self.media})
+                         "name": ent["name"], "seconds": ent["seconds"], "price": ent["price"], "grp": ent["grp"], "media": self.media,
+                         "saved_at": ent.get("saved_at") or ""})
         recs.sort(key=lambda r: (r["page"], r["time"], r["line"], r["cell"]))
         for o in self.orphans:
             recs.append({"page": o.get("page"), "time": o["time"], "program": o["program"], "line": o.get("line", 0), "cell": o["cell"],
-                         "name": o["name"], "seconds": o["seconds"], "price": o["price"], "grp": o["grp"]})
+                         "name": o["name"], "seconds": o["seconds"], "price": o["price"], "grp": o["grp"], "saved_at": o.get("saved_at") or ""})
         return recs
 
     def save_records(self):
         if not self.air_date or self.store is None:
             return False
         try:
-            self.store.replace_records(self.air_date, self._collect_records(), os.path.basename(self.pdf_path or ""), media=self.media)
+            now = self.store.replace_records(self.air_date, self._collect_records(), os.path.basename(self.pdf_path or ""), media=self.media)
         except Exception as exc:
             messagebox.showerror("기록 저장 실패", str(exc))
             return False
+        for ent in self.entries.values():          # 방금 저장한 것에 저장 시각을 붙여 둔다
+            if not ent.get("saved_at"):
+                ent["saved_at"] = now
+        self._load_removed()
+        if self.doc:
+            self.draw_page()
         return True
 
     def save_records_only(self):
