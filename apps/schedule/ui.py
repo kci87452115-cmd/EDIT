@@ -45,7 +45,7 @@ def schedule_badge_dir():
         return os.path.join(home, "데이터", "편성표", "badges")
     return os.path.abspath("badges")
 
-APP_VERSION = "3.14.3"
+APP_VERSION = "3.14.4"
 
 
 def _detect_profile():
@@ -2721,8 +2721,8 @@ class ScheduleEditor:
             font_size = max(4, int(font_size + size_offset))
             # 줄을 나눈 이름도 칸 안에 들어가게: 가장 긴 줄이 너비를, 줄 수가 높이를 넘으면 들어갈 때까지 줄인다
             def _w(line, fs):
-                return sum(fs * (0.55 if ord(ch) < 128 else 1.0) for ch in line)
-            while font_size > 4 and (max(_w(l, font_size) for l in lines) > block_width * 0.96
+                return sum(fs * (0.62 if ord(ch) < 128 else 1.06) for ch in line)    # 굵은 글씨 기준으로 넉넉히
+            while font_size > 4 and (max(_w(l, font_size) for l in lines) > block_width * 0.92
                                      or len(lines) * font_size * 1.15 > block_height):
                 font_size -= 1
             return text, font_size
