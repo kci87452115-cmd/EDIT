@@ -45,7 +45,7 @@ def schedule_badge_dir():
         return os.path.join(home, "데이터", "편성표", "badges")
     return os.path.abspath("badges")
 
-APP_VERSION = "3.13.0"
+APP_VERSION = "3.13.1"
 
 
 def _detect_profile():
@@ -3909,11 +3909,35 @@ class ScheduleEditor:
         f = {"dirty": dirty, "kind": ("DMB" if IS_DMB else "TV"), "title": self._tv_preview_title(), "src": os.path.basename(self.pdf_path or "")}
         update_tv_preview_status(key, **f)
 
+    def _title_save_name(self):
+        """TV 편성표: 머리글 제목으로 저장 이름 제안. 예: '광주MBC 주간편성표 [ 11월 02주 확정 ]' -> '광주MBC 주간편성표 [11월 02주 확정].pdf'
+        제목에 '몇 월 몇 주'가 없으면 원본 파일 이름에서 읽어 붙인다. 제목을 쓸 수 없으면 ''."""
+        st = self.header_edit.get(self.current_page) or {}
+        title = (st.get("title") or "").strip() if st.get("title_on") else ""
+        if not title:
+            title = self._suggest_header_title().strip()
+        if not title:
+            return ""
+        if not re.search(r"\d{1,2}\s*월\s*\d{1,2}\s*주", title):
+            m = re.search(r"_(\d{1,2})__(\d)", os.path.basename(self.pdf_path or ""))
+            if m:
+                title += f" {int(m.group(1))}월 {int(m.group(2)):02d}주"
+        name = re.sub(r'[\\/:*?"<>|\r\n\t]+', "_", title)          # 파일 이름에 못 쓰는 글자
+        name = re.sub(r"\[\s*", "[", re.sub(r"\s*\]", "]", name))     # '[ 11월 ]' -> '[11월]'
+        name = re.sub(r"\s+", " ", name).strip(" ._")[:80]
+        if not name:
+            return ""
+        src = os.path.splitext(os.path.basename(self.pdf_path or ""))[0]
+        if name == src:                                              # 받은 원본과 같은 이름이면 덮어쓰지 않게
+            name += " (수정)"
+        return name + ".pdf"
+
     def _default_save_name(self):
         """저장 이름 제안. DMB: 'MBC_11__1__2.pdf' -> 'DMB_11__1__2.pdf' / 편성표: 원래 이름 그대로"""
         base = os.path.basename(self.pdf_path or "편성표.pdf")
         if not IS_DMB:
-            return base
+            t = self._title_save_name()
+            return t or base
         if re.match(r"(?i)^dmb[_\s-]", base):
             return base
         if re.match(r"^[A-Za-z]+_", base):
