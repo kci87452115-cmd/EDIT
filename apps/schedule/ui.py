@@ -45,7 +45,7 @@ def schedule_badge_dir():
         return os.path.join(home, "데이터", "편성표", "badges")
     return os.path.abspath("badges")
 
-APP_VERSION = "3.12.3"
+APP_VERSION = "3.12.4"
 
 
 def _detect_profile():
@@ -2996,6 +2996,8 @@ class ScheduleEditor:
             if "options" not in block:
                 block["options"] = {}
             opts = block["options"]
+            if self._is_modified(block):
+                self._sync_auto_times(block)          # 나누거나 옮긴 블록: 시간 값을 지금 자리에 맞춘다
             
             self.opt_top_time_enabled_var = tk.BooleanVar(value=opts.get("top_time_enabled", opts.get("time_enabled", False)))
             self.top_time_val_var = tk.StringVar(value=opts.get("top_time_val", opts.get("time_val", "00")))
@@ -3303,6 +3305,7 @@ class ScheduleEditor:
             "local": self.opt_local_var.get(),
             "age": self.age_var.get()
         }
+        self._keep_auto_flags(block, new_opts)
         if new_opts != block.get("options"):
             self._push_coalesced("opt")
             block["options"] = new_opts
@@ -3418,7 +3421,7 @@ class ScheduleEditor:
             top_fs = block.get("options", {}).get("top_time_font_size", DEFAULT_TIME_FONT_SIZE)
             bottom_fs = block.get("options", {}).get("bottom_time_font_size", DEFAULT_TIME_FONT_SIZE)
             badge_sz = block.get("options", {}).get("badge_size", 12)
-            block["options"] = {
+            block["options"] = self._keep_auto_flags(block, {
                 "top_time_enabled": self.opt_top_time_enabled_var.get(),
                 "top_time_val": self.top_time_val_var.get(),
                 "top_time_font_size": top_fs,
@@ -3432,7 +3435,7 @@ class ScheduleEditor:
                 "des": self.opt_des_var.get(),
                 "local": self.opt_local_var.get(),
                 "age": self.age_var.get()
-            }
+            })
         for i, var in getattr(self, "split_title_vars", {}).items():
             try:
                 self.split_titles[i] = var.get()
@@ -4021,7 +4024,35 @@ class ScheduleEditor:
             val = tm if which == "top" else bm
             if val is not None:
                 (self.top_time_val_var if which == "top" else self.bottom_time_val_var).set(val)
+                o = block.setdefault("options", {})
+                o[f"{which}_time_val"] = val
+                o[f"{which}_time_auto"] = True        # 자동 값 (블록 자리가 바뀌면 따라 바뀐다)
         self.on_option_changed(block)
+
+    def _sync_auto_times(self, block):
+        """나누거나 고친 블록: 상단/하단 시간 값을 지금 자리의 분으로 맞춘다.
+        - 체크가 꺼져 있으면(안 보임) 늘 맞춘다.
+        - 체크가 켜져 있으면 자동으로 넣은 값일 때만 맞춘다 (손으로 고친 값은 그대로)."""
+        tm, bm = self._auto_minutes(block)
+        o = block.setdefault("options", {})
+        for which, val in (("top", tm), ("bottom", bm)):
+            if val is None:
+                continue
+            on = o.get(f"{which}_time_enabled", o.get("time_enabled", False) if which == "top" else False)
+            if not on or o.get(f"{which}_time_auto"):
+                if o.get(f"{which}_time_val") != val:
+                    o[f"{which}_time_val"] = val
+                if on:
+                    o[f"{which}_time_auto"] = True
+
+    def _keep_auto_flags(self, block, new_opts):
+        """옵션을 새로 만들 때 '자동 값' 표시를 이어 붙인다 (값을 손으로 바꾸면 자동이 아님)."""
+        prev = block.get("options") or {}
+        for which in ("top", "bottom"):
+            k = f"{which}_time_auto"
+            if k in prev:
+                new_opts[k] = bool(prev.get(k)) and new_opts.get(f"{which}_time_val") == prev.get(f"{which}_time_val")
+        return new_opts
 
     def toggle_split_mode(self, on=None):
         if not self.pdf_path:
@@ -4447,6 +4478,8 @@ class ScheduleEditor:
                 if tm is not None and tm != "00":
                     part.setdefault("options", {})["top_time_enabled"] = True
                     part["options"]["top_time_val"] = tm
+                    part["options"]["top_time_auto"] = True
+                self._sync_auto_times(part)
         a["group_id"] = b["group_id"] = gid
         idx = self.blocks.index(block)
         self.blocks[idx:idx + 1] = [a, b]
@@ -5228,6 +5261,10 @@ class ScheduleEditor:
             return
 
         if self.drag and self.drag.get("type") == "boundary":
+            for _bid in (self.drag.get("a"), self.drag.get("b")):      # 경계를 옮기면 두 칸의 시간 값도 새 자리에 맞춘다
+                _bb = self._block_by_id(_bid)
+                if _bb:
+                    self._sync_auto_times(_bb)
             if self.drag.get("moved"):
                 self._push_snapshot(self.drag["snap"])
                 self.page_blocks[self.current_page] = self.blocks
