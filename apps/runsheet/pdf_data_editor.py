@@ -25,7 +25,7 @@ except ImportError:
     except ImportError:
         fitz = None
 
-APP_VERSION = "2.9.5"
+APP_VERSION = "2.10.0"
 APP_TITLE = f"운행표 데이터 편집기 v{APP_VERSION}"
 APP_MUTEX = "RunSheetEditor_Running"      # 설치 프로그램이 '실행 중'을 알아보는 이름 (setup.iss 의 AppMutex 와 같아야 함)
 RUN_BY_LAUNCHER = bool(os.environ.get("RADIO_LAUNCHER"))   # 편집 프로그램 런처로 실행됨 -> 업데이트는 런처가 한다
@@ -1148,67 +1148,91 @@ def computer_name():
 
 _VIEW_HTML = r"""<!DOCTYPE html>
 <html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>운행표 정산 / 검색 (조회 전용)</title>
+<title>💰 정산 / 검색 (조회 전용)</title>
 <style>
 body{font-family:"Malgun Gothic","맑은 고딕",sans-serif;margin:0;background:#f5f6f8;color:#1f2937;font-size:14px}
 header{background:#1e3a8a;color:#fff;padding:10px 18px;display:flex;gap:16px;align-items:baseline;flex-wrap:wrap}
 header b{font-size:17px} header span{opacity:.85;font-size:12px}
-main{padding:14px 18px;max-width:1300px}
-.box{background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:12px 14px;margin-bottom:12px}
-.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:4px 0}
-label{font-weight:bold;font-size:12px;color:#374151}
-input,select,button{font:inherit;padding:4px 6px;border:1px solid #cbd5e1;border-radius:5px;background:#fff}
-button{background:#2563eb;color:#fff;border-color:#2563eb;cursor:pointer;padding:5px 12px}
-button.lite{background:#fff;color:#1e3a8a;border-color:#cbd5e1}
+main{padding:12px 18px;max-width:1300px}
+.tabs{display:flex;gap:2px;flex-wrap:wrap;border-bottom:1px solid #cbd5e1}
+.tabs button{background:#e5e7eb;color:#1f2937;border:1px solid #cbd5e1;border-bottom:none;border-radius:6px 6px 0 0;padding:6px 14px;cursor:pointer}
+.tabs button.on{background:#fff;color:#1e3a8a;font-weight:bold;position:relative;top:1px}
+.pane{background:#fff;border:1px solid #cbd5e1;border-top:none;padding:10px 12px}
+.row{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:3px 0 6px}
+label{font-weight:bold;font-size:13px;color:#1f2937;margin-left:8px} label:first-child{margin-left:0}
+.hint{color:#666;font-size:12px}
+input,select,button{font:inherit;padding:3px 6px;border:1px solid #cbd5e1;border-radius:4px;background:#fff}
+.btn{background:#2563eb;color:#fff;border-color:#2563eb;cursor:pointer;padding:4px 14px}
+.btn.lite{background:#fff;color:#1e3a8a}
+.right{margin-left:auto}
 table{border-collapse:collapse;width:100%;background:#fff}
-th,td{border:1px solid #e5e7eb;padding:4px 7px;text-align:left;white-space:nowrap}
+th,td{border:1px solid #e5e7eb;padding:3px 7px;text-align:left;white-space:nowrap}
 th{background:#eef2ff;position:sticky;top:0}
-td.n{text-align:right}
-tr.tot td{font-weight:bold;background:#f8fafc}
-.scroll{max-height:60vh;overflow:auto;border:1px solid #e5e7eb}
-.msg{color:#6b7280;font-size:12px;margin:6px 0}
-.tabs button{background:#fff;color:#1e3a8a;border-color:#cbd5e1}
-.tabs button.on{background:#1e3a8a;color:#fff}
+td.n,th.n{text-align:right}
+.scroll{height:62vh;overflow:auto;border:1px solid #e5e7eb}
+.total{text-align:right;font-weight:bold;margin-top:5px}
+.msg{color:#6b7280;font-size:12px;margin:4px 0}
 </style></head><body>
-<header><b>📻 운행표 정산 / 검색</b><span id="who"></span><span>조회 전용 — 이 화면에서는 기록을 바꿀 수 없습니다</span></header>
+<header><b>💰 정산 / 검색</b><span id="who"></span><span>조회 전용 — 이 화면에서는 기록을 바꿀 수 없습니다</span></header>
 <main>
-<div class="box">
- <div class="row">
-  <label>기간</label>
-  <button class="lite" onclick="preset('day')">오늘</button>
-  <button class="lite" onclick="preset('month')">이번 달</button>
-  <button class="lite" onclick="preset('lastmonth')">지난달</button>
-  <button class="lite" onclick="preset('year')">올해</button>
-  <input type="date" id="from"> ~ <input type="date" id="to">
+<div class="tabs" id="tabs"></div>
+<div class="pane">
+ <div id="fS">
+  <div class="row"><label id="kLbl">기준일:</label><input id="kref" size="11"><span class="hint" id="kHint"></span>
+   <label>묶음 기준:</label><select id="sby"></select>
+   <label>매체:</label><select id="smedia"><option value="">전체</option><option>AM</option><option>FM</option></select>
+   <button class="btn" onclick="run()">조회</button>
+   <a class="right" id="scsv" href="#">⬇ CSV 저장</a></div>
  </div>
- <div class="row">
-  <label>매체</label><select id="media"><option value="">전체</option><option>AM</option><option>FM</option></select>
-  <label>그룹</label><select id="grp"><option value="">전체</option></select>
-  <label>검색어</label><input id="kw" placeholder="광고주·프로그램" size="16">
-  <select id="target"></select>
-  <label>묶음</label><select id="by"></select>
-  <button onclick="run()">조회</button>
+ <div id="fQ" style="display:none">
+  <div class="row"><label>검색어:</label><input id="kw" size="22">
+   <label>찾는 곳:</label><select id="target"></select>
+   <label>매체:</label><select id="qmedia"><option value="">전체</option><option>AM</option><option>FM</option></select>
+   <label>그룹:</label><input id="grp" list="grps" size="14"><datalist id="grps"></datalist></div>
+  <div class="row"><label>기간:</label><input type="date" id="from"> ~ <input type="date" id="to">
+   <span class="hint">(비우면 전체 기간, 기간 안의 기록만 나옵니다)</span>
+   <label>묶어서 보기:</label><select id="qby"></select>
+   <button class="btn" onclick="run()">검색</button>
+   <a class="right" id="qcsv" href="#">⬇ CSV 저장</a></div>
  </div>
+ <div class="msg" id="msg"></div>
+ <div class="scroll"><table id="tbl"></table></div>
+ <div class="total" id="total"></div>
 </div>
-<div class="row tabs"><button id="tA" class="on" onclick="tab('A')">합계</button><button id="tD" onclick="tab('D')">상세 목록</button>
- <button id="tP" onclick="tab('P')">📄 운행표 미리보기 · 인쇄</button>
- <button id="tT" onclick="tab('T')">📺 TV 주간 편성표</button>
- <a id="csv" href="#" style="margin-left:auto">⬇ 상세 목록 CSV(엑셀) 내려받기</a></div>
-<div class="msg" id="msg"></div>
-<div class="scroll"><table id="tbl"></table></div>
 </main>
 <script>
-const $=id=>document.getElementById(id);let cur='A',info=null;
-const pad=n=>String(n).padStart(2,'0');const iso=d=>d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate());
-function preset(k){const t=new Date();let a=new Date(t),b=new Date(t);
- if(k==='month'){a=new Date(t.getFullYear(),t.getMonth(),1);b=new Date(t.getFullYear(),t.getMonth()+1,0)}
- if(k==='lastmonth'){a=new Date(t.getFullYear(),t.getMonth()-1,1);b=new Date(t.getFullYear(),t.getMonth(),0)}
- if(k==='year'){a=new Date(t.getFullYear(),0,1);b=new Date(t.getFullYear(),11,31)}
- $('from').value=iso(a);$('to').value=iso(b);run()}
-function q(){const p=new URLSearchParams({from:$('from').value,to:$('to').value,media:$('media').value,grp:$('grp').value,kw:$('kw').value,target:$('target').value,by:$('by').value});return p.toString()}
+const $=id=>document.getElementById(id);let cur='일',info=null;
+const TABS=[['일',' 일 정산 '],['월',' 월 정산 '],['년',' 년 정산 '],['Q',' 검색 / 그룹 검색 '],['P','📄 운행표 미리보기 · 인쇄'],['T','📺 TV 주간 편성표']];
+const pad=n=>String(n).padStart(2,'0');const t0=new Date();const today=t0.getFullYear()+'-'+pad(t0.getMonth()+1)+'-'+pad(t0.getDate());
+const refs={'일':today,'월':today.slice(0,7),'년':today.slice(0,4)},bys={'일':'광고주별','월':'광고주별','년':'광고주별'},meds={'일':'','월':'','년':''};
 const num=v=>Number(v||0).toLocaleString('ko-KR');
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-function tab(k){cur=k;for(const t of ['A','D','P','T'])$('t'+t).className=k===t?'on':'';run()}
+function drawTabs(){$('tabs').innerHTML=TABS.map(([k,t])=>'<button class="'+(k===cur?'on':'')+'" onclick="tab(\''+k+'\')">'+esc(t)+'</button>').join('')}
+function keep(){if('일월년'.includes(cur)){refs[cur]=$('kref').value;bys[cur]=$('sby').value;meds[cur]=$('smedia').value}}
+function tab(k){keep();cur=k;drawTabs();const s='일월년'.includes(k);$('fS').style.display=s?'':'none';$('fQ').style.display=k==='Q'?'':'none';
+ $('total').textContent='';
+ if(s){$('kLbl').textContent={'일':'기준일:','월':'기준월:','년':'기준연도:'}[k];$('kHint').textContent={'일':'(2026-10-30)','월':'(2026-10)','년':'(2026)'}[k];
+  $('kref').value=refs[k];$('sby').value=bys[k];$('smedia').value=meds[k]}
+ run()}
+function sq(){return new URLSearchParams({kind:cur,ref:$('kref').value.trim(),by:$('sby').value,media:$('smedia').value}).toString()}
+function qq(){return new URLSearchParams({kw:$('kw').value.trim(),target:$('target').value,media:$('qmedia').value,grp:$('grp').value.trim(),from:$('from').value,to:$('to').value,by:$('qby').value}).toString()}
+function aggTable(by,rows){let h='<tr><th>'+esc(by.replace('별',''))+'</th><th class=n>건수</th><th class=n>총 초수</th></tr>';
+ for(const x of rows)h+='<tr><td>'+esc(x[0]||'(없음)')+'</td><td class=n>'+num(x[1])+'</td><td class=n>'+num(x[2])+'</td></tr>';return h}
+async function get(u){const r=await fetch(u);const d=await r.json();if(d.error)throw new Error(d.error);return d}
+async function run(){if(cur==='P')return previews();if(cur==='T')return tvsheets();
+ $('msg').textContent='불러오는 중…';
+ try{if(cur==='Q'){$('qcsv').href='api/search.csv?'+qq();const d=await get('api/search?'+qq());
+   if(d.mode==='detail'){let h='<tr><th>방송일</th><th>매체</th><th>시분초</th><th>프로그램</th><th>칸</th><th>광고주</th><th class=n>초수</th><th>그룹</th></tr>';
+    for(const x of d.rows)h+='<tr><td>'+esc(x[0])+'</td><td>'+esc(x[1])+'</td><td>'+esc(x[2])+'</td><td>'+esc(x[3])+'</td><td>'+esc(x[4])+'</td><td>'+esc(x[5])+'</td><td class=n>'+num(x[6])+'</td><td>'+esc(x[7])+'</td></tr>';
+    $('tbl').innerHTML=h;$('total').textContent=num(d.total)+'건   총 초수 '+num(d.sec);
+    $('msg').textContent=d.total>d.rows.length?'화면에는 앞의 '+num(d.rows.length)+'건만 보입니다 (전체는 CSV 저장으로 받으세요)':(d.total?'':'조건에 맞는 기록이 없습니다.')}
+   else{$('tbl').innerHTML=aggTable($('qby').value,d.rows);$('total').textContent=d.rows.length+'개 묶음   건수 '+num(d.rows.reduce((a,x)=>a+x[1],0));
+    $('msg').textContent=d.rows.length?'':'조건에 맞는 기록이 없습니다.'}}
+  else{$('scsv').href='api/settle.csv?'+sq();const d=await get('api/settle?'+sq());
+   $('tbl').innerHTML=aggTable($('sby').value,d.rows);
+   $('total').textContent='합계  건수 '+num(d.rows.reduce((a,x)=>a+x[1],0))+'   총 초수 '+num(d.rows.reduce((a,x)=>a+x[2],0));
+   $('msg').textContent=(d.from===d.to?d.from:d.from+' ~ '+d.to)+(d.rows.length?'':' — 기록이 없습니다.')}}
+ catch(e){$('tbl').innerHTML='';$('total').textContent='';$('msg').textContent='⚠ '+(e instanceof TypeError?'편집기 PC에 연결하지 못했습니다. 편집기가 켜져 있는지 확인해 주세요.':e.message)}}
 function tvManual(){const v=prompt('TV 편성표 PC 주소 (예: http://192.168.0.20:8081)\n자동으로 못 찾을 때만 넣으세요. 비우면 지웁니다.',localStorage.getItem('tvaddr')||'');
  if(v===null)return;try{v.trim()?localStorage.setItem('tvaddr',v.trim().replace(/\/+$/,'')):localStorage.removeItem('tvaddr')}catch(e){}tvsheets()}
 async function tvsheets(){$('msg').textContent='TV 편성표 PC를 찾는 중…';
@@ -1223,7 +1247,7 @@ async function tvsheets(){$('msg').textContent='TV 편성표 PC를 찾는 중…
   catch(e){bad.push(b.url)}}
  $('tbl').innerHTML=h;
  $('msg').innerHTML=(bases.length?(n?'TV 편집기에서 PDF를 저장할 때마다 바뀝니다. (30초마다 새로고침)':'TV 편성표 PC는 찾았지만 저장된 편성표가 아직 없습니다.')
-   :'TV 편성표 PC를 찾지 못했습니다. TV PC의 편집 프로그램 런처에서 「📺 TV 편성표 다른 PC에서 보기 허용」을 켜 주세요.')
+   :'TV 편성표 PC를 찾지 못했습니다. TV 편집기 ⚙ 설정에서 「다른 PC에서 보기」를 켜 주세요.')
   +(bad.length?' ⚠ 연결 안 됨: '+esc(bad.join(', ')):'')+' <a href="#" onclick="tvManual();return false">주소 직접 넣기</a>'}
 setInterval(()=>{if(cur==='T'&&!document.hidden)tvsheets()},30000);
 const WK='일월화수목금토';
@@ -1240,25 +1264,16 @@ async function previews(){$('msg').textContent='불러오는 중…';
   $('tbl').innerHTML=h;$('msg').textContent=d.rows.length?'편집기에서 저장할 때마다 바뀝니다. 「보기 · 인쇄」를 누르면 새 창에서 열리고, 브라우저의 인쇄 버튼으로 인쇄합니다. (30초마다 새로고침)':'아직 미리보기가 없습니다. 편집기에서 운행표를 저장하면 여기에 나타납니다.'}
  catch(e){$('msg').textContent='⚠ 편집기 PC에 연결하지 못했습니다.'}}
 setInterval(()=>{if(cur==='P'&&!document.hidden)previews()},30000);
-async function run(){if(cur==='P')return previews();if(cur==='T')return tvsheets();$('csv').href='api/detail.csv?'+q();$('msg').textContent='불러오는 중…';
- try{const r=await fetch((cur==='A'?'api/aggregate?':'api/detail?')+q());const d=await r.json();
-  if(d.error){$('msg').textContent='⚠ '+d.error;$('tbl').innerHTML='';return}
-  let h='';
-  if(cur==='A'){h='<tr><th>'+esc($('by').value.replace('별',''))+'</th><th>건수</th><th>초 합계</th><th>금액 합계</th></tr>';
-   let c=0,s=0,m=0;for(const x of d.rows){c+=x[1];s+=x[2];m+=x[3];h+='<tr><td>'+esc(x[0]||'(없음)')+'</td><td class=n>'+num(x[1])+'</td><td class=n>'+num(x[2])+'</td><td class=n>'+num(x[3])+'</td></tr>'}
-   h+='<tr class=tot><td>합계 ('+d.rows.length+'개)</td><td class=n>'+num(c)+'</td><td class=n>'+num(s)+'</td><td class=n>'+num(m)+'</td></tr>';
-   $('msg').textContent=d.rows.length?'':'조건에 맞는 기록이 없습니다.'}
-  else{h='<tr><th>방송일</th><th>매체</th><th>시각</th><th>프로그램</th><th>칸</th><th>광고주</th><th>초</th><th>금액</th><th>그룹</th></tr>';
-   for(const x of d.rows){h+='<tr><td>'+esc(x[0])+'</td><td>'+esc(x[1])+'</td><td>'+esc(x[2])+'</td><td>'+esc(x[3])+'</td><td class=n>'+esc(x[4])+'</td><td>'+esc(x[5])+'</td><td class=n>'+num(x[6])+'</td><td class=n>'+num(x[7])+'</td><td>'+esc(x[8])+'</td></tr>'}
-   $('msg').textContent=d.total+'건'+(d.total>d.rows.length?' — 화면에는 앞의 '+d.rows.length+'건만 보입니다 (전체는 CSV로 내려받으세요)':'')}
-  $('tbl').innerHTML=h}catch(e){$('msg').textContent='⚠ 편집기 PC에 연결하지 못했습니다. 편집기가 켜져 있는지 확인해 주세요.'}}
-(async()=>{try{info=await (await fetch('api/info')).json();
- $('who').textContent='편집기: '+info.name+' · v'+info.version;document.title+=' — '+info.name;
- for(const g of info.groups){const o=document.createElement('option');o.textContent=g;$('grp').appendChild(o)}
- for(const t of info.targets){const o=document.createElement('option');o.textContent=t;$('target').appendChild(o)}
- for(const b of info.by){const o=document.createElement('option');o.textContent=b;$('by').appendChild(o)}
- $('target').value='광고주+프로그램';}catch(e){}
- $('kw').addEventListener('keydown',e=>{if(e.key==='Enter')run()});preset('month')})();
+const opt=(sel,list)=>{for(const t of list){const o=document.createElement('option');o.textContent=t;sel.appendChild(o)}};
+(async()=>{drawTabs();
+ try{info=await (await fetch('api/info')).json();
+  $('who').textContent='편집기: '+info.name+' · v'+info.version;document.title+=' — '+info.name;
+  for(const g of info.groups){const o=document.createElement('option');o.value=g;$('grps').appendChild(o)}
+  opt($('target'),info.targets);opt($('sby'),info.by);opt($('qby'),['묶지 않음'].concat(info.by));
+  $('target').value='광고주만';$('sby').value='광고주별';}catch(e){}
+ $('kw').addEventListener('keydown',e=>{if(e.key==='Enter')run()});
+ $('kref').addEventListener('keydown',e=>{if(e.key==='Enter')run()});
+ tab('일')})();
 </script></body></html>
 """
 
@@ -1340,6 +1355,16 @@ class ViewServer:
             def _json(self, obj, code=200):
                 self._send(code, json.dumps(obj, ensure_ascii=False), "application/json; charset=utf-8")
 
+            def _csv(self, header, rows, fname):
+                import io
+                from urllib.parse import quote
+                buf = io.StringIO()
+                w = csv.writer(buf)
+                w.writerow(header)
+                w.writerows(rows)
+                return self._send(200, "\ufeff" + buf.getvalue(), "text/csv; charset=utf-8",
+                                  {"Content-Disposition": f"attachment; filename*=UTF-8''{quote(fname)}"})
+
             def do_HEAD(self):
                 self.do_GET()
 
@@ -1376,6 +1401,43 @@ class ViewServer:
                         return self._json({"app": "runsheet-view", "host": owner.host_kind,
                                            "name": computer_name(), "version": APP_VERSION, "groups": store.distinct_groups(),
                                            "by": list(BY_OPTIONS), "targets": list(SEARCH_TARGETS)})
+                    if route in ("/api/settle", "/api/settle.csv"):      # 편집기 「일/월/년 정산」 탭과 같은 조회
+                        kind = p.get("kind", "")
+                        if kind not in ("일", "월", "년"):
+                            return self._json({"error": "정산 종류를 확인해 주세요."}, 400)
+                        try:
+                            d0, d1 = period_range(kind, p.get("ref", ""))
+                        except ValueError as exc:
+                            return self._json({"error": str(exc)}, 400)
+                        by_lbl = p.get("by", "") if p.get("by", "") in BY_OPTIONS else "광고주별"
+                        media = p.get("media", "") if p.get("media", "") in ("", "AM", "FM") else ""
+                        data = store.aggregate(d0, d1, by=BY_OPTIONS[by_lbl], media=media)
+                        rows = [(k or "(없음)", cnt, sec) for k, cnt, sec, amt in data]
+                        if route == "/api/settle":
+                            return self._json({"from": d0, "to": d1, "rows": rows})
+                        return self._csv([by_lbl.replace("별", ""), "건수", "총 초수"], rows, f"{kind}정산_{p.get('ref', '').strip()}_{by_lbl}.csv")
+                    if route in ("/api/search", "/api/search.csv"):      # 편집기 「검색 / 그룹 검색」 탭과 같은 조회
+                        d0, d1 = p.get("from", ""), p.get("to", "")
+                        for d in (d0, d1):
+                            if d and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", d):
+                                return self._json({"error": "기간은 2026-10-30 형식으로 입력해 주세요."}, 400)
+                        media = p.get("media", "") if p.get("media", "") in ("", "AM", "FM") else ""
+                        kw, grp = p.get("kw", "").strip()[:100], p.get("grp", "").strip()[:100]
+                        target = SEARCH_TARGETS.get(p.get("target", ""), "name")
+                        by_lbl = p.get("by", "")
+                        fname = f"검색_{kw or '전체'}_{d0 or '처음'}_{d1 or '끝'}.csv"
+                        if by_lbl in BY_OPTIONS:
+                            data = store.aggregate(d0, d1, kw, grp, BY_OPTIONS[by_lbl], media=media, target=target)
+                            rows = [(k or "(없음)", cnt, sec) for k, cnt, sec, amt in data]
+                            if route == "/api/search":
+                                return self._json({"mode": "agg", "rows": rows})
+                            return self._csv([by_lbl.replace("별", ""), "건수", "총 초수"], rows, fname)
+                        data = store.detail(d0, d1, kw, grp, media=media, target=target)
+                        rows = [(a, m, t, pg, cell_label(c_), n, s, g) for a, m, t, pg, c_, n, s, pr, g in data]
+                        if route == "/api/search":
+                            return self._json({"mode": "detail", "total": len(rows), "sec": sum(r[6] or 0 for r in rows),
+                                               "rows": rows[:VIEW_DETAIL_LIMIT]})
+                        return self._csv(["방송일", "매체", "시분초", "프로그램", "칸", "광고주", "초수", "그룹"], rows, fname)
                     if route in ("/api/aggregate", "/api/detail", "/api/detail.csv"):
                         d0, d1 = p.get("from", ""), p.get("to", "")
                         for d in (d0, d1):
