@@ -45,7 +45,7 @@ def schedule_badge_dir():
         return os.path.join(home, "데이터", "편성표", "badges")
     return os.path.abspath("badges")
 
-APP_VERSION = "3.19.2"
+APP_VERSION = "3.19.3"
 
 
 def _detect_profile():
@@ -2319,6 +2319,11 @@ class ScheduleEditor:
                 block["foot_pos"] = preset.get("foot_pos", "below")
                 block["text_dx"] = preset.get("text_dx", 0)
                 block["text_dy"] = preset.get("text_dy", 0)
+                if "shade" in preset:                    # 음영·테두리 (예전 파렛트엔 없으면 그대로 둔다)
+                    block["shade"] = preset.get("shade") or None
+                if "border_color" in preset:
+                    block["border_color"] = copy.deepcopy(preset.get("border_color"))
+                    block["border_width"] = preset.get("border_width")
                 if "options" in preset:
                     block["options"] = copy.deepcopy(preset["options"])
                 self._fill_auto_times(block)       # 시간 값은 파렛트 것이 아니라 이 블록 위치의 분으로 (보이기는 체크 상태를 따른다)
@@ -2371,6 +2376,9 @@ class ScheduleEditor:
             "foot_pos": block.get("foot_pos", "below"),
             "text_dx": block.get("text_dx", 0),
             "text_dy": block.get("text_dy", 0),
+            "shade": block.get("shade") or "",                 # 선택한 칸 음영
+            "border_color": copy.deepcopy(block.get("border_color")),
+            "border_width": block.get("border_width"),
             "options": options
         }
         
