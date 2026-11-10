@@ -25,7 +25,7 @@ except ImportError:
     except ImportError:
         fitz = None
 
-APP_VERSION = "2.4.0"
+APP_VERSION = "2.4.1"
 APP_TITLE = f"운행표 데이터 편집기 v{APP_VERSION}"
 APP_MUTEX = "RunSheetEditor_Running"      # 설치 프로그램이 '실행 중'을 알아보는 이름 (setup.iss 의 AppMutex 와 같아야 함)
 RUN_BY_LAUNCHER = bool(os.environ.get("RADIO_LAUNCHER"))   # 편집 프로그램 런처로 실행됨 -> 업데이트는 런처가 한다
@@ -2725,6 +2725,7 @@ Start-Process (Join-Path $prog 'RunSheetEditor.exe') -WorkingDirectory $prog
         c.configure(scrollregion=(0, 0, pw * self.zoom + 2 * M, ph * self.zoom + 2 * M))
         z = self.zoom
         items, marks = self.entry_layout(self.cur)
+        self._layout_cache = (self.cur, id(self.entries), items, marks, self.over_labels(marks))   # 마우스 움직일 때 다시 계산하지 않게
         by_key = {it["key"]: it for it in items}
         busy = {it["key"][:4] + (it["key"][4] % 4,) for it in items if it["key"][4] < 8}
         for cd in self.cells.get(self.cur, []):
@@ -3052,7 +3053,12 @@ Start-Process (Join-Path $prog 'RunSheetEditor.exe') -WorkingDirectory $prog
             return
         cx, cy_ = c.canvasx(event.x), c.canvasy(event.y)
         x, y = self.c2d(cx, cy_)
-        items, marks = self.entry_layout(self.cur)
+        lc = getattr(self, "_layout_cache", None)
+        if lc and lc[0] == self.cur and lc[1] == id(self.entries):
+            items, marks, labels = lc[2], lc[3], lc[4]
+        else:
+            items, marks = self.entry_layout(self.cur)
+            labels = self.over_labels(marks)
         # 줄어들거나 잘려 보이는 글자는 마우스를 올리면 전체 이름을 보여 준다
         for it in items:
             x0, y0, x1, y1 = it["rect"]
@@ -3069,7 +3075,7 @@ Start-Process (Join-Path $prog 'RunSheetEditor.exe') -WorkingDirectory $prog
             if MARK_X - 2 <= x <= MARK_X + 14 and abs(y - m["cy"]) <= CELL_HALF_H:
                 self._show_tip(cx, cy_, "행 오른쪽 '+N' 표시 (칸이 모자라 줄 아래에 이름표로 표시)\n" + "\n".join(m["names"]), True)
                 return
-        for lb in self.over_labels(marks):
+        for lb in labels:
             x0, y0, x1, y1 = lb["rect"]
             if x0 <= x <= x1 and y0 <= y <= y1:
                 self._show_tip(cx, cy_, lb["full"].replace(", ", "\n"), True)

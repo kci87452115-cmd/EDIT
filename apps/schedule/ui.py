@@ -45,7 +45,7 @@ def schedule_badge_dir():
         return os.path.join(home, "데이터", "편성표", "badges")
     return os.path.abspath("badges")
 
-APP_VERSION = "3.11.5"
+APP_VERSION = "3.11.6"
 
 
 def _detect_profile():
@@ -1812,9 +1812,19 @@ class ScheduleEditor:
     # ---------------- 수정된 블록 표시 (음영 / 테두리 두께) ----------------
     def _orig_match(self, b):
         r = tuple(b["rect"])
-        for ob in self.initial_blocks.get(self.current_page, []):
-            if all(abs(a - c) <= 0.5 for a, c in zip(r, ob["rect"])):
-                return ob
+        init = self.initial_blocks.get(self.current_page, [])
+        key = (self.current_page, id(init), len(init))
+        idx = getattr(self, "_orig_idx", None)
+        if idx is None or idx[0] != key:             # 원본 칸을 왼쪽 x 로 묶어 둔다 (매번 전체를 훑지 않게)
+            buckets = {}
+            for ob in init:
+                buckets.setdefault(int(round(ob["rect"][0])), []).append(ob)
+            idx = self._orig_idx = (key, buckets)
+        bx = int(round(r[0]))
+        for k in (bx - 1, bx, bx + 1):
+            for ob in idx[1].get(k, ()):
+                if all(abs(a - c) <= 0.5 for a, c in zip(r, ob["rect"])):
+                    return ob
         return None
 
     def _cover_color(self, b):
@@ -2769,7 +2779,9 @@ class ScheduleEditor:
         if not self.png_data: return
         c = self.canvas
         c.delete("all")
-        self.photo = tk.PhotoImage(data=base64.b64encode(self.png_data).decode("ascii"))
+        if getattr(self, "_photo_src", None) is not self.png_data or getattr(self, "photo", None) is None:
+            self.photo = tk.PhotoImage(data=base64.b64encode(self.png_data).decode("ascii"))   # 페이지 그림은 바뀔 때만 다시 만든다
+            self._photo_src = self.png_data
         
         pw = (self.page_rect[2] - self.page_rect[0]) if self.page_rect else 1000
         ph = (self.page_rect[3] - self.page_rect[1]) if self.page_rect else 800
@@ -4121,9 +4133,7 @@ class ScheduleEditor:
         a["orig_rect"], b["orig_rect"] = a["rect"], b["rect"]
         self._recompute_rel_boxes(a.get("group_id"))
         self.drag["moved"] = True
-        self.draw_pdf(refresh_sidebar=False)
-        if lab:
-            self._draw_split_label(cx, cy, lab)
+        self._draw_soon((lambda: self._draw_split_label(cx, cy, lab)) if lab else None)
 
     # ================================================================ 칸 이름 입력 창 (더블클릭)
     def _remember_title(self, text):
@@ -4652,6 +4662,20 @@ class ScheduleEditor:
                 
         return (tx0, ty0, tx1, ty1)
 
+    def _draw_soon(self, after=None):
+        """끄는 동안에는 마우스가 움직일 때마다 다 그리지 않고, 화면 한 번(약 1/60초)에 한 번만 그린다."""
+        self._draw_after = after
+        if getattr(self, "_draw_job", None):
+            return
+
+        def run():
+            self._draw_job = None
+            self.draw_pdf(refresh_sidebar=False)
+            cb, self._draw_after = getattr(self, "_draw_after", None), None
+            if cb:
+                cb()
+        self._draw_job = self.root.after(16, run)
+
     def on_motion_pdf(self, event):
         x, y = self.canvas.canvasx(event.x), self.canvas.canvasy(event.y)
         
@@ -4769,9 +4793,16 @@ class ScheduleEditor:
         else:
             block["rect"] = target_rect
             
-        self.draw_pdf(refresh_sidebar=False)
+        self._draw_soon()
 
     def on_release_pdf(self, event):
+        job = getattr(self, "_draw_job", None)
+        if job:
+            try:
+                self.root.after_cancel(job)
+            except Exception:
+                pass
+            self._draw_job = None
         x, y = self.canvas.canvasx(event.x), self.canvas.canvasy(event.y)
         
         if self.manual_draw_mode.get() and self.manual_rect_start:
