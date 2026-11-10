@@ -45,7 +45,7 @@ def schedule_badge_dir():
         return os.path.join(home, "데이터", "편성표", "badges")
     return os.path.abspath("badges")
 
-APP_VERSION = "3.12.4"
+APP_VERSION = "3.12.5"
 
 
 def _detect_profile():
@@ -1414,7 +1414,7 @@ class ScheduleEditor:
         # 머리글: 지역·제목 크기·굵게는 이어받고, 날짜는 새 판 것을 쓴다
         old_h = (rec.get("header_edit") or {}).get(pg) or {}
         st = self._header_state()
-        for k in ("title_size", "title_bold"):
+        for k in ("title_size", "title_bold", "date_bold"):
             if k in old_h:
                 st[k] = old_h[k]
         if isinstance(old_h.get("days"), list) and len(old_h["days"]) == len(st.get("days") or []):
@@ -4663,6 +4663,7 @@ class ScheduleEditor:
         st.setdefault("title", self._suggest_header_title())
         st.setdefault("title_size", 0)            # 0 = 자동
         st.setdefault("title_bold", True)
+        st.setdefault("date_bold", False)
         st.setdefault("date_on", False)
         st.setdefault("date", ((found.get("date") or {}).get("text") or "").strip())
         days = found.get("days") or []
@@ -4722,7 +4723,9 @@ class ScheduleEditor:
             text = st["date"].strip()
             size = float(df.get("size") or (y1 - y0) * 0.8)
             w = measure(text, size)
-            out.append(((min(x0, x1 - w) - 1, y0 - 1, x1 + 1, y1 + 1), text, size, (x1 - w, (y0 + y1) / 2 + size * 0.36), False, "#ffffff"))
+            if st.get("date_bold"):
+                w *= 1.06                          # 굵은 글자는 조금 넓다 (원래 글자를 다 덮고 오른쪽 끝을 맞추려고)
+            out.append(((min(x0, x1 - w) - 1, y0 - 1, x1 + 1, y1 + 1), text, size, (x1 - w, (y0 + y1) / 2 + size * 0.36), bool(st.get("date_bold")), "#ffffff"))
         days = found.get("days") or []
         if st.get("days_on") and days:
             for d, v in zip(days, st["days"]):
@@ -4809,6 +4812,7 @@ class ScheduleEditor:
             st["date_on"] = bool(d_on.get())
             st["date"] = d_var.get()
             st["title_bold"] = bool(t_bold.get())
+            st["date_bold"] = bool(d_bold.get())
             self.draw_pdf(refresh_sidebar=False)
 
         t_on = tk.BooleanVar(value=st["title_on"])
@@ -4867,7 +4871,9 @@ class ScheduleEditor:
         d_var = tk.StringVar(value=st["date"])
         r3 = ttk.Frame(f)
         r3.pack(fill="x")
+        d_bold = tk.BooleanVar(value=bool(st.get("date_bold")))
         ttk.Checkbutton(r3, text="날짜 바꾸기", variable=d_on, command=changed).pack(side="left")
+        ttk.Checkbutton(r3, text="굵게", variable=d_bold, command=lambda: (d_on.set(True), changed())).pack(side="left", padx=6)
         if not found.get("date"):
             ttk.Label(r3, text="(날짜 자리를 찾지 못함)", foreground="#b45309", font=(self.ui_font_family, 8)).pack(side="left")
         orig = ((found.get("date") or {}).get("text") or "").strip()
