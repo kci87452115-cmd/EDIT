@@ -25,7 +25,7 @@ except ImportError:
     except ImportError:
         fitz = None
 
-APP_VERSION = "2.8.0"
+APP_VERSION = "2.9.0"
 APP_TITLE = f"운행표 데이터 편집기 v{APP_VERSION}"
 APP_MUTEX = "RunSheetEditor_Running"      # 설치 프로그램이 '실행 중'을 알아보는 이름 (setup.iss 의 AppMutex 와 같아야 함)
 RUN_BY_LAUNCHER = bool(os.environ.get("RADIO_LAUNCHER"))   # 편집 프로그램 런처로 실행됨 -> 업데이트는 런처가 한다
@@ -1540,6 +1540,7 @@ class DataEditor:
         self.backup_on = True
         self.update_dir = UPDATE_DIR_DEFAULT
         self.update_check = True     # 켤 때 새 버전 확인
+        self.page_check_on = True     # 다음 장으로 넘어갈 때 시간 초과·부족 행 알림
         self.preset_detached = False  # '미리 만든 데이터'를 따로 창으로 띄워 둠
         self.preset_win_geom = ""
         self.preset_win_top = False
@@ -1635,6 +1636,7 @@ class DataEditor:
             self.update_check = bool(data.get("update_check", True))
             self.view_on = bool(data.get("view_on", False))
             self.preset_detached = bool(data.get("preset_detached", False))
+            self.page_check_on = bool(data.get("page_check_on", True))
             self.preset_win_geom = str(data.get("preset_win_geom", "") or "")
             self.preset_win_top = bool(data.get("preset_win_top", False))
             try:
@@ -1650,7 +1652,7 @@ class DataEditor:
                 json.dump({"font_path": self.font_path, "db_path": self.db_path, "sort_key": self.sort_key, "sort_desc": self.sort_desc, "preview_before_save": self.preview_var.get(), "highlight_output": self.highlight_var.get(), "show_today": self.show_today.get(), "preset_cols": self.preset_cols, "mark_opts": self.mark_opts,
                            "backup_dir": self.backup_dir, "backup_keep": self.backup_keep, "backup_on": self.backup_on,
                            "update_dir": self.update_dir, "update_check": self.update_check, "view_on": self.view_on, "view_port": self.view_port,
-                           "preset_detached": self.preset_detached, "preset_win_geom": self.preset_win_geom, "preset_win_top": self.preset_win_top,
+                           "preset_detached": self.preset_detached, "page_check_on": self.page_check_on, "preset_win_geom": self.preset_win_geom, "preset_win_top": self.preset_win_top,
                            "app_version": APP_VERSION}, f, ensure_ascii=False, indent=1)
         except Exception:
             pass
@@ -1787,6 +1789,14 @@ class DataEditor:
         ttk.Button(r6, text="지금 확인", command=check_now).pack(side="left", padx=12)
         ttk.Label(win, text="※ 여러 PC가 같이 쓰려면 공유 폴더(예: \\\\서버\\RADIO\\업데이트)로 지정하세요. 그 폴더에 새 버전을 올리면 각 PC가 켤 때 알려 줍니다.",
                   font=(self.ui_font_family, 8), foreground="#666", wraplength=600, justify="left").pack(anchor="w", padx=15, pady=(2, 0))
+
+        pc_var = tk.BooleanVar(value=self.page_check_on)
+
+        def _pc():
+            self.page_check_on = bool(pc_var.get())
+            self._save_settings()
+        ttk.Checkbutton(win, text="다음 장으로 넘어갈 때 시간 초과·부족 행 알려 주기 (예: 1329(+20초), 1159(-10초))",
+                        variable=pc_var, command=_pc).pack(anchor="w", padx=15, pady=(10, 0))
 
         ttk.Label(win, text="다른 PC에서 정산 / 검색 조회", font=(self.ui_font_family, 10, "bold")).pack(anchor="w", padx=15, pady=(14, 2))
         rv = ttk.Frame(win)
@@ -3164,6 +3174,9 @@ Start-Process (Join-Path $prog 'RunSheetEditor.exe') -WorkingDirectory $prog
         self.page_var.set(str(idx + 1))
         if idx == self.cur:
             return
+        if idx > self.cur and self.page_check_on and not self._confirm_leave_page(self.cur):
+            self.page_var.set(str(self.cur + 1))
+            return
         self.cur = idx
         if self.selected_key and self.selected_key[0] != idx:
             self.selected_key = None
@@ -3171,6 +3184,44 @@ Start-Process (Join-Path $prog 'RunSheetEditor.exe') -WorkingDirectory $prog
         self.draw_page()
         self.canvas.xview_moveto(0)
         self.canvas.yview_moveto(0)
+
+    def _page_problems(self, page):
+        """이 장에서 재원을 넘친 행 / 모자란 행: ([(시각, 초)], [(시각, 초)]). Spot·캠페인 59는 한 번만."""
+        over, short, seen = [], [], set()
+        for row in self.rows.get(page, []):
+            lk = self._link_key(row)
+            k = ("L", lk) if lk else (row["time"], row["program"])
+            if k in seen:
+                continue
+            seen.add(k)
+            chk = self.row_check(row)
+            if not chk:
+                continue
+            sold, cap, added, total = chk
+            if cap <= 0:
+                continue
+            if total > cap:
+                over.append((row["time"], total - cap))
+            elif total < cap:
+                short.append((row["time"], cap - total))
+        return over, short
+
+    def _confirm_leave_page(self, page):
+        """다음 장으로 넘어가기 전에 재원을 넘친 행·모자란 행을 알려 준다. 넘어가면 True."""
+        over, short = self._page_problems(page)
+        if not over and not short:
+            return True
+
+        def fmt(lst, sign):
+            txt = ", ".join(f"{t}({sign}{n}초)" for t, n in lst[:40])
+            return txt + (f" 외 {len(lst) - 40}개" if len(lst) > 40 else "")
+        msg = f"{page + 1}장 확인\n\n"
+        if over:
+            msg += f"⚠ 시간 초과 {len(over)}개: {fmt(over, '+')}\n\n"
+        if short:
+            msg += f"△ 부족 {len(short)}개: {fmt(short, '-')}\n\n"
+        msg += "다음 장으로 넘어갈까요?\n(아니요: 이 장에 남아서 고치기 · ⚙ 설정에서 이 확인을 끌 수 있습니다)"
+        return messagebox.askyesno("재원 확인", msg, icon="warning" if over else "info")
 
     def change_zoom(self, direction):
         if not self.doc:
