@@ -45,7 +45,7 @@ def schedule_badge_dir():
         return os.path.join(home, "데이터", "편성표", "badges")
     return os.path.abspath("badges")
 
-APP_VERSION = "3.13.1"
+APP_VERSION = "3.13.2"
 
 
 def _detect_profile():
@@ -3848,7 +3848,7 @@ class ScheduleEditor:
         init_dir = self.last_save_dir if self.last_save_dir and os.path.isdir(self.last_save_dir) else src_dir
         out_path = filedialog.asksaveasfilename(title=("DMB PDF 저장" if IS_DMB else "PDF 저장"), defaultextension=".pdf",
                                                 filetypes=[("PDF 파일", "*.pdf")], initialdir=init_dir,
-                                                initialfile=self._default_save_name())
+                                                initialfile=self._default_save_name(init_dir))
         if not out_path:
             return False
         if os.path.abspath(out_path) == os.path.abspath(self.pdf_path):
@@ -3909,34 +3909,41 @@ class ScheduleEditor:
         f = {"dirty": dirty, "kind": ("DMB" if IS_DMB else "TV"), "title": self._tv_preview_title(), "src": os.path.basename(self.pdf_path or "")}
         update_tv_preview_status(key, **f)
 
-    def _title_save_name(self):
-        """TV 편성표: 머리글 제목으로 저장 이름 제안. 예: '광주MBC 주간편성표 [ 11월 02주 확정 ]' -> '광주MBC 주간편성표 [11월 02주 확정].pdf'
-        제목에 '몇 월 몇 주'가 없으면 원본 파일 이름에서 읽어 붙인다. 제목을 쓸 수 없으면 ''."""
+    def _title_save_name(self, folder=""):
+        """TV 편성표: 저장 이름을 '제목 + 몇 월 몇 주-판' 으로 제안. 예: '광주MBC 주간편성표 11월 1주-2.pdf'
+        - 제목: 머리글 제목(켜져 있으면) 또는 파일 이름에서 만든 제목에서 '[ 11월 02주 확정 ]' 같은 주 표시는 뺀다.
+        - 주: 제목에 있으면 그것, 없으면 원본 파일 이름(MBC_11__1_2 -> 11월 1주)에서.
+        - 판(-N): 원본 파일 이름 끝 번호(_2 -> -2)를 쓰고, 없으면 저장 폴더에서 아직 안 쓴 번호(-1, -2, …)."""
         st = self.header_edit.get(self.current_page) or {}
         title = (st.get("title") or "").strip() if st.get("title_on") else ""
         if not title:
             title = self._suggest_header_title().strip()
-        if not title:
-            return ""
-        if not re.search(r"\d{1,2}\s*월\s*\d{1,2}\s*주", title):
-            m = re.search(r"_(\d{1,2})__(\d)", os.path.basename(self.pdf_path or ""))
-            if m:
-                title += f" {int(m.group(1))}월 {int(m.group(2)):02d}주"
-        name = re.sub(r'[\\/:*?"<>|\r\n\t]+', "_", title)          # 파일 이름에 못 쓰는 글자
-        name = re.sub(r"\[\s*", "[", re.sub(r"\s*\]", "]", name))     # '[ 11월 ]' -> '[11월]'
-        name = re.sub(r"\s+", " ", name).strip(" ._")[:80]
-        if not name:
-            return ""
         src = os.path.splitext(os.path.basename(self.pdf_path or ""))[0]
-        if name == src:                                              # 받은 원본과 같은 이름이면 덮어쓰지 않게
-            name += " (수정)"
-        return name + ".pdf"
+        fm = re.search(r"_(\d{1,2})__(\d)(?:_+(\d+))?", src)
+        tm = re.search(r"(\d{1,2})\s*월\s*(\d{1,2})\s*주", title)
+        week = (int(tm.group(1)), int(tm.group(2))) if tm else ((int(fm.group(1)), int(fm.group(2))) if fm else None)
+        base = re.sub(r"\[[^\]]*\d{1,2}\s*월[^\]]*\]", "", title)                  # '[ 11월 02주 확정 ]' 빼기
+        base = re.sub(r"\d{1,2}\s*월\s*\d{1,2}\s*주\S*", "", base)
+        base = re.sub(r'[\\/:*?"<>|\r\n\t]+', "_", base)                           # 파일 이름에 못 쓰는 글자
+        base = re.sub(r"\s+", " ", base).strip(" ._-")[:60]
+        if not base and not week:
+            return ""
+        stem = (base + " " if base else "") + (f"{week[0]}월 {week[1]}주" if week else "")
+        stem = stem.strip()
+        if not week:
+            return stem + ".pdf"
+        rev = int(fm.group(3)) if fm and fm.group(3) else None
+        n = rev or 1
+        if folder and os.path.isdir(folder):
+            while os.path.exists(os.path.join(folder, f"{stem}-{n}.pdf")) and rev is None:
+                n += 1                                                   # 판 번호가 없으면 비어 있는 다음 번호
+        return f"{stem}-{n}.pdf"
 
-    def _default_save_name(self):
+    def _default_save_name(self, folder=""):
         """저장 이름 제안. DMB: 'MBC_11__1__2.pdf' -> 'DMB_11__1__2.pdf' / 편성표: 원래 이름 그대로"""
         base = os.path.basename(self.pdf_path or "편성표.pdf")
         if not IS_DMB:
-            t = self._title_save_name()
+            t = self._title_save_name(folder)
             return t or base
         if re.match(r"(?i)^dmb[_\s-]", base):
             return base
