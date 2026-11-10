@@ -45,7 +45,7 @@ def schedule_badge_dir():
         return os.path.join(home, "데이터", "편성표", "badges")
     return os.path.abspath("badges")
 
-APP_VERSION = "3.18.1"
+APP_VERSION = "3.19.0"
 
 
 def _detect_profile():
@@ -63,7 +63,7 @@ APP_TITLE = (f"DMB 편성 편집기 v{APP_VERSION}" if IS_DMB
 # 편성표 편집기와 DMB 편집기가 같이 쓰는 것 (나머지 설정·자동 저장·머리글은 따로)
 SHARED_KEYS = ("title_presets", "favorite_presets", "custom_badge_paths", "global_font_path")
 DMB_REGIONS = ["광주", "전주", "여수", "목포"]
-STYLE_LOOK_KEYS = ("color", "text_color", "shade", "font_size_offset", "font_auto", "font_size_abs", "text_dx", "text_dy", "leader", "foot", "foot_bg", "foot_bg_text")
+STYLE_LOOK_KEYS = ("color", "text_color", "shade", "font_size_offset", "font_auto", "font_size_abs", "text_dx", "text_dy", "leader", "foot", "foot_bg", "foot_bg_text", "foot_pos")
 FONT_OFFSET_MIN = -2          # 글자 크기 미세 조절: -2 ~ +20
 
 
@@ -854,7 +854,7 @@ def _area(r):
 
 
 _EDIT_KEYS = (("title", ""), ("color", ""), ("text_color", "#000000"), ("font_size_offset", 0), ("text_dx", 0), ("text_dy", 0),
-              ("font_auto", True), ("font_size_abs", None), ("leader", False), ("foot", ""), ("foot_bg", ""), ("foot_bg_text", False))
+              ("font_auto", True), ("font_size_abs", None), ("leader", False), ("foot", ""), ("foot_bg", ""), ("foot_bg_text", False), ("foot_pos", "below"))
 
 
 def _is_edited(b, initial):
@@ -1364,6 +1364,7 @@ class ScheduleEditor:
                 "foot": b.get("foot", ""),
                 "foot_bg": b.get("foot_bg", ""),
                 "foot_bg_text": b.get("foot_bg_text", False),
+                "foot_pos": b.get("foot_pos", "below"),
                 "text_dx": b.get("text_dx", 0),
                 "text_dy": b.get("text_dy", 0),
                 "options": copy.deepcopy(b.get("options", {})),
@@ -2314,6 +2315,7 @@ class ScheduleEditor:
                 block["foot"] = preset.get("foot", "")
                 block["foot_bg"] = preset.get("foot_bg", "")
                 block["foot_bg_text"] = preset.get("foot_bg_text", False)
+                block["foot_pos"] = preset.get("foot_pos", "below")
                 block["text_dx"] = preset.get("text_dx", 0)
                 block["text_dy"] = preset.get("text_dy", 0)
                 if "options" in preset:
@@ -2353,6 +2355,7 @@ class ScheduleEditor:
             "foot": block.get("foot", ""),
             "foot_bg": block.get("foot_bg", ""),
             "foot_bg_text": block.get("foot_bg_text", False),
+            "foot_pos": block.get("foot_pos", "below"),
             "text_dx": block.get("text_dx", 0),
             "text_dy": block.get("text_dy", 0),
             "options": options
@@ -2735,6 +2738,16 @@ class ScheduleEditor:
         fs = max(3.0, ab * 0.85) if ab else max(3.0, fs + b.get("font_size_offset", 0))
         return left, right, fs, min((y1 - y0) * 0.5, fs * 1.6)
 
+    def _orig_text_box(self, b):
+        """칸 안 원본 PDF 글자들이 차지한 자리 (x0, y0, x1, y1). 분 숫자는 뺀다. 없으면 None."""
+        x0, y0, x1, y1 = b["rect"]
+        ws = [w for w in getattr(self, "page_words", {}).get(self.current_page, [])
+              if x0 <= (w[0] + w[2]) / 2 <= x1 and y0 <= (w[1] + w[3]) / 2 <= y1
+              and not re.fullmatch(r"\d{1,2}", _undouble(w[4]) if len(w) > 4 else "")]
+        if not ws:
+            return None
+        return (min(w[0] for w in ws), min(w[1] for w in ws), max(w[2] for w in ws), max(w[3] for w in ws))
+
     def _leader_parts(self, b):
         """'양끝 + 점선' 칸의 (왼쪽 글자, 오른쪽 글자, 글자 크기 pt). 이름에 '|' 가 있으면 왼쪽|오른쪽, 없으면 양쪽에 같은 글자."""
         t = (b.get("title") or "").replace("\n", " ").strip()
@@ -3039,7 +3052,7 @@ class ScheduleEditor:
         text_id = None
         _y1_full = y1
         fp = self._foot_parts(b)
-        if fp:                                       # 아래 줄 (양끝 + 점선) - 이름은 그 위 남은 자리에
+        if fp and b.get("foot_pos") != "side":       # 아래 줄 (양끝 + 점선) - 이름은 그 위 남은 자리에
             flt, frt, ffs, fbh = fp
             band_top = y1 - fbh * self.zoom
             if b.get("foot_bg") and not b.get("foot_bg_text"):
@@ -3109,6 +3122,33 @@ class ScheduleEditor:
                 fill=b.get("text_color", "#000000")
             )
         y1 = _y1_full
+        if fp and b.get("foot_pos") == "side":       # 양옆:  R/L···(기존 글 또는 넣은 이름)···R/L
+            if b.get("title") and text_id and not b.get("leader"):
+                ab_ = c.bbox(text_id)
+            else:
+                ob_ = self._orig_text_box(b)
+                ab_ = None
+                if ob_:
+                    p0, p1 = self._to_canvas(ob_[0], ob_[1]), self._to_canvas(ob_[2], ob_[3])
+                    ab_ = (p0[0], p0[1], p1[0], p1[1])
+            if ab_:
+                flt, frt, ffs, _fbh = fp
+                ffs = min(ffs, max(4.0, (ab_[3] - ab_[1]) / self.zoom * 0.9))
+                fnt = (self.ui_font_family, -max(4, int(round(ffs * self.zoom))), "bold")
+                fcy = (ab_[1] + ab_[3]) / 2
+                fc = b.get("text_color", "#000000")
+                gap = ffs * self.zoom * 1.7
+                lid_ = c.create_text(ab_[0] - gap, fcy, text=flt, anchor="e", font=fnt, fill=fc)
+                rid_ = c.create_text(ab_[2] + gap, fcy, text=frt, anchor="w", font=fnt, fill=fc)
+                if b.get("foot_bg"):
+                    for tid_ in (lid_, rid_):
+                        bb_ = c.bbox(tid_)
+                        if bb_:
+                            hl = c.create_rectangle(bb_[0] - 1, bb_[1], bb_[2] + 1, bb_[3], fill=b["foot_bg"], outline="")
+                            c.tag_lower(hl, tid_)
+                dy_ = ffs * self.zoom * 0.25
+                c.create_line(ab_[0] - gap + 2, fcy + dy_, ab_[0] - 2, fcy + dy_, fill=fc, dash=(1, 2), width=max(1, round(self.zoom * 0.7)))
+                c.create_line(ab_[2] + 2, fcy + dy_, ab_[2] + gap - 2, fcy + dy_, fill=fc, dash=(1, 2), width=max(1, round(self.zoom * 0.7)))
         
         grip_id = None
         edge_handles = []
@@ -3395,7 +3435,7 @@ class ScheduleEditor:
             ttk.Label(lead_row, text="이름 예: R/L | 5시 뉴스와 경제 | R/L", font=(self.ui_font_family, 7), foreground="#94a3b8").pack(side="right")
             foot_row = ttk.Frame(self.info_frame, padding=(0, 1))
             foot_row.pack(fill="x")
-            ttk.Label(foot_row, text="아래 줄 (양끝+점선):", font=(self.ui_font_family, 8, "bold")).pack(side="left")
+            ttk.Label(foot_row, text="덧붙임 (R/L 등):", font=(self.ui_font_family, 8, "bold")).pack(side="left")
             self.foot_var = tk.StringVar(value=block.get("foot", ""))
             fe = ttk.Entry(foot_row, textvariable=self.foot_var, width=10)
             fe.pack(side="left", padx=4)
@@ -3422,6 +3462,18 @@ class ScheduleEditor:
                               command=lambda c_=col: _set_foot_bg(c_)).pack(side="left", padx=1)
                 else:
                     ttk.Button(foot_row, text="바탕 없음", width=8, command=lambda: _set_foot_bg("")).pack(side="left", padx=(0, 2))
+            pos_row2 = ttk.Frame(self.info_frame)
+            pos_row2.pack(fill="x")
+            ttk.Label(pos_row2, text="  위치:", font=(self.ui_font_family, 8)).pack(side="left")
+            self.foot_pos_var = tk.StringVar(value=block.get("foot_pos", "below"))
+
+            def _set_foot_pos():
+                self._push_coalesced("opt")
+                block["foot_pos"] = self.foot_pos_var.get()
+                self.draw_pdf(refresh_sidebar=False)
+                self.save_autosave()
+            ttk.Radiobutton(pos_row2, text="글자 양옆 (R/L···글자···R/L)", value="side", variable=self.foot_pos_var, command=_set_foot_pos).pack(side="left", padx=2)
+            ttk.Radiobutton(pos_row2, text="아래 줄 (R/L ····· R/L)", value="below", variable=self.foot_pos_var, command=_set_foot_pos).pack(side="left", padx=2)
             self.foot_bgt_var = tk.BooleanVar(value=bool(block.get("foot_bg_text")))
 
             def _set_foot_bgt():
@@ -3430,7 +3482,7 @@ class ScheduleEditor:
                 self.draw_pdf(refresh_sidebar=False)
                 self.save_autosave()
             ttk.Checkbutton(self.info_frame, text="바탕은 글자 뒤에만 (형광펜처럼)", variable=self.foot_bgt_var, command=_set_foot_bgt).pack(anchor="w")
-            ttk.Label(self.info_frame, text="예: R/L  →  이름 아래에  R/L ······ R/L  (칸을 나누지 않고 겹치지 않게)",
+            ttk.Label(self.info_frame, text="예: R/L → 양옆: 원래 글자(또는 넣은 이름) 바로 옆에 / 아래: 칸 아래 줄에. | 로 왼쪽|오른쪽 따로",
                       font=(self.ui_font_family, 7), foreground="#94a3b8").pack(anchor="w")
 
             pos_rows = (
@@ -4403,7 +4455,51 @@ class ScheduleEditor:
                 right_x -= (badge_sz + 2)
 
             fp = self._foot_parts(b)
-            if fp:                                   # 아래 줄 (양끝 + 점선) - 이름은 그 위 남은 자리에
+            if fp and b.get("foot_pos") == "side":   # 양옆:  R/L···(기존 글 또는 넣은 이름)···R/L
+                _h = b.get("text_color", "#000000").lstrip("#")
+                srgb = tuple(int(_h[i:i + 2], 16) / 255.0 for i in (0, 2, 4)) if len(_h) == 6 else (0, 0, 0)
+                box = None
+                if b.get("title") and not b.get("leader"):
+                    ft_, fz_ = self._format_smart_text(b["title"], r.width, r.height, size_offset=b.get("font_size_offset", 0), abs_size=self._abs_font(b))
+                    lines_ = ft_.split("\n")
+                    try:
+                        tw_ = max(measure_font.text_length(l_, fontsize=fz_) for l_ in lines_)
+                    except Exception:
+                        tw_ = max(sum(fz_ if ord(ch) > 127 else fz_ * 0.5 for ch in l_) for l_ in lines_)
+                    oy_ = (opts.get("top_time_font_size", DEFAULT_TIME_FONT_SIZE) / 2 if top_enabled else 0) - (opts.get("bottom_time_font_size", DEFAULT_TIME_FONT_SIZE) / 2 if bottom_enabled else 0)
+                    cxm = r.x0 + r.width / 2 + b.get("text_dx", 0)
+                    cym = r.y0 + r.height / 2 + oy_ + b.get("text_dy", 0)
+                    th_ = len(lines_) * fz_ * 1.15
+                    box = (cxm - tw_ / 2, cym - th_ / 2, cxm + tw_ / 2, cym + th_ / 2)
+                else:
+                    box = self._orig_text_box(b)
+                if box:
+                    flt, frt, ffs, _fbh = fp
+                    ffs = min(ffs, max(4.0, (box[3] - box[1]) * 0.9))
+
+                    def _sw(t):
+                        try:
+                            return measure_font.text_length(t, fontsize=ffs) * 1.03
+                        except Exception:
+                            return sum(ffs if ord(ch) > 127 else ffs * 0.5 for ch in t)
+                    gap = ffs * 1.7
+                    sy = (box[1] + box[3]) / 2 + ffs * 0.35
+                    lx, rx = box[0] - gap - _sw(flt), box[2] + gap
+                    _bg = (b.get("foot_bg") or "").lstrip("#")
+                    if len(_bg) == 6:
+                        _bgc = tuple(int(_bg[i:i + 2], 16) / 255.0 for i in (0, 2, 4))
+                        for _x, _t in ((lx, flt), (rx, frt)):
+                            page.draw_rect(fitz.Rect(_x - 0.8, sy - ffs * 0.95, _x + _sw(_t) + 0.8, sy + ffs * 0.25), color=None, fill=_bgc)
+                    for _x, _t in ((lx, flt), (rx, frt)):
+                        try:
+                            page.insert_text(fitz.Point(_x, sy), _t, fontsize=ffs, fontname=font_name, color=srgb, fill=srgb, render_mode=2, border_width=0.03)
+                        except TypeError:
+                            page.insert_text(fitz.Point(_x, sy), _t, fontsize=ffs, fontname=font_name, color=srgb)
+                    for d0, d1 in ((lx + _sw(flt) + 1.0, box[0] - 1.0), (box[2] + 1.0, rx - 1.0)):
+                        if d1 - d0 > 1.5:
+                            page.draw_line(fitz.Point(d0, sy - ffs * 0.08), fitz.Point(d1, sy - ffs * 0.08),
+                                           color=srgb, width=max(0.5, ffs * 0.12), dashes="[0.1 1.1] 0", lineCap=1)
+            elif fp:                                 # 아래 줄 (양끝 + 점선) - 이름은 그 위 남은 자리에
                 flt, frt, ffs, fbh = fp
                 _h = b.get("text_color", "#000000").lstrip("#")
                 frgb = tuple(int(_h[i:i + 2], 16) / 255.0 for i in (0, 2, 4)) if len(_h) == 6 else (0, 0, 0)
@@ -4780,7 +4876,7 @@ class ScheduleEditor:
             cuts.append(cut)
         # 이름·바탕색·글자색·음영·글자 크기/위치·뱃지(옵션)까지 저장. 시간(분)은 칸마다 달라 저장하지 않는다
         keep = ("title", "color", "text_color", "shade", "font_size_offset", "font_auto", "font_size_abs",
-                "text_dx", "text_dy", "leader", "foot", "foot_bg", "foot_bg_text", "options")
+                "text_dx", "text_dy", "leader", "foot", "foot_bg", "foot_bg_text", "foot_pos", "options")
         style = {"axis": axis, "cuts": cuts, "parts": [{k: copy.deepcopy(b.get(k)) for k in keep if k in b} for b in parts],
                  "dash": bool(parts[0].get("split_dash")) if len(parts) > 1 else False}
         src = self._text_in_rect((gx0, gy0, gx1, gy1))
