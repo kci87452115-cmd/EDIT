@@ -45,7 +45,7 @@ def schedule_badge_dir():
         return os.path.join(home, "데이터", "편성표", "badges")
     return os.path.abspath("badges")
 
-APP_VERSION = "3.19.4"
+APP_VERSION = "3.19.5"
 
 
 def _detect_profile():
@@ -2032,6 +2032,19 @@ class ScheduleEditor:
                 return True
         return b.get("options", {}) != ob.get("options", {})
 
+    def _print_border(self, b):
+        """저장 PDF에 이 칸 테두리를 새로 그리면 (색 '#rrggbb', 두께 pt), 아니면 None. (PDF 그리기와 같은 기준)"""
+        modified = b["id"] in getattr(self, "_mod_ids", set())
+        custom_w = modified and self.mod_border_width is not None
+        if not custom_w and self._orig_match(b) is not None and b.get("group_id") is None:
+            return None
+        col = b.get("border_color") or DEFAULT_BORDER_COLOR
+        try:
+            hexc = "#%02x%02x%02x" % tuple(int(round(float(v) * 255)) for v in col[:3])
+        except Exception:
+            hexc = "#000000"
+        return hexc, self._eff_border_width(b, modified)
+
     def _eff_border_width(self, b, modified):
         if modified and self.mod_border_width is not None:
             return self.mod_border_width
@@ -3029,7 +3042,22 @@ class ScheduleEditor:
         if _sc:
             self._draw_shade(c, x0, y0, x1, y1, _sc)
 
-        rect_id = c.create_rectangle(x0, y0, x1, y1, fill="", outline=outline_color, width=width)
+        pb = self._print_border(b)
+        if pb:                                       # 저장 PDF에 그려질 테두리를 기본 화면에도 (색·두께 그대로)
+            pcol, pw = pb
+            pwc = max(1, int(round(pw * self.zoom)))
+            _rb0 = b.get("rel_box")
+            if b.get("split_dash") and b.get("group_id") is not None and _rb0:
+                for (ax_, ay_, bx_, by_), inner in (((x0, y0, x1, y0), _rb0[1] > 0.001), ((x0, y1, x1, y1), _rb0[3] < 0.999),
+                                                     ((x0, y0, x0, y1), _rb0[0] > 0.001), ((x1, y0, x1, y1), _rb0[2] < 0.999)):
+                    if not inner:
+                        c.create_line(ax_, ay_, bx_, by_, fill=pcol, width=pwc)
+            else:
+                c.create_rectangle(x0, y0, x1, y1, fill="", outline=pcol, width=pwc)
+        if pb and not is_selected:
+            rect_id = c.create_rectangle(x0, y0, x1, y1, fill="", outline="")   # (칸 고르기용, 보이지 않음)
+        else:
+            rect_id = c.create_rectangle(x0, y0, x1, y1, fill="", outline=outline_color, width=width)
         _rb = b.get("rel_box")
         if b.get("split_dash") and b.get("group_id") is not None and _rb:   # 점선으로 바꾼 나눈 경계선 (출력과 같은 모양)
             if _rb[1] > 0.001:
