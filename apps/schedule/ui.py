@@ -45,7 +45,7 @@ def schedule_badge_dir():
         return os.path.join(home, "데이터", "편성표", "badges")
     return os.path.abspath("badges")
 
-APP_VERSION = "3.19.3"
+APP_VERSION = "3.19.4"
 
 
 def _detect_profile():
@@ -1093,6 +1093,7 @@ class ScheduleEditor:
         self.unmod_shade_color = "#60a5fa"     # 수정 안 한 칸 음영 색
         self.pick_shade_last = "#fde047"       # 고른 칸 음영: 마지막에 쓴 색
         self.shade_color_counts = {}           # 칸 음영 색별로 쓴 횟수 -> '자주 쓴 색' 줄
+        self.foot_history = ["R/L"]            # 덧붙임에 썼던 글자 (최근 것이 앞)
         self.pick_shade_in_export = True       # 고른 칸 음영을 저장 PDF에도 넣기
         self.mod_border_width = None           # 수정 블록 공통 테두리 두께(pt), None = 원본 유지
         self._mod_ids = set()
@@ -1404,6 +1405,7 @@ class ScheduleEditor:
                 "unmod_shade_color": self.unmod_shade_color,
                 "pick_shade_last": self.pick_shade_last,
                 "shade_color_counts": self.shade_color_counts,
+                "foot_history": self.foot_history,
                 "pick_shade_in_export": self.pick_shade_in_export,
                 "mod_border_width": self.mod_border_width,
                 "lock_move": bool(self.lock_move.get()),
@@ -1660,6 +1662,8 @@ class ScheduleEditor:
                     self.mod_shade_enabled = data["mod_shade_enabled"]
                 if isinstance(data.get("mod_shade_in_export"), bool):
                     self.mod_shade_in_export = data["mod_shade_in_export"]
+                if isinstance(data.get("foot_history"), list):
+                    self.foot_history = [str(x)[:40] for x in data["foot_history"] if str(x).strip()][:12] or ["R/L"]
                 if isinstance(data.get("shade_color_counts"), dict):
                     self.shade_color_counts = {k.lower(): int(v) for k, v in data["shade_color_counts"].items()
                                                if isinstance(k, str) and re.fullmatch(r"#[0-9a-fA-F]{6}", k) and isinstance(v, (int, float))}
@@ -3476,10 +3480,19 @@ class ScheduleEditor:
             foot_row.pack(fill="x")
             ttk.Label(foot_row, text="덧붙임 (R/L 등):", font=(self.ui_font_family, 8, "bold")).pack(side="left")
             self.foot_var = tk.StringVar(value=block.get("foot", ""))
-            fe = ttk.Entry(foot_row, textvariable=self.foot_var, width=10)
+            fe = ttk.Combobox(foot_row, textvariable=self.foot_var, width=10, values=self.foot_history)   # ▼: 예전에 썼던 글자
             fe.pack(side="left", padx=4)
 
-            def _set_foot(*_a):
+            def _remember_foot(v):
+                if v:
+                    self.foot_history = [v] + [x for x in self.foot_history if x != v]
+                    self.foot_history = self.foot_history[:12]
+                    try:
+                        fe.configure(values=self.foot_history)
+                    except Exception:
+                        pass
+
+            def _set_foot(*_a, remember=False):
                 v = self.foot_var.get().strip()
                 if v != (block.get("foot") or ""):
                     self._push_coalesced("opt")
@@ -3487,8 +3500,15 @@ class ScheduleEditor:
                     self._paint_shape_preview(block)
                     self.draw_pdf(refresh_sidebar=False)
                     self.save_autosave()
+                if remember:
+                    _remember_foot(v)
             fe.bind("<KeyRelease>", _set_foot)
-            fe.bind("<FocusOut>", _set_foot)
+            fe.bind("<FocusOut>", lambda e: _set_foot(remember=True))
+            fe.bind("<Return>", lambda e: _set_foot(remember=True))
+            fe.bind("<<ComboboxSelected>>", lambda e: _set_foot(remember=True))
+            if self.foot_history and not block.get("foot"):
+                ttk.Button(foot_row, text=f"↺ {self.foot_history[0]}", width=max(5, len(self.foot_history[0]) + 3),
+                           command=lambda: (self.foot_var.set(self.foot_history[0]), _set_foot(remember=True))).pack(side="left", padx=(0, 4))
 
             def _set_foot_bg(col):
                 self._push_coalesced("opt")
