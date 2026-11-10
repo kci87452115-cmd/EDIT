@@ -45,7 +45,7 @@ def schedule_badge_dir():
         return os.path.join(home, "데이터", "편성표", "badges")
     return os.path.abspath("badges")
 
-APP_VERSION = "3.14.1"
+APP_VERSION = "3.14.2"
 
 
 def _detect_profile():
@@ -63,6 +63,7 @@ APP_TITLE = (f"DMB 편성 편집기 v{APP_VERSION}" if IS_DMB
 # 편성표 편집기와 DMB 편집기가 같이 쓰는 것 (나머지 설정·자동 저장·머리글은 따로)
 SHARED_KEYS = ("title_presets", "favorite_presets", "custom_badge_paths", "global_font_path")
 DMB_REGIONS = ["광주", "전주", "여수", "목포"]
+FONT_OFFSET_MIN = -2          # 글자 크기 미세 조절: -2 ~ +20
 
 
 def tv_preview_dir():
@@ -3259,10 +3260,11 @@ class ScheduleEditor:
             ttk.Label(font_row, text="글자 크기 미세 조절:", font=(self.ui_font_family, 8, "bold")).pack(side="left")
             
             current_offset = block.get("font_size_offset", 0)
-            ttk.Button(font_row, text="-", width=2, command=lambda: self.modify_font_offset(block, -1)).pack(side="right", padx=1)
+            # 다른 크기 조절(시간·뱃지)과 같은 순서: [-] 값 [+]  (오른쪽부터 쌓으므로 + 를 먼저)
+            ttk.Button(font_row, text="+", width=2, command=lambda: self.modify_font_offset(block, 1)).pack(side="right", padx=1)
             self.font_offset_lbl = ttk.Label(font_row, text=f"{'+' if current_offset > 0 else ''}{current_offset}", width=5, anchor="center", font=(self.ui_font_family, 8, "bold"), background="#f1f5f9")
             self.font_offset_lbl.pack(side="right", padx=1)
-            ttk.Button(font_row, text="+", width=2, command=lambda: self.modify_font_offset(block, 1)).pack(side="right", padx=1)
+            ttk.Button(font_row, text="-", width=2, command=lambda: self.modify_font_offset(block, -1)).pack(side="right", padx=1)
 
             pos_rows = (
                 ("y", "글자 위치 상하(pt):", "text_dy_lbl", "▲", "▼", -block.get("text_dy", 0)),
@@ -3381,7 +3383,7 @@ class ScheduleEditor:
 
     def modify_font_offset(self, block, delta):
         current = block.get("font_size_offset", 0)
-        new_val = max(-4, min(20, current + delta))
+        new_val = max(FONT_OFFSET_MIN, min(20, current + delta))
         if new_val != current:
             self._push_coalesced("opt")
         block["font_size_offset"] = new_val
