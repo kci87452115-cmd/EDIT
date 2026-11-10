@@ -25,7 +25,7 @@ except ImportError:
     except ImportError:
         fitz = None
 
-APP_VERSION = "2.3.0"
+APP_VERSION = "2.4.0"
 APP_TITLE = f"운행표 데이터 편집기 v{APP_VERSION}"
 APP_MUTEX = "RunSheetEditor_Running"      # 설치 프로그램이 '실행 중'을 알아보는 이름 (setup.iss 의 AppMutex 와 같아야 함)
 RUN_BY_LAUNCHER = bool(os.environ.get("RADIO_LAUNCHER"))   # 편집 프로그램 런처로 실행됨 -> 업데이트는 런처가 한다
@@ -1056,6 +1056,249 @@ def export_schedule_xlsx(path, sheets):
 # ----------------------------------------------------------------------------
 # 메인 앱
 # ----------------------------------------------------------------------------
+# ============================================================================
+# 다른 PC에서 정산/검색 조회 (읽기 전용 웹 페이지)
+#   설정에서 '다른 PC 조회 허용'을 켠 편집기만 사내망에 작은 웹 서버를 연다.
+#   다른 PC는 브라우저로 http://이PC:포트 에 들어가 정산/검색만 본다. 기록을 바꾸는 기능은 없다.
+# ============================================================================
+VIEW_PORT_DEFAULT = 8080
+VIEW_DETAIL_LIMIT = 5000
+
+
+def local_addresses():
+    """이 PC의 사내망 주소들 (127.x 제외). 가장 그럴듯한 것이 앞."""
+    import socket
+    ips = []
+    try:   # 바깥으로 실제로 보내지는 않는다. 어느 랜카드를 쓰는지만 알아본다
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(("10.255.255.255", 1))
+            ips.append(s.getsockname()[0])
+        finally:
+            s.close()
+    except Exception:
+        pass
+    try:
+        for ip in socket.gethostbyname_ex(socket.gethostname())[2]:
+            if ip not in ips:
+                ips.append(ip)
+    except Exception:
+        pass
+    return [ip for ip in ips if not ip.startswith("127.")]
+
+
+def computer_name():
+    import socket
+    return os.environ.get("COMPUTERNAME") or socket.gethostname() or "편집기"
+
+
+_VIEW_HTML = r"""<!DOCTYPE html>
+<html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>운행표 정산 / 검색 (조회 전용)</title>
+<style>
+body{font-family:"Malgun Gothic","맑은 고딕",sans-serif;margin:0;background:#f5f6f8;color:#1f2937;font-size:14px}
+header{background:#1e3a8a;color:#fff;padding:10px 18px;display:flex;gap:16px;align-items:baseline;flex-wrap:wrap}
+header b{font-size:17px} header span{opacity:.85;font-size:12px}
+main{padding:14px 18px;max-width:1300px}
+.box{background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:12px 14px;margin-bottom:12px}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:4px 0}
+label{font-weight:bold;font-size:12px;color:#374151}
+input,select,button{font:inherit;padding:4px 6px;border:1px solid #cbd5e1;border-radius:5px;background:#fff}
+button{background:#2563eb;color:#fff;border-color:#2563eb;cursor:pointer;padding:5px 12px}
+button.lite{background:#fff;color:#1e3a8a;border-color:#cbd5e1}
+table{border-collapse:collapse;width:100%;background:#fff}
+th,td{border:1px solid #e5e7eb;padding:4px 7px;text-align:left;white-space:nowrap}
+th{background:#eef2ff;position:sticky;top:0}
+td.n{text-align:right}
+tr.tot td{font-weight:bold;background:#f8fafc}
+.scroll{max-height:60vh;overflow:auto;border:1px solid #e5e7eb}
+.msg{color:#6b7280;font-size:12px;margin:6px 0}
+.tabs button{background:#fff;color:#1e3a8a;border-color:#cbd5e1}
+.tabs button.on{background:#1e3a8a;color:#fff}
+</style></head><body>
+<header><b>📻 운행표 정산 / 검색</b><span id="who"></span><span>조회 전용 — 이 화면에서는 기록을 바꿀 수 없습니다</span></header>
+<main>
+<div class="box">
+ <div class="row">
+  <label>기간</label>
+  <button class="lite" onclick="preset('day')">오늘</button>
+  <button class="lite" onclick="preset('month')">이번 달</button>
+  <button class="lite" onclick="preset('lastmonth')">지난달</button>
+  <button class="lite" onclick="preset('year')">올해</button>
+  <input type="date" id="from"> ~ <input type="date" id="to">
+ </div>
+ <div class="row">
+  <label>매체</label><select id="media"><option value="">전체</option><option>AM</option><option>FM</option></select>
+  <label>그룹</label><select id="grp"><option value="">전체</option></select>
+  <label>검색어</label><input id="kw" placeholder="광고주·프로그램" size="16">
+  <select id="target"></select>
+  <label>묶음</label><select id="by"></select>
+  <button onclick="run()">조회</button>
+ </div>
+</div>
+<div class="row tabs"><button id="tA" class="on" onclick="tab('A')">합계</button><button id="tD" onclick="tab('D')">상세 목록</button>
+ <a id="csv" href="#" style="margin-left:auto">⬇ 상세 목록 CSV(엑셀) 내려받기</a></div>
+<div class="msg" id="msg"></div>
+<div class="scroll"><table id="tbl"></table></div>
+</main>
+<script>
+const $=id=>document.getElementById(id);let cur='A',info=null;
+const pad=n=>String(n).padStart(2,'0');const iso=d=>d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate());
+function preset(k){const t=new Date();let a=new Date(t),b=new Date(t);
+ if(k==='month'){a=new Date(t.getFullYear(),t.getMonth(),1);b=new Date(t.getFullYear(),t.getMonth()+1,0)}
+ if(k==='lastmonth'){a=new Date(t.getFullYear(),t.getMonth()-1,1);b=new Date(t.getFullYear(),t.getMonth(),0)}
+ if(k==='year'){a=new Date(t.getFullYear(),0,1);b=new Date(t.getFullYear(),11,31)}
+ $('from').value=iso(a);$('to').value=iso(b);run()}
+function q(){const p=new URLSearchParams({from:$('from').value,to:$('to').value,media:$('media').value,grp:$('grp').value,kw:$('kw').value,target:$('target').value,by:$('by').value});return p.toString()}
+const num=v=>Number(v||0).toLocaleString('ko-KR');
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+function tab(k){cur=k;$('tA').className=k==='A'?'on':'';$('tD').className=k==='D'?'on':'';run()}
+async function run(){$('csv').href='api/detail.csv?'+q();$('msg').textContent='불러오는 중…';
+ try{const r=await fetch((cur==='A'?'api/aggregate?':'api/detail?')+q());const d=await r.json();
+  if(d.error){$('msg').textContent='⚠ '+d.error;$('tbl').innerHTML='';return}
+  let h='';
+  if(cur==='A'){h='<tr><th>'+esc($('by').value.replace('별',''))+'</th><th>건수</th><th>초 합계</th><th>금액 합계</th></tr>';
+   let c=0,s=0,m=0;for(const x of d.rows){c+=x[1];s+=x[2];m+=x[3];h+='<tr><td>'+esc(x[0]||'(없음)')+'</td><td class=n>'+num(x[1])+'</td><td class=n>'+num(x[2])+'</td><td class=n>'+num(x[3])+'</td></tr>'}
+   h+='<tr class=tot><td>합계 ('+d.rows.length+'개)</td><td class=n>'+num(c)+'</td><td class=n>'+num(s)+'</td><td class=n>'+num(m)+'</td></tr>';
+   $('msg').textContent=d.rows.length?'':'조건에 맞는 기록이 없습니다.'}
+  else{h='<tr><th>방송일</th><th>매체</th><th>시각</th><th>프로그램</th><th>칸</th><th>광고주</th><th>초</th><th>금액</th><th>그룹</th></tr>';
+   for(const x of d.rows){h+='<tr><td>'+esc(x[0])+'</td><td>'+esc(x[1])+'</td><td>'+esc(x[2])+'</td><td>'+esc(x[3])+'</td><td class=n>'+esc(x[4])+'</td><td>'+esc(x[5])+'</td><td class=n>'+num(x[6])+'</td><td class=n>'+num(x[7])+'</td><td>'+esc(x[8])+'</td></tr>'}
+   $('msg').textContent=d.total+'건'+(d.total>d.rows.length?' — 화면에는 앞의 '+d.rows.length+'건만 보입니다 (전체는 CSV로 내려받으세요)':'')}
+  $('tbl').innerHTML=h}catch(e){$('msg').textContent='⚠ 편집기 PC에 연결하지 못했습니다. 편집기가 켜져 있는지 확인해 주세요.'}}
+(async()=>{try{info=await (await fetch('api/info')).json();
+ $('who').textContent='편집기: '+info.name+' · v'+info.version;document.title+=' — '+info.name;
+ for(const g of info.groups){const o=document.createElement('option');o.textContent=g;$('grp').appendChild(o)}
+ for(const t of info.targets){const o=document.createElement('option');o.textContent=t;$('target').appendChild(o)}
+ for(const b of info.by){const o=document.createElement('option');o.textContent=b;$('by').appendChild(o)}
+ $('target').value='광고주+프로그램';}catch(e){}
+ $('kw').addEventListener('keydown',e=>{if(e.key==='Enter')run()});preset('month')})();
+</script></body></html>
+"""
+
+
+class ViewServer:
+    """읽기 전용 조회 서버. start() 로 켜고 stop() 으로 끈다."""
+
+    def __init__(self, get_store):
+        self.get_store = get_store
+        self.httpd = None
+        self.port = None
+        self.error = ""
+
+    @property
+    def running(self):
+        return self.httpd is not None
+
+    def start(self, port):
+        self.stop()
+        self.error = ""
+        try:
+            import threading
+            from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
+            from urllib.parse import urlparse, parse_qs
+        except Exception as exc:
+            self.error = f"이 실행 환경에는 웹 서버 부품이 없습니다. 편집 프로그램 런처를 업데이트해 주세요.\n({exc})"
+            return False
+        owner = self
+
+        class Handler(BaseHTTPRequestHandler):
+            server_version = "RunSheetView/1"
+
+            def log_message(self, *a):
+                pass
+
+            def _send(self, code, body, ctype, extra=None):
+                data = body.encode("utf-8") if isinstance(body, str) else body
+                self.send_response(code)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                for k, v in (extra or {}).items():
+                    self.send_header(k, v)
+                self.end_headers()
+                if self.command != "HEAD":
+                    self.wfile.write(data)
+
+            def _json(self, obj, code=200):
+                self._send(code, json.dumps(obj, ensure_ascii=False), "application/json; charset=utf-8")
+
+            def do_HEAD(self):
+                self.do_GET()
+
+            def do_GET(self):
+                try:
+                    u = urlparse(self.path)
+                    p = {k: v[0] for k, v in parse_qs(u.query).items()}
+                    route = u.path.rstrip("/") or "/"
+                    if route == "/":
+                        return self._send(200, _VIEW_HTML, "text/html; charset=utf-8")
+                    store = owner.get_store()
+                    if store is None:
+                        return self._json({"error": "편집기의 데이터 파일을 열 수 없습니다."}, 503)
+                    if route == "/api/info":
+                        return self._json({"name": computer_name(), "version": APP_VERSION, "groups": store.distinct_groups(),
+                                           "by": list(BY_OPTIONS), "targets": list(SEARCH_TARGETS)})
+                    if route in ("/api/aggregate", "/api/detail", "/api/detail.csv"):
+                        d0, d1 = p.get("from", ""), p.get("to", "")
+                        for d in (d0, d1):
+                            if d and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", d):
+                                return self._json({"error": "기간을 확인해 주세요."}, 400)
+                        media = p.get("media", "") if p.get("media", "") in ("", "AM", "FM") else ""
+                        kw, grp = p.get("kw", "").strip()[:100], p.get("grp", "")[:100]
+                        target = SEARCH_TARGETS.get(p.get("target", ""), "both")
+                        if route == "/api/aggregate":
+                            by = BY_OPTIONS.get(p.get("by", ""), "name")
+                            return self._json({"rows": store.aggregate(d0, d1, kw, grp, by=by, media=media, target=target)})
+                        rows = store.detail(d0, d1, kw, grp, media=media, target=target)
+                        if route == "/api/detail":
+                            return self._json({"total": len(rows), "rows": rows[:VIEW_DETAIL_LIMIT]})
+                        import io
+                        buf = io.StringIO()
+                        w = csv.writer(buf)
+                        w.writerow(["방송일", "매체", "시각", "프로그램", "칸", "광고주", "초", "금액", "그룹"])
+                        w.writerows(rows)
+                        fname = f"정산상세_{d0 or '처음'}_{d1 or '끝'}.csv"
+                        from urllib.parse import quote
+                        return self._send(200, "﻿" + buf.getvalue(), "text/csv; charset=utf-8",
+                                          {"Content-Disposition": f"attachment; filename*=UTF-8''{quote(fname)}"})
+                    return self._json({"error": "없는 주소입니다."}, 404)
+                except Exception as exc:
+                    try:
+                        self._json({"error": f"조회 중 오류: {exc}"}, 500)
+                    except Exception:
+                        pass
+
+            def _deny(self):
+                self._json({"error": "조회 전용입니다."}, 405)
+
+            do_POST = do_PUT = do_DELETE = do_PATCH = _deny
+
+        try:
+            httpd = ThreadingHTTPServer(("0.0.0.0", int(port)), Handler)
+        except OSError as exc:
+            self.error = f"{port}번 포트를 열 수 없습니다. 다른 프로그램이 쓰고 있을 수 있습니다. 다른 포트 번호로 바꿔 보세요.\n({exc})"
+            return False
+        httpd.daemon_threads = True
+        self.httpd, self.port = httpd, int(port)
+        threading.Thread(target=httpd.serve_forever, kwargs={"poll_interval": 0.5}, daemon=True).start()
+        return True
+
+    def stop(self):
+        h, self.httpd = self.httpd, None
+        if h is not None:
+            try:
+                h.shutdown()
+                h.server_close()
+            except Exception:
+                pass
+
+    def urls(self):
+        if not self.running:
+            return []
+        return [f"http://{computer_name()}:{self.port}"] + [f"http://{ip}:{self.port}" for ip in local_addresses()]
+
+
 class DataEditor:
     # ---- 탭(운행표 여러 장) --------------------------------------------------
     # 지금 보고 있는 탭의 상태는 self 에 그대로 두고(기존 함수들이 그대로 동작),
@@ -1139,6 +1382,9 @@ class DataEditor:
         self.backup_on = True
         self.update_dir = UPDATE_DIR_DEFAULT
         self.update_check = True     # 켤 때 새 버전 확인
+        self.view_on = False         # 다른 PC에서 정산/검색 조회 허용 (이 편집기에서만)
+        self.view_port = VIEW_PORT_DEFAULT
+        self.view_server = ViewServer(lambda: self.store)
         startup_note = prepare_data_folder(lambda t, m: messagebox.askyesno(t, m))
         self._load_settings()
         self.ui_font_family = get_tk_font_family(self.font_path)
@@ -1153,6 +1399,30 @@ class DataEditor:
         self.startup_backup()
         if self.update_check and not RUN_BY_LAUNCHER:
             self.root.after(1500, lambda: self.check_update(quiet=True))
+        if self.view_on:
+            self.root.after(800, lambda: self.apply_view_server(quiet=True))
+
+    # ------------------------------------------------------------------ 다른 PC 조회
+    def _app_title(self):
+        return APP_TITLE + ("   · 🌐 다른 PC 조회 허용 중" if self.view_server.running else "")
+
+    def apply_view_server(self, quiet=False, parent=None):
+        """설정대로 조회 서버를 켜거나 끈다."""
+        if self.view_on:
+            if not (self.view_server.running and self.view_server.port == self.view_port):
+                if not self.view_server.start(self.view_port) and not quiet:
+                    messagebox.showwarning("다른 PC 조회", self.view_server.error, parent=parent or self.root)
+                elif not self.view_server.running and quiet:
+                    self.root.after(0, lambda: messagebox.showwarning("다른 PC 조회", "다른 PC 조회를 켜지 못했습니다.\n" + self.view_server.error))
+        else:
+            self.view_server.stop()
+        try:
+            if getattr(self, "active_tab", None) is not None and self.doc:
+                self.root.title(f"{self._app_title()}  —  {self._tab_title(self.media, self.air_date)}{' *' if self.dirty else ''}")
+            else:
+                self.root.title(self._app_title())
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------ 설정 / DB
     def _load_settings(self):
@@ -1179,6 +1449,11 @@ class DataEditor:
             self.mark_opts = self._clean_mark_opts(data.get("mark_opts"))
             self.update_dir = data.get("update_dir") or UPDATE_DIR_DEFAULT
             self.update_check = bool(data.get("update_check", True))
+            self.view_on = bool(data.get("view_on", False))
+            try:
+                self.view_port = min(65535, max(1024, int(data.get("view_port", VIEW_PORT_DEFAULT))))
+            except (TypeError, ValueError):
+                self.view_port = VIEW_PORT_DEFAULT
         except Exception:
             pass
 
@@ -1187,7 +1462,8 @@ class DataEditor:
             with open(self.settings_path, "w", encoding="utf-8") as f:
                 json.dump({"font_path": self.font_path, "db_path": self.db_path, "sort_key": self.sort_key, "sort_desc": self.sort_desc, "preview_before_save": self.preview_var.get(), "highlight_output": self.highlight_var.get(), "show_today": self.show_today.get(), "preset_cols": self.preset_cols, "mark_opts": self.mark_opts,
                            "backup_dir": self.backup_dir, "backup_keep": self.backup_keep, "backup_on": self.backup_on,
-                           "update_dir": self.update_dir, "update_check": self.update_check, "app_version": APP_VERSION}, f, ensure_ascii=False, indent=1)
+                           "update_dir": self.update_dir, "update_check": self.update_check, "view_on": self.view_on, "view_port": self.view_port,
+                           "app_version": APP_VERSION}, f, ensure_ascii=False, indent=1)
         except Exception:
             pass
 
@@ -1227,7 +1503,7 @@ class DataEditor:
     def open_settings_window(self):
         win = tk.Toplevel(self.root)
         win.title("⚙️ 설정")
-        win.geometry("640x760")
+        win.geometry("660x900")
         win.transient(self.root)
         win.grab_set()
         pad = {"padx": 15, "pady": 4}
@@ -1324,6 +1600,52 @@ class DataEditor:
         ttk.Label(win, text="※ 여러 PC가 같이 쓰려면 공유 폴더(예: \\\\서버\\RADIO\\업데이트)로 지정하세요. 그 폴더에 새 버전을 올리면 각 PC가 켤 때 알려 줍니다.",
                   font=(self.ui_font_family, 8), foreground="#666", wraplength=600, justify="left").pack(anchor="w", padx=15, pady=(2, 0))
 
+        ttk.Label(win, text="다른 PC에서 정산 / 검색 조회", font=(self.ui_font_family, 10, "bold")).pack(anchor="w", padx=15, pady=(14, 2))
+        rv = ttk.Frame(win)
+        rv.pack(fill="x", padx=15)
+        von = tk.BooleanVar(value=self.view_on)
+        ttk.Checkbutton(rv, text="이 편집기의 정산/검색을 사내 다른 PC에서 볼 수 있게 허용 (조회 전용)", variable=von).pack(side="left")
+        rv2 = ttk.Frame(win)
+        rv2.pack(fill="x", padx=15, pady=(2, 0))
+        ttk.Label(rv2, text="포트 번호:").pack(side="left")
+        vport = tk.StringVar(value=str(self.view_port))
+        ttk.Spinbox(rv2, from_=1024, to=65535, width=7, textvariable=vport).pack(side="left", padx=6)
+        view_lbl = ttk.Label(win, text="", font=(self.ui_font_family, 9), foreground="#1e3a8a", wraplength=600, justify="left", cursor="hand2")
+        view_lbl.pack(anchor="w", padx=15, pady=(2, 0))
+
+        def show_view_status():
+            urls = self.view_server.urls()
+            if urls:
+                view_lbl.config(text="✅ 켜짐 — 다른 PC의 브라우저에서 아래 주소로 들어가면 됩니다 (클릭하면 복사):\n   " + "\n   ".join(urls))
+            elif self.view_on and self.view_server.error:
+                view_lbl.config(text="⚠ " + self.view_server.error, foreground="#b45309")
+            else:
+                view_lbl.config(text="꺼짐", foreground="#6b7280")
+
+        def copy_url(_e=None):
+            urls = self.view_server.urls()
+            if urls:
+                win.clipboard_clear()
+                win.clipboard_append(urls[-1] if len(urls) > 1 else urls[0])
+
+        def apply_view():
+            self.view_on = bool(von.get())
+            try:
+                self.view_port = min(65535, max(1024, int(vport.get())))
+            except ValueError:
+                self.view_port = VIEW_PORT_DEFAULT
+            self._save_settings()
+            self.apply_view_server(parent=win)
+            view_lbl.config(foreground="#1e3a8a")
+            show_view_status()
+
+        ttk.Button(rv2, text="적용", command=apply_view).pack(side="left", padx=8)
+        view_lbl.bind("<Button-1>", copy_url)
+        show_view_status()
+        ttk.Label(win, text="※ 켠 편집기만 조회 페이지를 엽니다. 편집기가 2대라도 조회를 보여 줄 편집기에서만 켜세요.\n"
+                            "   처음 켤 때 Windows 방화벽 창이 뜨면 '허용'(개인/도메인 네트워크)을 눌러 주세요. 편집기를 끄면 조회도 멈춥니다.",
+                  font=(self.ui_font_family, 8), foreground="#666", wraplength=600, justify="left").pack(anchor="w", padx=15, pady=(2, 0))
+
         ttk.Label(win, text="기본 데이터 / 프로그램 정보", font=(self.ui_font_family, 10, "bold")).pack(anchor="w", padx=15, pady=(14, 2))
         r7 = ttk.Frame(win)
         r7.pack(fill="x", padx=15)
@@ -1335,6 +1657,11 @@ class DataEditor:
             self.update_dir = uvar.get().strip() or UPDATE_DIR_DEFAULT
             self.update_check = bool(ucheck.get())
             self.backup_on = bool(bon.get())
+            self.view_on = bool(von.get())
+            try:
+                self.view_port = min(65535, max(1024, int(vport.get())))
+            except ValueError:
+                self.view_port = VIEW_PORT_DEFAULT
             self.backup_dir = bvar.get().strip()
             try:
                 self.backup_keep = max(1, int(kvar.get()))
@@ -1350,6 +1677,7 @@ class DataEditor:
                 self._open_store()
                 self.refresh_presets()
             self._save_settings()
+            self.apply_view_server(parent=win)
             self.draw_page()
             win.destroy()
 
@@ -1989,7 +2317,7 @@ Start-Process (Join-Path $prog 'RunSheetEditor.exe') -WorkingDirectory $prog
             self._build_default_toolbar()
             self._build_default_sidebar()
             self.draw_blank_canvas()
-            self.root.title(APP_TITLE)
+            self.root.title(self._app_title())
             self._rebuild_tabbar()
         return True
 
@@ -2128,7 +2456,7 @@ Start-Process (Join-Path $prog 'RunSheetEditor.exe') -WorkingDirectory $prog
             except tk.TclError:
                 pass
         if self.active_tab is not None:
-            self.root.title(f"{APP_TITLE}  —  {self._tab_title(self.media, self.air_date)}{' *' if self.dirty else ''}")
+            self.root.title(f"{self._app_title()}  —  {self._tab_title(self.media, self.air_date)}{' *' if self.dirty else ''}")
 
     def ask_media(self, fname=""):
         """파일 이름에서 AM/FM 을 알 수 없을 때 물어본다. 취소하면 None."""
@@ -4820,6 +5148,10 @@ Start-Process (Join-Path $prog 'RunSheetEditor.exe') -WorkingDirectory $prog
         return True
 
     def _finish_exit(self):
+        try:
+            self.view_server.stop()
+        except Exception:
+            pass
         if self.backup_on:
             self.backup_error = ""
             if self.run_backup() is None and getattr(self, "backup_error", ""):
