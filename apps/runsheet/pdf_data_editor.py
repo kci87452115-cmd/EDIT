@@ -25,7 +25,7 @@ except ImportError:
     except ImportError:
         fitz = None
 
-APP_VERSION = "2.9.2"
+APP_VERSION = "2.9.3"
 APP_TITLE = f"운행표 데이터 편집기 v{APP_VERSION}"
 APP_MUTEX = "RunSheetEditor_Running"      # 설치 프로그램이 '실행 중'을 알아보는 이름 (setup.iss 의 AppMutex 와 같아야 함)
 RUN_BY_LAUNCHER = bool(os.environ.get("RADIO_LAUNCHER"))   # 편집 프로그램 런처로 실행됨 -> 업데이트는 런처가 한다
@@ -1856,7 +1856,7 @@ class DataEditor:
         def _pc():
             self.page_check_on = bool(pc_var.get())
             self._save_settings()
-        ttk.Checkbutton(win, text="다음 장으로 넘어갈 때 29분·59분 행의 시간 초과·부족 알려 주기 (예: 1329(+20초), 1159(-10초))",
+        ttk.Checkbutton(win, text="다음 장으로 넘어갈 때 Spot·캠페인 시각 행의 시간 초과·부족 알려 주기 (예: 1329(+20초), 0859(-10초))",
                         variable=pc_var, command=_pc).pack(anchor="w", padx=15, pady=(10, 0))
 
         ttk.Label(win, text="다른 PC에서 정산 / 검색 조회", font=(self.ui_font_family, 10, "bold")).pack(anchor="w", padx=15, pady=(14, 2))
@@ -3258,10 +3258,10 @@ Start-Process (Join-Path $prog 'RunSheetEditor.exe') -WorkingDirectory $prog
         """이 장에서 재원을 넘친 행 / 모자란 행: ([(시각, 초)], [(시각, 초)]). Spot·캠페인 59는 한 번만."""
         over, short, seen = [], [], set()
         for row in self.rows.get(page, []):
-            if not re.fullmatch(r"\d{2}(29|59)", (row.get("time") or "").strip()):
-                continue                              # 1359·1429·1459·1529 처럼 29분·59분 행만 본다
             lk = self._link_key(row)
-            k = ("L", lk) if lk else (row["time"], row["program"])
+            if not lk:
+                continue                              # Spot0859·캠페인1329 처럼 Spot/캠페인 + 시각 행만 본다
+            k = ("L", lk)
             if k in seen:
                 continue
             seen.add(k)
@@ -3272,9 +3272,9 @@ Start-Process (Join-Path $prog 'RunSheetEditor.exe') -WorkingDirectory $prog
             if cap <= 0:
                 continue
             if total > cap:
-                over.append((row["time"], total - cap))
+                over.append((lk, total - cap))
             elif total < cap:
-                short.append((row["time"], cap - total))
+                short.append((lk, cap - total))
         return over, short
 
     def _confirm_leave_page(self, page):
@@ -3489,14 +3489,14 @@ Start-Process (Join-Path $prog 'RunSheetEditor.exe') -WorkingDirectory $prog
     def row_is_custom(self, row):
         return (row["time"], row["program"]) in self.caps
 
-    _LINK_SPOT = re.compile(r"(?i)^\s*spot\s*(\d{2}59)\s*$")
-    _LINK_CAMP = re.compile(r"^\s*(\d{2}59)\s*캠페인\s*$")
+    # Spot0859 · Spot 1429 · 캠페인1329 · 0659캠페인 처럼 'Spot/캠페인 + 네 자리 시각(HHMM)' 인 행
+    _SLOT_RE = re.compile(r"(?i)^\s*(?:spot|캠페인)\s*(\d{4})\s*$|^\s*(\d{4})\s*(?:spot|캠페인)\s*$")
 
     def _link_key(self, row):
-        """'Spot 0659' 와 '0659캠페인' 처럼 **59 Spot·캠페인은 같은 자리 -> 같은 열쇠('0659')."""
-        p = row.get("program") or ""
-        m = self._LINK_SPOT.match(p) or self._LINK_CAMP.match(p)
-        return m.group(1) if m else None
+        """Spot·캠페인 시각 행이면 그 시각('0659'), 아니면 None.
+        같은 시각의 Spot 과 캠페인(예: Spot 0659 · 0659캠페인, Spot1329 · 캠페인1329)은 같은 자리로 본다."""
+        m = self._SLOT_RE.match(row.get("program") or "")
+        return (m.group(1) or m.group(2)) if m else None
 
     def linked_rows(self, row):
         """같은 자리로 묶이는 행들 (이 행 포함). 묶이지 않으면 [row]."""
