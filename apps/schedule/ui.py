@@ -45,7 +45,7 @@ def schedule_badge_dir():
         return os.path.join(home, "데이터", "편성표", "badges")
     return os.path.abspath("badges")
 
-APP_VERSION = "3.21.1"
+APP_VERSION = "3.21.2"
 
 
 def _detect_profile():
@@ -2077,12 +2077,7 @@ class ScheduleEditor:
     def _display_title(self, b):
         """화면·PDF에 그릴 이름. 이름을 안 넣었어도 '아래 줄 덧붙임'을 쓰면 원본 글자를 이름으로 다시 그린다
         (원본 글자는 덮고, 아래 줄 위 남은 자리에 크고 또렷하게)."""
-        t = b.get("title") or ""
-        if t.strip() or not self._foot_below(b):
-            return t
-        toks = [w for w in self._text_in_rect(b["rect"]).split()
-                if not re.fullmatch(r"\d{1,2}|UHD|ALL|L|자|수|해|재|\d{1,2}세?", w)]
-        return " ".join(toks)
+        return b.get("title") or ""                  # 이름을 안 넣은 칸은 원본 글자를 그대로 둔다
 
     def _cover_color(self, b):
         """배경색이 없는(투명) 블록 중 원본 글자를 덮어야 하는 블록이면 덮을 색, 아니면 None.
@@ -2090,8 +2085,7 @@ class ScheduleEditor:
         원본 바탕색(분홍 등 지운 색이면 흰색)으로 먼저 덮고 그 위에 새 글자를 쓴다."""
         if len((b.get("color") or "").lstrip("#")) == 6:
             return None
-        if (b.get("group_id") is None and self._orig_match(b) is not None and not (b.get("title") or "").strip()
-                and not self._foot_below(b)):
+        if b.get("group_id") is None and self._orig_match(b) is not None and not (b.get("title") or "").strip():
             return None
         f = (b.get("orig_fill") or "").lower()
         if not f or f == "#ffffff" or CLEAR_FILL_MODE == "all" or (CLEAR_FILL_MODE == "pink" and _is_pink(f)):
