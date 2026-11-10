@@ -45,7 +45,7 @@ def schedule_badge_dir():
         return os.path.join(home, "데이터", "편성표", "badges")
     return os.path.abspath("badges")
 
-APP_VERSION = "3.15.1"
+APP_VERSION = "3.16.0"
 
 
 def _detect_profile():
@@ -63,7 +63,7 @@ APP_TITLE = (f"DMB 편성 편집기 v{APP_VERSION}" if IS_DMB
 # 편성표 편집기와 DMB 편집기가 같이 쓰는 것 (나머지 설정·자동 저장·머리글은 따로)
 SHARED_KEYS = ("title_presets", "favorite_presets", "custom_badge_paths", "global_font_path")
 DMB_REGIONS = ["광주", "전주", "여수", "목포"]
-STYLE_LOOK_KEYS = ("color", "text_color", "shade", "font_size_offset", "font_auto", "font_size_abs", "text_dx", "text_dy")
+STYLE_LOOK_KEYS = ("color", "text_color", "shade", "font_size_offset", "font_auto", "font_size_abs", "text_dx", "text_dy", "leader")
 FONT_OFFSET_MIN = -2          # 글자 크기 미세 조절: -2 ~ +20
 
 
@@ -854,7 +854,7 @@ def _area(r):
 
 
 _EDIT_KEYS = (("title", ""), ("color", ""), ("text_color", "#000000"), ("font_size_offset", 0), ("text_dx", 0), ("text_dy", 0),
-              ("font_auto", True), ("font_size_abs", None))
+              ("font_auto", True), ("font_size_abs", None), ("leader", False))
 
 
 def _is_edited(b, initial):
@@ -1360,6 +1360,7 @@ class ScheduleEditor:
                 "font_size_offset": b.get("font_size_offset", 0),
                 "font_auto": b.get("font_auto", True),
                 "font_size_abs": b.get("font_size_abs"),
+                "leader": b.get("leader", False),
                 "text_dx": b.get("text_dx", 0),
                 "text_dy": b.get("text_dy", 0),
                 "options": copy.deepcopy(b.get("options", {})),
@@ -2306,6 +2307,7 @@ class ScheduleEditor:
                 block["font_size_offset"] = preset.get("font_size_offset", 0)
                 block["font_auto"] = preset.get("font_auto", True)
                 block["font_size_abs"] = preset.get("font_size_abs")
+                block["leader"] = preset.get("leader", False)
                 block["text_dx"] = preset.get("text_dx", 0)
                 block["text_dy"] = preset.get("text_dy", 0)
                 if "options" in preset:
@@ -2341,6 +2343,7 @@ class ScheduleEditor:
             "font_size_offset": font_offset,
             "font_auto": block.get("font_auto", True),
             "font_size_abs": block.get("font_size_abs"),
+            "leader": block.get("leader", False),
             "text_dx": block.get("text_dx", 0),
             "text_dy": block.get("text_dy", 0),
             "options": options
@@ -2709,6 +2712,17 @@ class ScheduleEditor:
                 18 + (r.x1 - x_off) * self.zoom, 
                 18 + (r.y1 - y_off) * self.zoom)
 
+    def _leader_parts(self, b):
+        """'양끝 + 점선' 칸의 (왼쪽 글자, 오른쪽 글자, 글자 크기 pt). 이름에 '|' 가 있으면 왼쪽|오른쪽, 없으면 양쪽에 같은 글자."""
+        t = (b.get("title") or "").replace("\n", " ").strip()
+        if "|" in t:
+            left, right = (x.strip() for x in t.split("|", 1))
+        else:
+            left = right = t
+        x0, y0, x1, y1 = b["rect"]
+        fs = self._abs_font(b) or max(4.0, min(9.0, (y1 - y0) * 0.72) + b.get("font_size_offset", 0))
+        return left, right, fs
+
     def _abs_font(self, b):
         """글자 크기 '자동'을 끈 칸이면 그 절대 크기(pt), 아니면 None."""
         if b is not None and b.get("font_auto", True) is False and b.get("font_size_abs"):
@@ -3007,6 +3021,19 @@ class ScheduleEditor:
         elif b["title"]:
             bw = x1 - x0
             bh = y1 - y0
+            if b.get("leader"):                      # 양끝 + 점선:  R/L ··········· R/L
+                lt, rt, lfs = self._leader_parts(b)
+                fnt = (self.ui_font_family, -max(4, int(round(lfs * self.zoom))))
+                cyl = y0 + bh / 2 + b.get("text_dy", 0) * self.zoom
+                pad = 3 * self.zoom
+                fill_c = b.get("text_color", "#000000")
+                lid = c.create_text(x0 + pad, cyl, text=lt, anchor="w", font=fnt, fill=fill_c)
+                rid = c.create_text(x1 - pad, cyl, text=rt, anchor="e", font=fnt, fill=fill_c)
+                lb, rbx = c.bbox(lid), c.bbox(rid)
+                if lb and rbx and rbx[0] - lb[2] > 6:
+                    c.create_line(lb[2] + 3, cyl + lfs * self.zoom * 0.25, rbx[0] - 3, cyl + lfs * self.zoom * 0.25,
+                                  fill=fill_c, dash=(1, 3), width=max(1, round(self.zoom * 0.6)))
+                text_id = lid
             formatted_text, f_size = self._format_smart_text(b["title"], bw / self.zoom, bh / self.zoom, size_offset=b.get("font_size_offset", 0), abs_size=self._abs_font(b))
             
             cx = x0 + bw / 2
@@ -3016,7 +3043,8 @@ class ScheduleEditor:
             cx += b.get("text_dx", 0) * self.zoom
             cy = y0 + bh / 2 + offset_y + b.get("text_dy", 0) * self.zoom
             
-            text_id = c.create_text(
+            if not b.get("leader"):
+              text_id = c.create_text(
                 cx, cy, 
                 text=formatted_text, 
                 anchor="center", 
@@ -3296,6 +3324,18 @@ class ScheduleEditor:
             self.font_auto_var = tk.BooleanVar(value=block.get("font_auto", True) is not False)
             ttk.Checkbutton(font_row, text="자동", variable=self.font_auto_var,
                             command=lambda: self.set_font_auto(block, self.font_auto_var.get())).pack(side="right", padx=(0, 6))
+            lead_row = ttk.Frame(self.info_frame, padding=(0, 1))
+            lead_row.pack(fill="x")
+            self.leader_var = tk.BooleanVar(value=bool(block.get("leader")))
+
+            def _set_leader():
+                self._push_coalesced("opt")
+                block["leader"] = bool(self.leader_var.get())
+                self._paint_shape_preview(block)
+                self.draw_pdf(refresh_sidebar=False)
+                self.save_autosave()
+            ttk.Checkbutton(lead_row, text="↔ 양끝 + 점선  (예: R/L ······ R/L)", variable=self.leader_var, command=_set_leader).pack(side="left")
+            ttk.Label(lead_row, text="이름에 | 를 넣으면 왼쪽|오른쪽 따로", font=(self.ui_font_family, 7), foreground="#94a3b8").pack(side="right")
 
             pos_rows = (
                 ("y", "글자 위치 상하(pt):", "text_dy_lbl", "▲", "▼", -block.get("text_dy", 0)),
@@ -4273,6 +4313,24 @@ class ScheduleEditor:
                     txt_rgb = tuple(int(hex_txt[i:i+2], 16)/255.0 for i in (0, 2, 4))
                     
                 bw, bh = r.width, r.height
+                if b.get("leader"):                   # 양끝 + 점선:  R/L ··········· R/L
+                    lt, rt, lfs = self._leader_parts(b)
+
+                    def _tw(t):
+                        try:
+                            return measure_font.text_length(t, fontsize=lfs)
+                        except Exception:
+                            return sum(lfs if ord(ch) > 127 else lfs * 0.5 for ch in t)
+                    base_y = r.y0 + bh / 2 + lfs * 0.35 + b.get("text_dy", 0)
+                    lx, rw = r.x0 + 2, _tw(rt)
+                    rx = r.x1 - 2 - rw
+                    page.insert_text(fitz.Point(lx, base_y), lt, fontsize=lfs, fontname=font_name, color=txt_rgb)
+                    page.insert_text(fitz.Point(rx, base_y), rt, fontsize=lfs, fontname=font_name, color=txt_rgb)
+                    d0, d1 = lx + _tw(lt) + 1.5, rx - 1.5
+                    if d1 - d0 > 3:
+                        page.draw_line(fitz.Point(d0, base_y - lfs * 0.08), fitz.Point(d1, base_y - lfs * 0.08),
+                                       color=txt_rgb, width=max(0.4, lfs * 0.09), dashes="[0.4 1.2] 0", lineCap=1)
+                    continue
                 formatted_text, f_size = self._format_smart_text(b["title"], bw, bh, size_offset=b.get("font_size_offset", 0), abs_size=self._abs_font(b))
                 
                 lines = formatted_text.split("\n")
@@ -4584,7 +4642,7 @@ class ScheduleEditor:
             cuts.append(cut)
         # 이름·바탕색·글자색·음영·글자 크기/위치·뱃지(옵션)까지 저장. 시간(분)은 칸마다 달라 저장하지 않는다
         keep = ("title", "color", "text_color", "shade", "font_size_offset", "font_auto", "font_size_abs",
-                "text_dx", "text_dy", "options")
+                "text_dx", "text_dy", "leader", "options")
         style = {"axis": axis, "cuts": cuts, "parts": [{k: copy.deepcopy(b.get(k)) for k in keep if k in b} for b in parts],
                  "dash": bool(parts[0].get("split_dash")) if len(parts) > 1 else False}
         src = self._text_in_rect((gx0, gy0, gx1, gy1))
