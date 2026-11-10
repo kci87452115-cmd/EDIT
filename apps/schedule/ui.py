@@ -45,7 +45,7 @@ def schedule_badge_dir():
         return os.path.join(home, "데이터", "편성표", "badges")
     return os.path.abspath("badges")
 
-APP_VERSION = "3.19.0"
+APP_VERSION = "3.19.2"
 
 
 def _detect_profile():
@@ -2305,7 +2305,8 @@ class ScheduleEditor:
         for b_id in self.selected:
             block = next((b for b in self.blocks if b["id"] == b_id), None)
             if block:
-                block["title"] = preset["title"]
+                if not (preset.get("keep_title") or preset.get("title") == "새블록"):   # 꾸밈만 저장한 파렛트는 칸 글자를 바꾸지 않는다
+                    block["title"] = preset["title"]
                 block["color"] = preset["color"]
                 block["text_color"] = preset.get("text_color", "#000000")
                 block["font_size_offset"] = preset.get("font_size_offset", 0)
@@ -2334,7 +2335,18 @@ class ScheduleEditor:
         block = next((b for b in self.blocks if b["id"] == sel_id), None)
         if not block: return
         
-        title = block["title"] if block["title"] else "새블록"
+        keep_title = not (block.get("title") or "").strip()
+        if keep_title:
+            # 이름 없이(원본 글자 그대로) 꾸민 칸: 이름은 넣지 않고 꾸밈만 저장한다 -> 적용해도 그 칸 글자는 그대로
+            from tkinter import simpledialog
+            guess = f"{block['foot']} 덧붙임" if block.get("foot") else "꾸밈만"
+            name = simpledialog.askstring("파렛트 저장", "이름 없이 꾸밈(색·뱃지·덧붙임 등)만 저장합니다.\n파렛트에 보일 이름:",
+                                          initialvalue=guess, parent=self.root)
+            if not name or not name.strip():
+                return
+            title = name.strip()
+        else:
+            title = block["title"]
         color = block["color"] if block["color"] else ""
         txt_color = block.get("text_color", "#000000")
         font_offset = block.get("font_size_offset", 0)
@@ -2345,6 +2357,7 @@ class ScheduleEditor:
         
         new_fav = {
             "title": title, 
+            "keep_title": keep_title,
             "color": color, 
             "text_color": txt_color, 
             "h": h,
@@ -2737,6 +2750,21 @@ class ScheduleEditor:
         ab = self._abs_font(b)
         fs = max(3.0, ab * 0.85) if ab else max(3.0, fs + b.get("font_size_offset", 0))
         return left, right, fs, min((y1 - y0) * 0.5, fs * 1.6)
+
+    @staticmethod
+    def _side_fit(box_x0, box_x1, cell_x0, cell_x1, lt, rt, fs):
+        """양옆 덧붙임이 칸 안에 들어가게: (글자 크기, 왼쪽 간격, 오른쪽 간격). 모두 PDF 단위.
+        자리가 모자라면 점선 간격부터 줄이고(최소 글자 크기의 0.4배), 그래도 모자라면 글자를 줄인다(최소 3pt)."""
+        def w(t, f):
+            return sum(f * (0.62 if ord(ch) < 128 else 1.06) for ch in t)
+        room_l = box_x0 - (cell_x0 + 1.5)
+        room_r = (cell_x1 - 1.5) - box_x1
+        f = fs
+        while f > 3 and (w(lt, f) + f * 0.4 > room_l or w(rt, f) + f * 0.4 > room_r):
+            f -= 0.25
+        gl = max(f * 0.4, min(f * 1.7, room_l - w(lt, f)))
+        gr = max(f * 0.4, min(f * 1.7, room_r - w(rt, f)))
+        return f, gl, gr
 
     def _orig_text_box(self, b):
         """칸 안 원본 PDF 글자들이 차지한 자리 (x0, y0, x1, y1). 분 숫자는 뺀다. 없으면 None."""
@@ -3134,12 +3162,13 @@ class ScheduleEditor:
             if ab_:
                 flt, frt, ffs, _fbh = fp
                 ffs = min(ffs, max(4.0, (ab_[3] - ab_[1]) / self.zoom * 0.9))
-                fnt = (self.ui_font_family, -max(4, int(round(ffs * self.zoom))), "bold")
+                ffs, gl_, gr_ = self._side_fit(ab_[0] / self.zoom, ab_[2] / self.zoom, x0 / self.zoom, x1 / self.zoom, flt, frt, ffs)
+                fnt = (self.ui_font_family, -max(3, int(round(ffs * self.zoom))), "bold")
                 fcy = (ab_[1] + ab_[3]) / 2
                 fc = b.get("text_color", "#000000")
-                gap = ffs * self.zoom * 1.7
-                lid_ = c.create_text(ab_[0] - gap, fcy, text=flt, anchor="e", font=fnt, fill=fc)
-                rid_ = c.create_text(ab_[2] + gap, fcy, text=frt, anchor="w", font=fnt, fill=fc)
+                gapl, gapr = gl_ * self.zoom, gr_ * self.zoom
+                lid_ = c.create_text(ab_[0] - gapl, fcy, text=flt, anchor="e", font=fnt, fill=fc)
+                rid_ = c.create_text(ab_[2] + gapr, fcy, text=frt, anchor="w", font=fnt, fill=fc)
                 if b.get("foot_bg"):
                     for tid_ in (lid_, rid_):
                         bb_ = c.bbox(tid_)
@@ -3147,8 +3176,10 @@ class ScheduleEditor:
                             hl = c.create_rectangle(bb_[0] - 1, bb_[1], bb_[2] + 1, bb_[3], fill=b["foot_bg"], outline="")
                             c.tag_lower(hl, tid_)
                 dy_ = ffs * self.zoom * 0.25
-                c.create_line(ab_[0] - gap + 2, fcy + dy_, ab_[0] - 2, fcy + dy_, fill=fc, dash=(1, 2), width=max(1, round(self.zoom * 0.7)))
-                c.create_line(ab_[2] + 2, fcy + dy_, ab_[2] + gap - 2, fcy + dy_, fill=fc, dash=(1, 2), width=max(1, round(self.zoom * 0.7)))
+                if gapl > 5:
+                    c.create_line(ab_[0] - gapl + 2, fcy + dy_, ab_[0] - 2, fcy + dy_, fill=fc, dash=(1, 2), width=max(1, round(self.zoom * 0.7)))
+                if gapr > 5:
+                    c.create_line(ab_[2] + 2, fcy + dy_, ab_[2] + gapr - 2, fcy + dy_, fill=fc, dash=(1, 2), width=max(1, round(self.zoom * 0.7)))
         
         grip_id = None
         edge_handles = []
@@ -4482,9 +4513,9 @@ class ScheduleEditor:
                             return measure_font.text_length(t, fontsize=ffs) * 1.03
                         except Exception:
                             return sum(ffs if ord(ch) > 127 else ffs * 0.5 for ch in t)
-                    gap = ffs * 1.7
+                    ffs, gl_, gr_ = self._side_fit(box[0], box[2], r.x0, r.x1, flt, frt, ffs)   # 칸 밖으로 안 나가게
                     sy = (box[1] + box[3]) / 2 + ffs * 0.35
-                    lx, rx = box[0] - gap - _sw(flt), box[2] + gap
+                    lx, rx = box[0] - gl_ - _sw(flt), box[2] + gr_
                     _bg = (b.get("foot_bg") or "").lstrip("#")
                     if len(_bg) == 6:
                         _bgc = tuple(int(_bg[i:i + 2], 16) / 255.0 for i in (0, 2, 4))
