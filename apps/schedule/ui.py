@@ -45,7 +45,7 @@ def schedule_badge_dir():
         return os.path.join(home, "데이터", "편성표", "badges")
     return os.path.abspath("badges")
 
-APP_VERSION = "3.15.0"
+APP_VERSION = "3.15.1"
 
 
 def _detect_profile():
@@ -63,6 +63,7 @@ APP_TITLE = (f"DMB 편성 편집기 v{APP_VERSION}" if IS_DMB
 # 편성표 편집기와 DMB 편집기가 같이 쓰는 것 (나머지 설정·자동 저장·머리글은 따로)
 SHARED_KEYS = ("title_presets", "favorite_presets", "custom_badge_paths", "global_font_path")
 DMB_REGIONS = ["광주", "전주", "여수", "목포"]
+STYLE_LOOK_KEYS = ("color", "text_color", "shade", "font_size_offset", "font_auto", "font_size_abs", "text_dx", "text_dy")
 FONT_OFFSET_MIN = -2          # 글자 크기 미세 조절: -2 ~ +20
 
 
@@ -4581,7 +4582,9 @@ class ScheduleEditor:
             else:
                 cut = {"ratio": round((b["rect"][0] - gx0) / max(gx1 - gx0, 1e-6), 4)}
             cuts.append(cut)
-        keep = ("title",)                                 # 나누기 + 프로그램 이름만 (시간·뱃지는 사용자가 따로)
+        # 이름·바탕색·글자색·음영·글자 크기/위치·뱃지(옵션)까지 저장. 시간(분)은 칸마다 달라 저장하지 않는다
+        keep = ("title", "color", "text_color", "shade", "font_size_offset", "font_auto", "font_size_abs",
+                "text_dx", "text_dy", "options")
         style = {"axis": axis, "cuts": cuts, "parts": [{k: copy.deepcopy(b.get(k)) for k in keep if k in b} for b in parts],
                  "dash": bool(parts[0].get("split_dash")) if len(parts) > 1 else False}
         src = self._text_in_rect((gx0, gy0, gx1, gy1))
@@ -4617,8 +4620,15 @@ class ScheduleEditor:
             how = ", ".join(f"{round(c['ratio'] * 100)}% 자리" for c in style["cuts"])
             desc = f"{'위아래' if style['axis'] == 'h' else '좌우'} {len(style['parts'])}칸으로 나눔 ({how})"
         else:
-            desc = "나누지 않음 (이름만)"
-        lines = [desc] + [f"  #{i + 1} {(p.get('title') or '(이름 없음)').replace(chr(10), ' ')}" for i, p in enumerate(style["parts"])]
+            desc = "나누지 않음"
+        def _look(p):
+            o = p.get("options") or {}
+            bits = [k_ for k_, on in (("바탕색", p.get("color")), ("음영", p.get("shade")), ("글자색", (p.get("text_color") or "#000000").lower() != "#000000"),
+                                      ("글자 크기", p.get("font_auto") is False or p.get("font_size_offset")),
+                                      ("뱃지", any(o.get(x) for x in ("uhd", "sub", "sign", "des", "local")) or o.get("age", "none") != "none")) if on]
+            return ("  · " + "·".join(bits)) if bits else ""
+        lines = [desc] + [f"  #{i + 1} {(p.get('title') or '(이름 없음)').replace(chr(10), ' ')}{_look(p)}" for i, p in enumerate(style["parts"])]
+        lines.append("(이름·바탕색·글자색·음영·글자 크기·뱃지를 저장합니다. 시간(분)은 저장하지 않습니다)")
         ttk.Label(f, text="\n".join(lines), justify="left").grid(row=3, column=0, columnspan=2, sticky="w", pady=(8, 4))
 
         def ok(_e=None):
@@ -4710,7 +4720,15 @@ class ScheduleEditor:
                 r = (x0, bounds[i], x1, bounds[i + 1]) if axis == "h" else (bounds[i], y0, bounds[i + 1], y1)
                 nb["rect"] = nb["orig_rect"] = r
                 nb["group_id"] = gid
-            nb["title"] = sp.get("title", "")             # 프로그램 이름만 넣는다 (시간·뱃지 등은 사용자가 따로)
+            nb["title"] = sp.get("title", "")
+            for k in STYLE_LOOK_KEYS:                     # 바탕색·글자색·음영·글자 크기/위치 (예전 스타일엔 없으면 건너뜀)
+                if k in sp:
+                    nb[k] = copy.deepcopy(sp[k])
+            if isinstance(sp.get("options"), dict):       # 뱃지(옵션)는 스타일대로, 시간(분)은 이 칸 것 그대로
+                opts = nb.setdefault("options", {})
+                for k, v in sp["options"].items():
+                    if not (k.startswith("top_time") or k.startswith("bottom_time") or k == "time_enabled"):
+                        opts[k] = copy.deepcopy(v)
             if len(parts) > 1:
                 nb["split_dash"] = bool(style.get("dash"))    # 나눈 경계선 실선/점선도 스타일대로
             new.append(nb)
@@ -4773,7 +4791,7 @@ class ScheduleEditor:
                 self.refresh_style_ui()
 
     def _build_style_panel(self):
-        f = ttk.LabelFrame(self.sidebar_content_frame, text=" 🧩 작업 스타일 (매일 반복: 나누기 + 이름) ", padding=8)
+        f = ttk.LabelFrame(self.sidebar_content_frame, text=" 🧩 작업 스타일 (매일 반복: 나누기·이름·색·뱃지) ", padding=8)
         f.pack(fill="x", pady=4)
         self.style_container = ttk.Frame(f)
         self.style_container.pack(fill="x")
