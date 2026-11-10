@@ -45,7 +45,7 @@ def schedule_badge_dir():
         return os.path.join(home, "데이터", "편성표", "badges")
     return os.path.abspath("badges")
 
-APP_VERSION = "3.19.5"
+APP_VERSION = "3.19.6"
 
 
 def _detect_profile():
@@ -2026,9 +2026,9 @@ class ScheduleEditor:
         ob = self._orig_match(b)
         if ob is None:
             return True
-        for k, d in (("title", ""), ("color", ""), ("text_color", "#000000"),
-                     ("font_size_offset", 0), ("text_dx", 0), ("text_dy", 0)):
-            if b.get(k, d) != ob.get(k, d):
+        # 이름·색·글자 조절에 더해 덧붙임(R/L)·양끝+점선·글자 크기 자동/절대·음영·테두리도 고친 것으로 본다
+        for k, d in _EDIT_KEYS + (("shade", None), ("border_color", None), ("border_width", None)):
+            if (b.get(k, d) or d) != (ob.get(k, d) or d):
                 return True
         return b.get("options", {}) != ob.get("options", {})
 
