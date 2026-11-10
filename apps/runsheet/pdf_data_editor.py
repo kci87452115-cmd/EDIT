@@ -25,7 +25,7 @@ except ImportError:
     except ImportError:
         fitz = None
 
-APP_VERSION = "2.7.1"
+APP_VERSION = "2.8.0"
 APP_TITLE = f"운행표 데이터 편집기 v{APP_VERSION}"
 APP_MUTEX = "RunSheetEditor_Running"      # 설치 프로그램이 '실행 중'을 알아보는 이름 (setup.iss 의 AppMutex 와 같아야 함)
 RUN_BY_LAUNCHER = bool(os.environ.get("RADIO_LAUNCHER"))   # 편집 프로그램 런처로 실행됨 -> 업데이트는 런처가 한다
@@ -1540,6 +1540,10 @@ class DataEditor:
         self.backup_on = True
         self.update_dir = UPDATE_DIR_DEFAULT
         self.update_check = True     # 켤 때 새 버전 확인
+        self.preset_detached = False  # '미리 만든 데이터'를 따로 창으로 띄워 둠
+        self.preset_win_geom = ""
+        self.preset_win_top = False
+        self.preset_win = None
         self.view_on = False         # 다른 PC에서 정산/검색 조회 허용 (이 편집기에서만)
         self.view_port = VIEW_PORT_DEFAULT
         self.view_server = ViewServer(lambda: self.store, "편집기")
@@ -1630,6 +1634,9 @@ class DataEditor:
             self.update_dir = data.get("update_dir") or UPDATE_DIR_DEFAULT
             self.update_check = bool(data.get("update_check", True))
             self.view_on = bool(data.get("view_on", False))
+            self.preset_detached = bool(data.get("preset_detached", False))
+            self.preset_win_geom = str(data.get("preset_win_geom", "") or "")
+            self.preset_win_top = bool(data.get("preset_win_top", False))
             try:
                 self.view_port = min(65535, max(1024, int(data.get("view_port", VIEW_PORT_DEFAULT))))
             except (TypeError, ValueError):
@@ -1643,6 +1650,7 @@ class DataEditor:
                 json.dump({"font_path": self.font_path, "db_path": self.db_path, "sort_key": self.sort_key, "sort_desc": self.sort_desc, "preview_before_save": self.preview_var.get(), "highlight_output": self.highlight_var.get(), "show_today": self.show_today.get(), "preset_cols": self.preset_cols, "mark_opts": self.mark_opts,
                            "backup_dir": self.backup_dir, "backup_keep": self.backup_keep, "backup_on": self.backup_on,
                            "update_dir": self.update_dir, "update_check": self.update_check, "view_on": self.view_on, "view_port": self.view_port,
+                           "preset_detached": self.preset_detached, "preset_win_geom": self.preset_win_geom, "preset_win_top": self.preset_win_top,
                            "app_version": APP_VERSION}, f, ensure_ascii=False, indent=1)
         except Exception:
             pass
@@ -2275,8 +2283,41 @@ Start-Process (Join-Path $prog 'RunSheetEditor.exe') -WorkingDirectory $prog
         ttk.Button(crow, text="추가한 내용 지우기", command=self.clear_selected_cell).pack(side="left", fill="x", expand=True, padx=(2, 0))
         ttk.Button(cell, text="이 행 재원 설정", command=self.set_row_cap_dialog).pack(fill="x", pady=(4, 0))
 
-        pre = ttk.LabelFrame(f, text=" ⭐ 미리 만든 데이터 ", padding=8)
-        pre.pack(fill="both", expand=True, pady=4)
+        if self.preset_detached:                      # 미리 만든 데이터를 따로 창으로 띄워 둔 때
+            self._open_preset_window()
+            ph = ttk.LabelFrame(f, text=" ⭐ 미리 만든 데이터 ", padding=8)
+            ph.pack(fill="x", pady=4)
+            ttk.Label(ph, text="따로 창으로 띄워 두었습니다. (자유롭게 옮기고 크기를 바꿀 수 있습니다)", foreground="#555", wraplength=330).pack(anchor="w")
+            r_ = ttk.Frame(ph)
+            r_.pack(fill="x", pady=(4, 0))
+            ttk.Button(r_, text="창 보이기", command=self._open_preset_window).pack(side="left", fill="x", expand=True, padx=(0, 2))
+            ttk.Button(r_, text="⇤ 여기로 다시 붙이기", command=self.attach_presets).pack(side="left", fill="x", expand=True, padx=(2, 0))
+        else:
+            self._build_preset_panel(f)
+        self.refresh_presets()
+        self.update_cell_info()
+
+    def _build_preset_panel(self, parent, in_window=False):
+        """'미리 만든 데이터' 목록 (사이드바 안 또는 따로 띄운 창 안)."""
+        fnt = (self.ui_font_family, 8, "bold")
+        pre = ttk.LabelFrame(parent, text=" ⭐ 미리 만든 데이터 ", padding=8)
+        pre.pack(fill="both", expand=True, pady=4, padx=(6 if in_window else 0))
+        top_ = ttk.Frame(pre)
+        top_.pack(fill="x", pady=(0, 4))
+        if in_window:
+            tv = tk.BooleanVar(value=self.preset_win_top)
+
+            def _top():
+                self.preset_win_top = bool(tv.get())
+                try:
+                    self.preset_win.attributes("-topmost", self.preset_win_top)
+                except Exception:
+                    pass
+                self._save_settings()
+            ttk.Checkbutton(top_, text="항상 위", variable=tv, command=_top).pack(side="left")
+            ttk.Button(top_, text="⇤ 옆에 다시 붙이기", command=self.attach_presets).pack(side="right")
+        else:
+            ttk.Button(top_, text="⧉ 따로 창으로 띄우기", command=self.detach_presets).pack(side="right")
         frow = ttk.Frame(pre)
         frow.pack(fill="x", pady=(0, 4))
         ttk.Label(frow, text="찾기:", font=fnt).pack(side="left")
@@ -2326,7 +2367,53 @@ Start-Process (Join-Path $prog 'RunSheetEditor.exe') -WorkingDirectory $prog
         ttk.Button(brow, text="수정", command=self.edit_preset_dialog).pack(side="left", fill="x", expand=True, padx=2)
         ttk.Button(brow, text="삭제", command=self.delete_preset_action).pack(side="left", fill="x", expand=True, padx=(2, 0))
         self.refresh_presets()
-        self.update_cell_info()
+
+    def _open_preset_window(self):
+        """미리 만든 데이터를 따로 창으로 (자유롭게 옮기기·크기 바꾸기, 다른 모니터로도)."""
+        w = getattr(self, "preset_win", None)
+        if w is not None and w.winfo_exists():
+            w.deiconify()
+            w.lift()
+            return
+        w = self.preset_win = tk.Toplevel(self.root)
+        w.title("⭐ 미리 만든 데이터")
+        try:
+            w.geometry(self.preset_win_geom or "400x620")
+        except Exception:
+            w.geometry("400x620")
+        if self.preset_win_top:
+            w.attributes("-topmost", True)
+        w.protocol("WM_DELETE_WINDOW", self.attach_presets)          # 창을 닫으면 사이드바로 다시 붙인다
+        w.bind("<Configure>", lambda e: e.widget is w and self._remember_preset_geom())
+        self._build_preset_panel(w, in_window=True)
+
+    def _remember_preset_geom(self):
+        w = getattr(self, "preset_win", None)
+        if w is not None and w.winfo_exists():
+            self.preset_win_geom = w.geometry()
+
+    def detach_presets(self):
+        self.preset_detached = True
+        self._save_settings()
+        self._open_preset_window()
+        self._rebuild_side_after_preset()
+
+    def attach_presets(self):
+        self._remember_preset_geom()
+        self.preset_detached = False
+        self._save_settings()
+        w = getattr(self, "preset_win", None)
+        self.preset_win = None
+        if w is not None:
+            try:
+                w.destroy()
+            except Exception:
+                pass
+        self._rebuild_side_after_preset()
+
+    def _rebuild_side_after_preset(self):
+        if getattr(self, "_pdf_ui", False):
+            self._build_pdf_sidebar()
 
     def draw_blank_canvas(self):
         c = self.canvas
