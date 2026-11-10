@@ -45,7 +45,7 @@ def schedule_badge_dir():
         return os.path.join(home, "데이터", "편성표", "badges")
     return os.path.abspath("badges")
 
-APP_VERSION = "3.21.0"
+APP_VERSION = "3.21.1"
 
 
 def _detect_profile():
@@ -3648,6 +3648,14 @@ class ScheduleEditor:
             def _set_foot_pos():
                 self._push_coalesced("opt")
                 block["foot_pos"] = self.foot_pos_var.get()
+                if block["foot_pos"] == "below":          # 아래 줄: 기본 모양으로 바로 (줄 전체 연한 하늘색 띠)
+                    if not block.get("foot_bg") or block.get("foot_bg_text"):
+                        block["foot_bg"] = "#b8cce4"
+                    block["foot_bg_text"] = False
+                    try:
+                        self.foot_bgt_var.set(False)
+                    except Exception:
+                        pass
                 self.draw_pdf(refresh_sidebar=False)
                 self.save_autosave()
             ttk.Radiobutton(pos_row2, text="글자 양옆 (R/L···글자···R/L)", value="side", variable=self.foot_pos_var, command=_set_foot_pos).pack(side="left", padx=2)
