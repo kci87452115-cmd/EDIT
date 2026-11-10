@@ -27,7 +27,7 @@ import sys
 import tempfile
 import zipfile
 
-LAUNCHER_VERSION = "1.0.4"
+LAUNCHER_VERSION = "1.1.0"
 RUNTIME = 1                         # 공용 실행 환경 세대. 필요한 부품이 바뀌면 올린다 (앱의 runtime 값과 비교)
 EXE_NAME = "EditLauncher.exe"
 MUTEX = "EditLauncher_Running"      # 설치 프로그램(setup)이 '실행 중'을 알아보는 이름
@@ -509,6 +509,89 @@ def migrate_old_radio(ask):
 
 
 # ============================================================================ 화면
+class RadioViewHost:
+    """운행표 편집기를 켜지 않아도, 런처만 켜 두면 '다른 PC 조회'(정산/검색 웹 페이지)를 연다.
+    켜기·포트·데이터 위치는 운행표 편집기 설정(⚙️ 다른 PC 조회 허용)을 그대로 따른다. 조회 코드는 설치된 운행표 편집기에서 불러온다."""
+
+    def __init__(self):
+        self.mod = None
+        self.mod_key = None
+        self.srv = None
+        self.store = None
+        self.state = ""            # 화면에 보여 줄 한 줄
+
+    def _load_module(self, info):
+        path = os.path.join(info["_dir"], info["entry"])
+        key = (path, os.path.getmtime(path))
+        if self.mod is not None and self.mod_key == key:
+            return self.mod
+        import importlib.util
+        os.environ["RADIO_HOME"] = group_root(info["group"])      # 편집기와 같은 데이터 폴더를 보게
+        spec = importlib.util.spec_from_file_location("runsheet_view_host", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        self.mod, self.mod_key = mod, key
+        return mod
+
+    def stop(self):
+        if self.srv is not None:
+            try:
+                self.srv.stop()
+            except Exception:
+                pass
+        self.srv = None
+        self.store = None
+
+    def tick(self):
+        """설정을 다시 읽어 켜고/끄고/포트를 맞춘다. 화면에 보여 줄 글을 돌려준다."""
+        info = installed_info("runsheet")
+        if info is None:
+            self.stop()
+            self.state = ""
+            return self.state
+        try:
+            mod = self._load_module(info)
+        except Exception as exc:
+            self.stop()
+            self.state = f"⚠ 운행표 조회 준비 실패: {exc}"
+            return self.state
+        if not hasattr(mod, "ViewServer") or not hasattr(mod, "load_view_settings"):
+            self.stop()
+            self.state = ""             # 예전 운행표 편집기 - 업데이트하면 된다
+            return self.state
+        on, port, db = mod.load_view_settings(data_dir(info["group"]))
+        if not on:
+            self.stop()
+            self.state = ""
+            return self.state
+        srv = self.srv
+        if srv is not None and srv.httpd is not None and srv.port == port and self.store is not None and self.store.path == db:
+            pass                                                   # 런처가 그대로 열고 있음
+        else:
+            if srv is not None and srv.external is not None and srv.port == port and mod.probe_view(port):
+                pass                                               # 편집기가 열고 있음 - 그대로 둔다
+            else:
+                self.stop()
+                if not os.path.exists(db):
+                    self.state = f"⚠ 운행표 조회: 데이터 파일이 없습니다 ({db})"
+                    return self.state
+                try:
+                    self.store = mod.Store(db)
+                except Exception as exc:
+                    self.state = f"⚠ 운행표 조회: 데이터 파일을 열 수 없습니다 ({exc})"
+                    return self.state
+                self.srv = mod.ViewServer(lambda: self.store, "런처")
+                if not self.srv.start(port):
+                    self.state = "⚠ 운행표 조회: " + (self.srv.error.splitlines()[0] if self.srv.error else "켜지 못함")
+                    self.srv = None
+                    return self.state
+        urls = self.srv.urls() if self.srv else []
+        who = "런처" if self.srv and self.srv.httpd is not None else "운행표 편집기"
+        addr = (urls[-1] if len(urls) > 1 else urls[0]) if urls else ""
+        self.state = f"🌐 운행표 정산/검색 다른 PC 조회 중 ({who}):  {addr}"
+        return self.state
+
+
 class LauncherApp:
     def __init__(self, root):
         import tkinter as tk
@@ -570,6 +653,35 @@ class LauncherApp:
         ttk.Button(src, text="저장", command=self._save_src).pack(side="left", padx=(4, 0))
         self.status = ttk.Label(self.root, text="", foreground="#555", padding=(14, 0, 14, 8))
         self.status.pack(fill="x")
+        self.view_lbl = tk.Label(self.root, text="", fg="#1e3a8a", font=(self.font, 9, "bold"), anchor="w", padx=14, pady=4, cursor="hand2")
+        self.view_lbl.bind("<Button-1>", lambda e: self._copy_view_addr())
+        self.view_host = RadioViewHost()
+        self.root.after(1500, self._view_tick)
+
+    def _view_tick(self):
+        """10초마다: 운행표 편집기 설정을 보고 다른 PC 조회 페이지를 켜고 끈다."""
+        try:
+            txt = self.view_host.tick()
+        except Exception as exc:
+            txt = f"⚠ 운행표 조회: {exc}"
+        try:
+            if txt:
+                self.view_lbl.config(text=txt + ("   (눌러서 주소 복사)" if txt.startswith("🌐") else ""))
+                if not self.view_lbl.winfo_ismapped():
+                    self.view_lbl.pack(fill="x", before=self.status)
+            elif self.view_lbl.winfo_ismapped():
+                self.view_lbl.pack_forget()
+        except Exception:
+            pass
+        self.root.after(10000, self._view_tick)
+
+    def _copy_view_addr(self):
+        txt = self.view_lbl.cget("text")
+        m = re.search(r"http://\S+", txt)
+        if m:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(m.group(0))
+            self.status.config(text=f"주소를 복사했습니다: {m.group(0)}", foreground="#15803d")
 
     def _cur_group(self):
         try:

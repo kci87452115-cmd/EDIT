@@ -25,7 +25,7 @@ except ImportError:
     except ImportError:
         fitz = None
 
-APP_VERSION = "2.4.2"
+APP_VERSION = "2.5.0"
 APP_TITLE = f"운행표 데이터 편집기 v{APP_VERSION}"
 APP_MUTEX = "RunSheetEditor_Running"      # 설치 프로그램이 '실행 중'을 알아보는 이름 (setup.iss 의 AppMutex 와 같아야 함)
 RUN_BY_LAUNCHER = bool(os.environ.get("RADIO_LAUNCHER"))   # 편집 프로그램 런처로 실행됨 -> 업데이트는 런처가 한다
@@ -1176,18 +1176,47 @@ async function run(){$('csv').href='api/detail.csv?'+q();$('msg').textContent='�
 """
 
 
-class ViewServer:
-    """읽기 전용 조회 서버. start() 로 켜고 stop() 으로 끈다."""
+def probe_view(port, timeout=1.0):
+    """이 PC의 port 에서 이미 조회 페이지가 돌고 있으면 그 정보(dict), 아니면 None. (런처·편집기가 서로 확인)"""
+    try:
+        import urllib.request
+        with urllib.request.urlopen(f"http://127.0.0.1:{int(port)}/api/info", timeout=timeout) as r:
+            d = json.loads(r.read().decode("utf-8"))
+        return d if isinstance(d, dict) and d.get("app") == "runsheet-view" else None
+    except Exception:
+        return None
 
-    def __init__(self, get_store):
+
+def load_view_settings(data_dir):
+    """편집기 설정에서 조회 관련 값 (켜짐, 포트, DB 위치). 런처도 이걸 읽어 조회 페이지를 연다."""
+    d = {}
+    try:
+        with open(os.path.join(data_dir, "settings.json"), "r", encoding="utf-8") as f:
+            d = json.load(f) or {}
+    except Exception:
+        pass
+    try:
+        port = min(65535, max(1024, int(d.get("view_port", VIEW_PORT_DEFAULT))))
+    except (TypeError, ValueError):
+        port = VIEW_PORT_DEFAULT
+    return bool(d.get("view_on", False)), port, d.get("db_path") or os.path.join(data_dir, "pdf_data_editor.db")
+
+
+class ViewServer:
+    """읽기 전용 조회 서버. start() 로 켜고 stop() 으로 끈다.
+    같은 포트를 런처(또는 편집기)가 이미 열어 두었으면 그것을 쓴다 (external)."""
+
+    def __init__(self, get_store, host_kind="편집기"):
         self.get_store = get_store
+        self.host_kind = host_kind
         self.httpd = None
         self.port = None
         self.error = ""
+        self.external = None          # 다른 쪽(런처/편집기)이 열어 둔 조회 페이지 정보
 
     @property
     def running(self):
-        return self.httpd is not None
+        return self.httpd is not None or self.external is not None
 
     def start(self, port):
         self.stop()
@@ -1237,7 +1266,8 @@ class ViewServer:
                     if store is None:
                         return self._json({"error": "편집기의 데이터 파일을 열 수 없습니다."}, 503)
                     if route == "/api/info":
-                        return self._json({"name": computer_name(), "version": APP_VERSION, "groups": store.distinct_groups(),
+                        return self._json({"app": "runsheet-view", "host": owner.host_kind,
+                                           "name": computer_name(), "version": APP_VERSION, "groups": store.distinct_groups(),
                                            "by": list(BY_OPTIONS), "targets": list(SEARCH_TARGETS)})
                     if route in ("/api/aggregate", "/api/detail", "/api/detail.csv"):
                         d0, d1 = p.get("from", ""), p.get("to", "")
@@ -1274,9 +1304,23 @@ class ViewServer:
 
             do_POST = do_PUT = do_DELETE = do_PATCH = _deny
 
+        info = probe_view(port, timeout=0.5)
+        if info:                                   # 이미 이 PC에서 조회 페이지가 열려 있음 (런처 또는 편집기)
+            self.external, self.port = info, int(port)
+            return True
+
+        class ExclusiveServer(ThreadingHTTPServer):
+            # 윈도우의 SO_REUSEADDR 은 같은 포트를 두 프로그램이 함께 열게 해 버린다 -> 윈도우에서는 끈다
+            # (그러면 런처와 편집기 중 나중에 여는 쪽은 실패하고, 먼저 연 쪽 것을 그대로 쓴다)
+            allow_reuse_address = os.name != "nt"
+
         try:
-            httpd = ThreadingHTTPServer(("0.0.0.0", int(port)), Handler)
+            httpd = ExclusiveServer(("0.0.0.0", int(port)), Handler)
         except OSError as exc:
+            info = probe_view(port)
+            if info:                               # 런처(또는 다른 편집기 창)가 이미 이 PC에서 조회 페이지를 열어 둠 -> 그대로 쓴다
+                self.external, self.port = info, int(port)
+                return True
             self.error = f"{port}번 포트를 열 수 없습니다. 다른 프로그램이 쓰고 있을 수 있습니다. 다른 포트 번호로 바꿔 보세요.\n({exc})"
             return False
         httpd.daemon_threads = True
@@ -1285,6 +1329,7 @@ class ViewServer:
         return True
 
     def stop(self):
+        self.external = None
         h, self.httpd = self.httpd, None
         if h is not None:
             try:
@@ -1384,7 +1429,7 @@ class DataEditor:
         self.update_check = True     # 켤 때 새 버전 확인
         self.view_on = False         # 다른 PC에서 정산/검색 조회 허용 (이 편집기에서만)
         self.view_port = VIEW_PORT_DEFAULT
-        self.view_server = ViewServer(lambda: self.store)
+        self.view_server = ViewServer(lambda: self.store, "편집기")
         startup_note = prepare_data_folder(lambda t, m: messagebox.askyesno(t, m))
         self._load_settings()
         self.ui_font_family = get_tk_font_family(self.font_path)
@@ -1401,6 +1446,18 @@ class DataEditor:
             self.root.after(1500, lambda: self.check_update(quiet=True))
         if self.view_on:
             self.root.after(800, lambda: self.apply_view_server(quiet=True))
+        self.root.after(15000, self._view_watch)
+
+    def _view_watch(self):
+        """런처가 조회 페이지를 맡고 있다가 꺼지면 편집기가 이어받는다 (15초마다 확인)."""
+        try:
+            vs = self.view_server
+            if self.view_on and vs.external is not None and not probe_view(vs.port):
+                vs.external = None
+                self.apply_view_server(quiet=True)
+        except Exception:
+            pass
+        self.root.after(15000, self._view_watch)
 
     # ------------------------------------------------------------------ 다른 PC 조회
     def _app_title(self):
@@ -1653,7 +1710,7 @@ class DataEditor:
         view_lbl.bind("<Button-1>", copy_url)
         show_view_status()
         ttk.Label(win, text="※ 켠 편집기만 조회 페이지를 엽니다. 편집기가 2대라도 조회를 보여 줄 편집기에서만 켜세요.\n"
-                            "   처음 켤 때 Windows 방화벽 창이 뜨면 '허용'(개인/도메인 네트워크)을 눌러 주세요. 편집기를 끄면 조회도 멈춥니다.",
+                            "   처음 켤 때 Windows 방화벽 창이 뜨면 '허용'(개인/도메인 네트워크)을 눌러 주세요. 편집기를 꺼도 편집 프로그램 런처가 켜져 있으면 런처가 이어서 조회를 엽니다.",
                   font=(self.ui_font_family, 8), foreground="#666", wraplength=600, justify="left").pack(anchor="w", padx=15, pady=(2, 0))
 
         ttk.Label(win, text="기본 데이터 / 프로그램 정보", font=(self.ui_font_family, 10, "bold")).pack(anchor="w", padx=15, pady=(14, 2))
@@ -1967,7 +2024,8 @@ Start-Process (Join-Path $prog 'RunSheetEditor.exe') -WorkingDirectory $prog
             pass
         f = ttk.Frame(win, padding=14)
         f.pack(fill="both", expand=True)
-        ttk.Label(f, text="다른 PC의 브라우저(크롬·엣지) 주소창에 아래 주소 중 하나를 넣으면 정산/검색을 볼 수 있습니다.",
+        by = "편집 프로그램 런처" if (self.view_server.external or {}).get("host") == "런처" else "이 편집기"
+        ttk.Label(f, text=f"다른 PC의 브라우저(크롬·엣지) 주소창에 아래 주소 중 하나를 넣으면 정산/검색을 볼 수 있습니다.\n(지금은 {by}가 조회 페이지를 열고 있습니다. 런처만 켜 두어도 조회됩니다.)",
                   wraplength=520, justify="left").pack(anchor="w", pady=(0, 8))
         order = urls[1:] + urls[:1]                       # IP 주소를 먼저, PC 이름 주소는 마지막
         for i, u in enumerate(order):
@@ -2012,7 +2070,7 @@ Start-Process (Join-Path $prog 'RunSheetEditor.exe') -WorkingDirectory $prog
                 f.write(f"편집기 PC: {computer_name()}   (기록: {time.strftime('%Y-%m-%d %H:%M')})\n\n")
                 for u in urls[1:] + urls[:1]:
                     f.write(u + "\n")
-                f.write("\n다른 PC의 브라우저 주소창에 위 주소 중 하나를 넣으세요. 편집기가 켜져 있을 때만 열립니다.\n")
+                f.write("\n다른 PC의 브라우저 주소창에 위 주소 중 하나를 넣으세요. 이 PC에서 편집 프로그램 런처나 편집기가 켜져 있을 때 열립니다.\n")
             return path
         except Exception:
             return ""
