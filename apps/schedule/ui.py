@@ -45,7 +45,7 @@ def schedule_badge_dir():
         return os.path.join(home, "데이터", "편성표", "badges")
     return os.path.abspath("badges")
 
-APP_VERSION = "3.20.1"
+APP_VERSION = "3.21.0"
 
 
 def _detect_profile():
@@ -2071,13 +2071,27 @@ class ScheduleEditor:
                     return ob
         return None
 
+    def _foot_below(self, b):
+        return bool((b.get("foot") or "").strip()) and b.get("foot_pos", "below") != "side"
+
+    def _display_title(self, b):
+        """화면·PDF에 그릴 이름. 이름을 안 넣었어도 '아래 줄 덧붙임'을 쓰면 원본 글자를 이름으로 다시 그린다
+        (원본 글자는 덮고, 아래 줄 위 남은 자리에 크고 또렷하게)."""
+        t = b.get("title") or ""
+        if t.strip() or not self._foot_below(b):
+            return t
+        toks = [w for w in self._text_in_rect(b["rect"]).split()
+                if not re.fullmatch(r"\d{1,2}|UHD|ALL|L|자|수|해|재|\d{1,2}세?", w)]
+        return " ".join(toks)
+
     def _cover_color(self, b):
         """배경색이 없는(투명) 블록 중 원본 글자를 덮어야 하는 블록이면 덮을 색, 아니면 None.
         나눈 칸·합친 칸·직접 그린 칸(원본 칸과 자리가 다름)과 이름을 새로 넣은 칸은 원본 글자가 비쳐 보이므로
         원본 바탕색(분홍 등 지운 색이면 흰색)으로 먼저 덮고 그 위에 새 글자를 쓴다."""
         if len((b.get("color") or "").lstrip("#")) == 6:
             return None
-        if b.get("group_id") is None and self._orig_match(b) is not None and not (b.get("title") or "").strip():
+        if (b.get("group_id") is None and self._orig_match(b) is not None and not (b.get("title") or "").strip()
+                and not self._foot_below(b)):
             return None
         f = (b.get("orig_fill") or "").lower()
         if not f or f == "#ffffff" or CLEAR_FILL_MODE == "all" or (CLEAR_FILL_MODE == "pink" and _is_pink(f)):
@@ -2844,11 +2858,11 @@ class ScheduleEditor:
             return None
         left, right = ((x.strip() for x in t.split("|", 1)) if "|" in t else (t, t))
         x0, y0, x1, y1 = b["rect"]
-        fs = min(8.0, max(4.5, (y1 - y0) * 0.22))
-        # 글자 크기 조절과 연동: 미세 조절 값만큼 같이 커지고/작아지며, 자동을 끄면 절대 크기의 85%
+        fs = min(7.0, max(4.5, (y1 - y0) * 0.16))          # 이름보다 작게 (보통 이름의 60% 안팎)
+        # 글자 크기 조절과 연동: 미세 조절 값만큼 같이 커지고/작아지며, 자동을 끄면 절대 크기의 60%
         ab = self._abs_font(b)
-        fs = max(3.0, ab * 0.85) if ab else max(3.0, fs + b.get("font_size_offset", 0))
-        return left, right, fs, min((y1 - y0) * 0.5, fs * 1.6)
+        fs = max(3.0, ab * 0.6) if ab else max(3.0, fs + b.get("font_size_offset", 0) * 0.6)
+        return left, right, fs, min((y1 - y0) * 0.45, fs * 1.4)   # 칸 맨 아래 얇은 띠
 
     @staticmethod
     def _side_fit(box_x0, box_x1, cell_x0, cell_x1, lt, rt, fs):
@@ -3212,13 +3226,13 @@ class ScheduleEditor:
                         hl = c.create_rectangle(bb_[0] - 1, bb_[1], bb_[2] + 1, bb_[3], fill=b["foot_bg"], outline="")
                         c.tag_lower(hl, tid_)
             if lb_ and rb_ and rb_[0] - lb_[2] > 6:
-                c.create_line(lb_[2] + 3, fcy + ffs * self.zoom * 0.25, rb_[0] - 3, fcy + ffs * self.zoom * 0.25,
-                              fill=fc, dash=(1, 3), width=max(1, round(self.zoom * 0.6)))
+                c.create_line(lb_[2] + 3, fcy + ffs * self.zoom * 0.3, rb_[0] - 3, fcy + ffs * self.zoom * 0.3,
+                              fill=fc, dash=(1, 2), width=1)             # 촘촘한 작은 점
             y1 = band_top
         previewing_split = is_selected and (self.h_split_count > 1 or self.v_split_count > 1)
         if previewing_split:
             text_id = self._draw_live_split_texts(c, b, x0, y0, x1, y1)
-        elif b["title"]:
+        elif self._display_title(b):
             bw = x1 - x0
             bh = y1 - y0
             if b.get("leader"):                      # 양끝 + 점선:  R/L ····· R/L  /  R/L ··· 가운데 이름 ··· R/L
@@ -3245,7 +3259,7 @@ class ScheduleEditor:
                         c.create_line(a_[2] + 2, cyl + lfs * self.zoom * 0.25, b_[0] - 2, cyl + lfs * self.zoom * 0.25,
                                       fill=fill_c, dash=(1, 2), width=max(1, round(self.zoom * 0.7)))
                 text_id = ids[0]
-            formatted_text, f_size = self._format_smart_text(b["title"], bw / self.zoom, bh / self.zoom, size_offset=b.get("font_size_offset", 0), abs_size=self._abs_font(b))
+            formatted_text, f_size = self._format_smart_text(self._display_title(b), bw / self.zoom, bh / self.zoom, size_offset=b.get("font_size_offset", 0), abs_size=self._abs_font(b))
             
             cx = x0 + bw / 2
             offset_y = 0
@@ -3598,6 +3612,9 @@ class ScheduleEditor:
                 v = self.foot_var.get().strip()
                 if v != (block.get("foot") or ""):
                     self._push_coalesced("opt")
+                    if v and not block.get("foot") and not block.get("foot_bg"):
+                        block["foot_bg"] = "#b8cce4"           # 처음 넣으면 기본: 줄 전체 연한 하늘색
+                        block["foot_bg_text"] = False
                     block["foot"] = v
                     self._paint_shape_preview(block)
                     self.draw_pdf(refresh_sidebar=False)
@@ -4743,10 +4760,10 @@ class ScheduleEditor:
                 page.insert_text(fitz.Point(frx, fy), frt, fontsize=ffs, fontname=font_name, color=frgb)
                 fd0, fd1 = flx + _fw(flt) + 1.5, frx - 1.5
                 if fd1 - fd0 > 3:
-                    page.draw_line(fitz.Point(fd0, fy - ffs * 0.08), fitz.Point(fd1, fy - ffs * 0.08),
-                                   color=frgb, width=max(0.4, ffs * 0.09), dashes="[0.4 1.2] 0", lineCap=1)
+                    page.draw_line(fitz.Point(fd0, fy - ffs * 0.02), fitz.Point(fd1, fy - ffs * 0.02),
+                                   color=frgb, width=max(0.45, ffs * 0.1), dashes="[0.01 1.0] 0", lineCap=1)   # 촘촘한 작은 점
                 r = fitz.Rect(r.x0, r.y0, r.x1, r.y1 - fbh)
-            if b["title"]:
+            if self._display_title(b):
                 hex_txt = b.get("text_color", "#000000").lstrip("#")
                 txt_rgb = (0, 0, 0)
                 if len(hex_txt) == 6:
@@ -4784,7 +4801,7 @@ class ScheduleEditor:
                             page.draw_line(fitz.Point(d0, base_y - lfs * 0.08), fitz.Point(d1, base_y - lfs * 0.08),
                                            color=txt_rgb, width=max(0.5, lfs * 0.12), dashes="[0.1 1.1] 0", lineCap=1)
                     continue
-                formatted_text, f_size = self._format_smart_text(b["title"], bw, bh, size_offset=b.get("font_size_offset", 0), abs_size=self._abs_font(b))
+                formatted_text, f_size = self._format_smart_text(self._display_title(b), bw, bh, size_offset=b.get("font_size_offset", 0), abs_size=self._abs_font(b))
                 
                 lines = formatted_text.split("\n")
                 total_text_h = len(lines) * (f_size * 1.15)
