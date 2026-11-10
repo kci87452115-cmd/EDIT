@@ -45,7 +45,7 @@ def schedule_badge_dir():
         return os.path.join(home, "데이터", "편성표", "badges")
     return os.path.abspath("badges")
 
-APP_VERSION = "3.11.3"
+APP_VERSION = "3.11.4"
 
 
 def _detect_profile():
@@ -1817,6 +1817,32 @@ class ScheduleEditor:
                 return ob
         return None
 
+    def _cover_color(self, b):
+        """배경색이 없는(투명) 블록 중 원본 글자를 덮어야 하는 블록이면 덮을 색, 아니면 None.
+        나눈 칸·합친 칸·직접 그린 칸(원본 칸과 자리가 다름)과 이름을 새로 넣은 칸은 원본 글자가 비쳐 보이므로
+        원본 바탕색(분홍 등 지운 색이면 흰색)으로 먼저 덮고 그 위에 새 글자를 쓴다."""
+        if len((b.get("color") or "").lstrip("#")) == 6:
+            return None
+        if b.get("group_id") is None and self._orig_match(b) is not None and not (b.get("title") or "").strip():
+            return None
+        f = (b.get("orig_fill") or "").lower()
+        if not f or f == "#ffffff" or CLEAR_FILL_MODE == "all" or (CLEAR_FILL_MODE == "pink" and _is_pink(f)):
+            return "#ffffff"
+        return f
+
+    def _cover_rects(self, b):
+        """덮어야 하는 블록 안의 원본 글자 자리들 (PDF 좌표). 뱃지 그림·테두리 선은 그대로 둔다."""
+        x0, y0, x1, y1 = b["rect"]
+        same_place = b.get("group_id") is None and self._orig_match(b) is not None
+        out = []
+        for w in getattr(self, "page_words", {}).get(self.current_page, []):
+            wx0, wy0, wx1, wy1 = w[:4]
+            if same_place and len(w) > 4 and re.fullmatch(r"\d{1,2}", _undouble(w[4])):
+                continue                            # 자리 그대로인 칸: 원본의 분 숫자는 그대로 맞으므로 남긴다
+            if min(x1, wx1) - max(x0, wx0) > 0.5 and min(y1, wy1) - max(y0, wy0) > 0.5:   # 걸친 글자도 이 칸 안쪽 부분은 덮는다
+                out.append((max(x0 + 0.6, wx0 - 0.8), max(y0 + 0.6, wy0 - 0.6), min(x1 - 0.6, wx1 + 0.8), min(y1 - 0.6, wy1 + 0.6)))
+        return out
+
     def _is_modified(self, b):
         """원본에서 감지된 블록과 위치/크기가 다르거나(이동·크기변경·분할·병합·수동추가),
         내용(명칭·색·옵션·글자 조절)이 바뀐 블록이면 True."""
@@ -2254,7 +2280,9 @@ class ScheduleEditor:
             all_drawings = page.get_drawings()
             try:   # 5분 단위 나누기용 시간 줄, 제목·날짜 자리
                 _segs, _fills = _drawing_parts(all_drawings)
-                rows = detect_time_rows(page.get_text("words"), _segs)
+                _words = page.get_text("words")
+                self.__dict__.setdefault("page_words", {})[page_idx] = [tuple(w[:4]) + (str(w[4]).strip(),) for w in _words if str(w[4]).strip()]
+                rows = detect_time_rows(_words, _segs)
                 self.time_rows_by_page[page_idx] = rows
                 self.time_ticks_by_page[page_idx] = time_ticks(rows)
                 _heads = [r.y0 for r, c in _fills if _is_header_color(c) and r.height >= 8]
@@ -2606,6 +2634,12 @@ class ScheduleEditor:
         outline_color = "#2563eb" if is_selected else "#3b82f6"
         width = 3 if is_selected else 1
         
+        cover = self._cover_color(b) if not fill_color else None
+        if cover:                                   # 원본 글자가 비치지 않게 그 자리만 바탕색으로 덮는다 (뱃지 그림·선은 그대로)
+            for r_ in self._cover_rects(b):
+                a_ = self._to_canvas(r_[0], r_[1])
+                b_ = self._to_canvas(r_[2], r_[3])
+                c.create_rectangle(a_[0], a_[1], b_[0], b_[1], fill=cover, outline="")
         if is_selected:
             hit_id = c.create_rectangle(x0, y0, x1, y1, fill=fill_color if fill_color else "#dbeafe", outline="", stipple="gray25" if not fill_color else "")
         else:
@@ -3755,10 +3789,18 @@ class ScheduleEditor:
         mod_ids = {b["id"] for b in blocks if self._is_modified(b)}
 
         # 1) 채우기: 원본 테두리를 덮지 않도록 선 굵기의 절반만큼 안쪽으로 줄여서 그린다.
+        for b in blocks:                  # 0) 나눈 칸 등(투명): 원본 글자 자리만 바탕색으로 덮는다 (뱃지 그림·선은 그대로)
+            cov = (self._cover_color(b) or "").lstrip("#")
+            if len(cov) == 6:
+                crgb = tuple(int(cov[i:i + 2], 16) / 255.0 for i in (0, 2, 4))
+                for r_ in self._cover_rects(b):
+                    page.draw_rect(fitz.Rect(r_), color=None, fill=crgb)
+        covered = set()
         for b in blocks:
             hex_c = (b.get("color") or "").lstrip("#")
             if len(hex_c) != 6:
                 continue
+            covered.add(b["id"])
             rgb = tuple(int(hex_c[i:i + 2], 16) / 255.0 for i in (0, 2, 4))
             r = fitz.Rect(b["rect"])
             hw = self._eff_border_width(b, b["id"] in mod_ids) / 2
@@ -3771,7 +3813,7 @@ class ScheduleEditor:
         segs = getattr(self, "orig_lines", {}).get(self.current_page, [])
         if segs:
             for b in blocks:
-                if len((b.get("color") or "").lstrip("#")) == 6:
+                if b["id"] in covered:
                     _restore_lines(page, segs, fitz.Rect(b["rect"]))
 
         # 2) 테두리: 원본에서 찾은 칸과 위치/크기가 다른 블록(이동, 크기 변경, 분할, 병합, 수동 추가)은
@@ -4067,7 +4109,15 @@ class ScheduleEditor:
         else:
             a["rect"], b["rect"] = (x0, y0, x1, pos), (x0, pos, x1, y1)
         a["orig_rect"], b["orig_rect"] = a["rect"], b["rect"]
+        if not (a.get("title") or "").strip():     # 나누면 원본 글자를 덮으므로, 위(왼쪽) 칸에는 원본 이름을 넣어 둔다
+            a["title"] = self._source_title(block)
         b["title"] = ""
+        if True:                                   # 원본의 분 숫자도 덮이므로, 정시가 아니면 위 시간(분)을 자동으로 켜 둔다
+            for part in (a, b):
+                tm, _bm = self._auto_minutes(part)
+                if tm is not None and tm != "00":
+                    part.setdefault("options", {})["top_time_enabled"] = True
+                    part["options"]["top_time_val"] = tm
         a["group_id"] = b["group_id"] = gid
         idx = self.blocks.index(block)
         self.blocks[idx:idx + 1] = [a, b]
@@ -4079,6 +4129,15 @@ class ScheduleEditor:
         self.draw_pdf()
         self.save_autosave()
         self.root.after(60, lambda: self.open_title_editor(b, hint="나눈 아래(오른쪽) 칸의 이름"))
+
+    def _source_title(self, block):
+        """블록 자리의 원본 글자에서 이름만 (분 숫자·뱃지 글자는 뺀다)."""
+        t = block.get("src_text")
+        if t is None:
+            ob = self._orig_match(block)
+            t = (ob or {}).get("src_text") or ""
+        toks = [w for w in str(t).split() if not re.fullmatch(r"\d{1,2}|UHD|ALL|L|자|수|해|\d{1,2}세?", w)]
+        return " ".join(toks).strip()
 
     def _boundary_at(self, x, y):
         """나눈 두 칸(같은 묶음)이 맞닿은 경계선 근처면 ('h'|'v', 위/왼쪽 칸, 아래/오른쪽 칸)."""
