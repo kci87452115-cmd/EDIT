@@ -45,7 +45,7 @@ def schedule_badge_dir():
         return os.path.join(home, "데이터", "편성표", "badges")
     return os.path.abspath("badges")
 
-APP_VERSION = "3.13.2"
+APP_VERSION = "3.14.0"
 
 
 def _detect_profile():
@@ -69,6 +69,49 @@ def tv_preview_dir():
     """다른 PC 조회용 주간 편성표 미리보기 폴더 (런처로 실행할 때만): C:\\EDIT\\TV\\데이터\\미리보기"""
     home = os.environ.get("RADIO_HOME")
     return os.path.join(home, "데이터", "미리보기") if home else ""
+
+
+TV_VIEW_PORT_DEFAULT = 8081
+
+
+def tv_view_config():
+    """다른 PC에서 보기 설정 (TV 편성표 편집기·DMB 편집기·런처가 같이 씀): 미리보기\\view.json"""
+    d = tv_preview_dir()
+    try:
+        with open(os.path.join(d, "view.json"), "r", encoding="utf-8") as f:
+            c = json.load(f)
+        if isinstance(c, dict):
+            return {"on": bool(c.get("on")), "port": int(c.get("port", TV_VIEW_PORT_DEFAULT))}
+    except Exception:
+        pass
+    return {"on": False, "port": TV_VIEW_PORT_DEFAULT}
+
+
+def save_tv_view_config(on, port):
+    d = tv_preview_dir()
+    if not d:
+        return False
+    try:
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "view.json.tmp"), "w", encoding="utf-8") as f:
+            json.dump({"on": bool(on), "port": int(port)}, f)
+        os.replace(os.path.join(d, "view.json.tmp"), os.path.join(d, "view.json"))
+        return True
+    except Exception:
+        return False
+
+
+def _lan_ip():
+    import socket
+    try:
+        s_ = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s_.connect(("10.255.255.255", 1))
+            return s_.getsockname()[0]
+        finally:
+            s_.close()
+    except Exception:
+        return ""
 
 
 def update_tv_preview_status(key, **fields):
@@ -1736,7 +1779,7 @@ class ScheduleEditor:
     def open_settings_window(self):
         sett_win = tk.Toplevel(self.root)
         sett_win.title("⚙️ 프로그램 설정 (기본 폰트 및 뱃지 지정)")
-        sett_win.geometry("560x840")
+        sett_win.geometry("580x930")
         sett_win.transient(self.root)
         sett_win.grab_set()
 
@@ -1786,6 +1829,54 @@ class ScheduleEditor:
             
             btn = ttk.Button(row_f, text="찾기", width=6, command=lambda k=key, v=var: self.browse_badge_image(k, v))
             btn.pack(side="right")
+
+        view_frame = ttk.LabelFrame(sett_win, text=" 📺 다른 PC에서 보기 (같은 네트워크, 조회 전용) ", padding=8)
+        view_frame.pack(fill="x", padx=15, pady=5)
+        if not tv_preview_dir():
+            ttk.Label(view_frame, text="편집 프로그램 런처로 실행했을 때만 쓸 수 있습니다.", font=(self.ui_font_family, 8), foreground="#b45309").pack(anchor="w")
+        else:
+            vc = tv_view_config()
+            v_on = tk.BooleanVar(value=vc["on"])
+            v_port = tk.StringVar(value=str(vc["port"]))
+            vr = ttk.Frame(view_frame)
+            vr.pack(fill="x")
+            v_lbl = ttk.Label(view_frame, text="", font=(self.ui_font_family, 8), foreground="#1e3a8a", wraplength=500, justify="left", cursor="hand2")
+
+            def show_addr():
+                if v_on.get():
+                    try:
+                        port = int(v_port.get())
+                    except ValueError:
+                        port = TV_VIEW_PORT_DEFAULT
+                    addr = f"http://{_lan_ip() or 'TV편성표PC'}:{port}"
+                    v_lbl.config(text=f"✅ 켜짐 — 다른 PC 브라우저에서 {addr}  (눌러서 복사)\n"
+                                      "라디오 조회 페이지의 '📺 TV 주간 편성표' 탭에도 자동으로 나옵니다. (이 PC의 편집 프로그램 런처가 켜져 있어야 함)")
+                else:
+                    v_lbl.config(text="꺼짐")
+
+            def apply_view(*_a):
+                try:
+                    port = min(65535, max(1024, int(v_port.get())))
+                except ValueError:
+                    port = TV_VIEW_PORT_DEFAULT
+                if not save_tv_view_config(v_on.get(), port):
+                    messagebox.showwarning("다른 PC에서 보기", "설정을 저장하지 못했습니다.", parent=sett_win)
+                show_addr()
+
+            def copy_addr(_e=None):
+                m = re.search(r"http://\S+", v_lbl.cget("text"))
+                if m:
+                    sett_win.clipboard_clear()
+                    sett_win.clipboard_append(m.group(0))
+
+            ttk.Checkbutton(vr, text="저장한 주간 편성표를 사내 다른 PC에서 볼 수 있게 허용", variable=v_on, command=apply_view).pack(side="left")
+            ttk.Label(vr, text="포트:", font=(self.ui_font_family, 8)).pack(side="left", padx=(10, 2))
+            sp = ttk.Spinbox(vr, from_=1024, to=65535, width=6, textvariable=v_port, command=apply_view)
+            sp.pack(side="left")
+            sp.bind("<FocusOut>", apply_view)
+            v_lbl.pack(anchor="w", pady=(3, 0))
+            v_lbl.bind("<Button-1>", copy_addr)
+            show_addr()
 
         det_frame = ttk.LabelFrame(sett_win, text=" 블록 찾기 (PDF를 열 때 칸을 블록으로 만드는 기준) ", padding=8)
         det_frame.pack(fill="x", padx=15, pady=5)

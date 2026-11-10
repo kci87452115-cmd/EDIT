@@ -28,7 +28,7 @@ import tempfile
 import time
 import zipfile
 
-LAUNCHER_VERSION = "1.2.0"
+LAUNCHER_VERSION = "1.2.1"
 RUNTIME = 1                         # 공용 실행 환경 세대. 필요한 부품이 바뀌면 올린다 (앱의 runtime 값과 비교)
 EXE_NAME = "EditLauncher.exe"
 MUTEX = "EditLauncher_Running"      # 설치 프로그램(setup)이 '실행 중'을 알아보는 이름
@@ -893,20 +893,22 @@ class LauncherApp:
         self.tv_host = TvViewHost(self.discovery)
         self.tv_lbl = tk.Label(self.root, text="", fg="#7c2d12", font=(self.font, 9, "bold"), anchor="w", padx=14, pady=2, cursor="hand2")
         self.tv_lbl.bind("<Button-1>", lambda e: self._copy_addr(self.tv_lbl))
-        self.tv_on_var = tk.BooleanVar(value=bool(self.settings.get("tv_view_on", False)))
-        ttk.Checkbutton(bot, text="📺 TV 편성표 다른 PC에서 보기 허용", variable=self.tv_on_var,
-                        command=self._save_tv_view).pack(side="right", padx=8)
         self.root.after(1500, self._view_tick)
 
-    def _save_tv_view(self):
-        self.settings["tv_view_on"] = bool(self.tv_on_var.get())
-        save_settings(self.settings)
-        self._tv_tick_once()
+    def _tv_view_config(self):
+        """TV 편성표 편집기 ⚙️ 설정의 '다른 PC에서 보기'(미리보기\\view.json)를 따른다.
+        (런처 1.2.0 에서 런처에 체크해 두었던 값이 있으면, 편집기 설정이 생기기 전까지는 그것을 쓴다)"""
+        try:
+            with open(os.path.join(data_dir("tv"), "미리보기", "view.json"), "r", encoding="utf-8") as f:
+                c = json.load(f)
+            return bool(c.get("on")), int(c.get("port", TV_VIEW_PORT_DEFAULT))
+        except Exception:
+            return bool(self.settings.get("tv_view_on", False)), int(self.settings.get("tv_view_port", TV_VIEW_PORT_DEFAULT))
 
     def _tv_tick_once(self):
         try:
-            port = int(self.settings.get("tv_view_port", TV_VIEW_PORT_DEFAULT))
-            txt = self.tv_host.tick(bool(self.settings.get("tv_view_on", False)), port)
+            on, port = self._tv_view_config()
+            txt = self.tv_host.tick(on, port)
         except Exception as exc:
             txt = f"⚠ TV 편성표 조회: {exc}"
         try:
