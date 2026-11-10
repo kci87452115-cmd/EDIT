@@ -45,7 +45,7 @@ def schedule_badge_dir():
         return os.path.join(home, "데이터", "편성표", "badges")
     return os.path.abspath("badges")
 
-APP_VERSION = "3.11.6"
+APP_VERSION = "3.12.0"
 
 
 def _detect_profile():
@@ -966,6 +966,8 @@ class ScheduleEditor:
         self.global_font_path = get_system_korean_font_path()
         self.ui_font_family = get_tk_font_family(self.global_font_path)
 
+        self.split_styles = []          # 작업 스타일: [{"name","keyword","axis","cuts","parts"}]
+        self.split_styles_auto = False
         self.favorite_presets = [
             {
                 "title": "일반프로그램", 
@@ -1295,6 +1297,8 @@ class ScheduleEditor:
                 "custom_badge_paths": self.custom_badge_paths,
                 "global_font_path": self.global_font_path,
                 "favorite_presets": self.favorite_presets,
+                "split_styles": self.split_styles,
+                "split_styles_auto": self.split_styles_auto,
                 "mod_shade_enabled": self.mod_shade_enabled,
                 "mod_shade_color": self.mod_shade_color,
                 "mod_shade_alpha": self.mod_shade_alpha,
@@ -1565,6 +1569,10 @@ class ScheduleEditor:
                     v = data.get(key)
                     if isinstance(v, list):
                         setattr(self, key, [str(x) for x in v if isinstance(x, str)][:200])
+                if isinstance(data.get("split_styles"), list):
+                    self.split_styles = [x for x in data["split_styles"] if isinstance(x, dict) and x.get("parts")]
+                if isinstance(data.get("split_styles_auto"), bool):
+                    self.split_styles_auto = data["split_styles_auto"]
                 if isinstance(data.get("lock_move"), bool):
                     self.lock_move.set(data["lock_move"])
                 for key, lo, hi in (("detect_min_w", 5.0, 200.0), ("detect_min_h", 1.0, 100.0)):
@@ -1798,6 +1806,7 @@ class ScheduleEditor:
         self.fav_container = ttk.Frame(fav_frame)
         self.fav_container.pack(fill="x", pady=2)
         self.refresh_favorite_ui()
+        self._build_style_panel()
         
         ttk.Separator(self.sidebar_content_frame).pack(fill="x", pady=6)
         
@@ -2425,6 +2434,12 @@ class ScheduleEditor:
             self.offer_carry_over()
         except Exception:
             pass
+        if self.split_styles_auto and self.split_styles:
+            try:
+                self.apply_split_styles(quiet=True)
+            except Exception:
+                pass
+        self.refresh_style_ui()
 
     def bind_pdf_events(self):
         self.canvas.bind("<Button-1>", self.on_press_pdf)
@@ -4028,6 +4043,289 @@ class ScheduleEditor:
             return
         bd = self._boundary_at(*self._to_doc(cx, cy))
         c.config(cursor=("sb_v_double_arrow" if bd[0] == "h" else "sb_h_double_arrow") if bd else "")
+
+    # ================================================================ 작업 스타일 (매일 반복하는 나누기 + 이름 넣기)
+    def _text_in_rect(self, rect):
+        """이 자리의 원본 PDF 글자 (굵은 글씨 겹침 정리)."""
+        x0, y0, x1, y1 = rect
+        ws = [w for w in getattr(self, "page_words", {}).get(self.current_page, [])
+              if x0 - 0.5 <= (w[0] + w[2]) / 2 <= x1 + 0.5 and y0 - 0.5 <= (w[1] + w[3]) / 2 <= y1 + 0.5]
+        ws.sort(key=lambda w: (round(w[1]), w[0]))
+        return " ".join(_undouble(w[4]) for w in ws if len(w) > 4)
+
+    @staticmethod
+    def _norm_kw(t):
+        return re.sub(r"\s+", "", t or "").lower()
+
+    def _minutes_at(self, y):
+        lab = self._time_label(y)
+        if not lab:
+            return None
+        return int(lab[:2]) * 60 + int(lab[3:])
+
+    def _y_at_offset(self, y_top, minutes):
+        """블록 위 끝(y_top)에서 minutes 분 뒤의 y. 시간 줄을 못 찾으면 None."""
+        rows = self.time_rows_by_page.get(self.current_page, [])
+        m0 = self._minutes_at(y_top)
+        if m0 is None or not rows:
+            return None
+        # 위 끝이 들어 있는 줄부터 아래로 1시간씩 따라간다
+        start = next((i for i, (a, b, _h) in enumerate(rows) if a - 0.5 <= y_top <= b + 0.5), None)
+        if start is None:
+            return None
+        a, b, h = rows[start]
+        left = (m0 - h * 60) % 1440 + minutes      # 그 줄의 정각부터 몇 분
+        i = start
+        while i < len(rows):
+            a, b, h = rows[i]
+            if left <= 60:
+                return a + (b - a) * left / 60.0
+            left -= 60
+            i += 1
+        return None
+
+    def _style_from_selection(self):
+        """선택한 칸(나눈 묶음이면 묶음 전체)에서 스타일을 만든다."""
+        if len(self.selected) != 1:
+            return None, "스타일로 저장할 칸을 1개만 선택해 주세요. (나눈 칸이면 그중 아무 칸이나)"
+        b0 = self._block_by_id(next(iter(self.selected)))
+        if not b0:
+            return None, "선택한 칸을 찾지 못했습니다."
+        gid = b0.get("group_id")
+        parts = [b for b in self.blocks if gid is not None and b.get("group_id") == gid] or [b0]
+        gx0 = min(b["rect"][0] for b in parts); gy0 = min(b["rect"][1] for b in parts)
+        gx1 = max(b["rect"][2] for b in parts); gy1 = max(b["rect"][3] for b in parts)
+        axis = "h"
+        if len(parts) > 1:
+            same_x = all(abs(b["rect"][0] - gx0) < 0.6 and abs(b["rect"][2] - gx1) < 0.6 for b in parts)
+            same_y = all(abs(b["rect"][1] - gy0) < 0.6 and abs(b["rect"][3] - gy1) < 0.6 for b in parts)
+            if same_x:
+                axis = "h"
+            elif same_y:
+                axis = "v"
+            else:
+                return None, "가로·세로가 섞여 나뉜 칸은 스타일로 저장할 수 없습니다. (한 방향으로만 나눈 칸)"
+        parts.sort(key=lambda b: b["rect"][1] if axis == "h" else b["rect"][0])
+        cuts = []
+        m_top = self._minutes_at(gy0)
+        for b in parts[1:]:
+            if axis == "h":
+                pos = b["rect"][1]
+                m = self._minutes_at(pos)
+                cut = {"ratio": round((pos - gy0) / max(gy1 - gy0, 1e-6), 4)}
+                if m_top is not None and m is not None:
+                    cut["min"] = (m - m_top) % 1440       # 시작에서 몇 분 뒤
+                    cut["clock"] = m                      # 몇 시 몇 분 (하루 중 분)
+            else:
+                cut = {"ratio": round((b["rect"][0] - gx0) / max(gx1 - gx0, 1e-6), 4)}
+            cuts.append(cut)
+        keep = ("title", "color", "text_color", "font_size_offset", "text_dx", "text_dy", "options")
+        style = {"axis": axis, "cuts": cuts, "parts": [{k: copy.deepcopy(b.get(k)) for k in keep if k in b} for b in parts]}
+        src = self._text_in_rect((gx0, gy0, gx1, gy1))
+        toks = [w for w in src.split() if not re.fullmatch(r"\d{1,2}|UHD|ALL|L|자|수|해|재|\d{1,2}세?", w)]
+        style["keyword"] = " ".join(toks).strip() or (parts[0].get("title") or "")
+        style["name"] = " / ".join((p.get("title") or "").replace("\n", " ") for p in style["parts"] if p.get("title")) or style["keyword"]
+        return style, ""
+
+    def save_split_style(self):
+        style, err = self._style_from_selection()
+        if style is None:
+            messagebox.showinfo("작업 스타일", err)
+            return
+        win = tk.Toplevel(self.root)
+        win.title("🧩 작업 스타일 저장")
+        win.transient(self.root)
+        win.grab_set()
+        f = ttk.Frame(win, padding=12)
+        f.pack(fill="both", expand=True)
+        ttk.Label(f, text="스타일 이름", font=(self.ui_font_family, 9, "bold")).grid(row=0, column=0, sticky="w")
+        nv = tk.StringVar(value=style["name"][:60])
+        ttk.Entry(f, textvariable=nv, width=46).grid(row=0, column=1, sticky="we", pady=2)
+        ttk.Label(f, text="찾을 원본 글자", font=(self.ui_font_family, 9, "bold")).grid(row=1, column=0, sticky="w")
+        kv = tk.StringVar(value=style["keyword"][:60])
+        ttk.Entry(f, textvariable=kv, width=46).grid(row=1, column=1, sticky="we", pady=2)
+        ttk.Label(f, text="원본 편성표 칸에 이 글자가 들어 있으면 적용합니다 (띄어쓰기는 무시). 짧고 확실한 말로 줄여 주세요.\n예: '뉴스투데이 2부', '뉴스데스크'",
+                  font=(self.ui_font_family, 8), foreground="#64748b", justify="left").grid(row=2, column=1, sticky="w")
+        if style["cuts"]:
+            how = ", ".join((f"{c['clock'] // 60:02d}:{c['clock'] % 60:02d} (없으면 시작 {c['min']}분 뒤)" if "clock" in c
+                             else f"{round(c['ratio'] * 100)}%") for c in style["cuts"])
+            desc = f"{'위아래' if style['axis'] == 'h' else '좌우'} {len(style['parts'])}칸으로 나눔 ({how})"
+        else:
+            desc = "나누지 않음 (이름·옵션만)"
+        lines = [desc] + [f"  #{i + 1} {(p.get('title') or '(이름 없음)').replace(chr(10), ' ')}" for i, p in enumerate(style["parts"])]
+        ttk.Label(f, text="\n".join(lines), justify="left").grid(row=3, column=0, columnspan=2, sticky="w", pady=(8, 4))
+
+        def ok(_e=None):
+            name, kw = nv.get().strip(), kv.get().strip()
+            if not name or not self._norm_kw(kw):
+                messagebox.showwarning("작업 스타일", "이름과 찾을 원본 글자를 넣어 주세요.", parent=win)
+                return
+            style["name"], style["keyword"] = name, kw
+            old = next((i for i, s_ in enumerate(self.split_styles) if s_.get("name") == name), None)
+            if old is not None:
+                if not messagebox.askyesno("작업 스타일", f"'{name}' 스타일이 이미 있습니다. 바꿀까요?", parent=win):
+                    return
+                self.split_styles[old] = style
+            else:
+                self.split_styles.append(style)
+            self.save_autosave()
+            self.refresh_style_ui()
+            win.destroy()
+
+        b = ttk.Frame(f)
+        b.grid(row=4, column=0, columnspan=2, pady=(8, 0))
+        ttk.Button(b, text="저장", command=ok).pack(side="left", padx=4)
+        ttk.Button(b, text="취소", command=win.destroy).pack(side="left", padx=4)
+        win.bind("<Return>", ok)
+
+    def _style_targets(self, style):
+        kw = self._norm_kw(style.get("keyword"))
+        out = []
+        for b in self.blocks:
+            if b.get("group_id") is not None or self._orig_match(b) is None:
+                continue                                  # 이미 나눈 칸·옮긴 칸은 건드리지 않는다
+            if kw and kw in self._norm_kw(self._text_in_rect(b["rect"])):
+                out.append(b)
+        return out
+
+    def _apply_style_to(self, block, style):
+        """한 칸에 스타일 적용. 성공하면 새 칸 목록, 못 하면 None."""
+        x0, y0, x1, y1 = block["rect"]
+        axis, cuts, parts = style.get("axis", "h"), style.get("cuts") or [], style.get("parts") or []
+        if not parts or len(parts) != len(cuts) + 1:
+            return None
+        if axis == "h":
+            lo, hi = y0, y1
+        else:
+            lo, hi = x0, x1
+        pos = []
+        for c in cuts:
+            p = None
+            if axis == "h" and "clock" in c:            # 같은 시각(예: 7:30)이 이 칸 안에 있으면 그 시각에서
+                m0 = self._minutes_at(y0)
+                if m0 is not None:
+                    off = (int(c["clock"]) - m0) % 1440
+                    q = self._y_at_offset(y0, off) if off < 720 else None
+                    if q is not None and lo + 2.5 <= q <= hi - 2.5:
+                        p = q
+            if p is None and axis == "h" and "min" in c:    # 아니면 시작에서 같은 분만큼 뒤
+                p = self._y_at_offset(y0, c["min"])
+            if p is None:
+                p = lo + (hi - lo) * float(c.get("ratio", 0.5))
+            pos.append(p)
+        bounds = [lo] + pos + [hi]
+        if any(bounds[i + 1] - bounds[i] < 2.5 for i in range(len(bounds) - 1)):
+            return None                                   # 이 칸은 너무 짧아 같은 자리에서 나눌 수 없음
+        gid = None
+        if len(parts) > 1:
+            gid = self.next_id
+            self.next_id += 1
+        new = []
+        for i, sp in enumerate(parts):
+            nb = copy.deepcopy(block)
+            nb["id"] = self.next_id
+            self.next_id += 1
+            if len(parts) > 1:
+                r = (x0, bounds[i], x1, bounds[i + 1]) if axis == "h" else (bounds[i], y0, bounds[i + 1], y1)
+                nb["rect"] = nb["orig_rect"] = r
+                nb["group_id"] = gid
+            for k, v in sp.items():
+                nb[k] = copy.deepcopy(v)
+            opts = nb.setdefault("options", {})
+            tm, bm = self._auto_minutes(nb)               # 시간(분)은 이 칸 자리에서 다시 읽는다 (보이기는 스타일 그대로)
+            if tm is not None:
+                opts["top_time_val"] = tm
+            if bm is not None:
+                opts["bottom_time_val"] = bm
+            new.append(nb)
+        i = self.blocks.index(block)
+        self.blocks[i:i + 1] = new
+        if gid is not None:
+            self._recompute_rel_boxes(gid)
+        return new
+
+    def apply_split_styles(self, styles=None, quiet=False):
+        """스타일을 이 페이지의 맞는 칸 모두에 적용한다. styles=None 이면 저장된 스타일 전부."""
+        styles = list(self.split_styles) if styles is None else styles
+        if not self.pdf_path or not styles:
+            return 0
+        plan = [(st, b) for st in styles for b in self._style_targets(st)]
+        seen, todo = set(), []
+        for st, b in plan:                                # 한 칸에 스타일 두 개가 걸리면 먼저 저장한 것만
+            if b["id"] not in seen:
+                seen.add(b["id"])
+                todo.append((st, b))
+        if not todo:
+            if not quiet:
+                messagebox.showinfo("작업 스타일", "이 페이지에서 적용할 칸을 찾지 못했습니다.\n(이미 나눈 칸은 건너뜁니다. '찾을 원본 글자'를 확인해 주세요.)")
+            return 0
+        self.push_history()
+        done, skip, names = 0, 0, {}
+        for st, b in todo:
+            if self._apply_style_to(b, st):
+                done += 1
+                names[st["name"]] = names.get(st["name"], 0) + 1
+            else:
+                skip += 1
+        self.page_blocks[self.current_page] = self.blocks
+        self.selected = set()
+        self.draw_pdf()
+        self.save_autosave()
+        if not quiet or done:
+            msg = "\n".join(f"· {n}: {c}칸" for n, c in names.items()) or "적용한 칸 없음"
+            if skip:
+                msg += f"\n\n칸이 짧아 나누지 못한 {skip}칸은 건너뛰었습니다."
+            messagebox.showinfo("작업 스타일 적용", msg + "\n\nCtrl+Z 로 한 번에 되돌릴 수 있습니다.")
+        return done
+
+    def delete_split_style(self, idx):
+        if 0 <= idx < len(self.split_styles):
+            name = self.split_styles[idx].get("name", "")
+            if messagebox.askyesno("작업 스타일", f"'{name}' 스타일을 지울까요?"):
+                self.split_styles.pop(idx)
+                self.save_autosave()
+                self.refresh_style_ui()
+
+    def _build_style_panel(self):
+        f = ttk.LabelFrame(self.sidebar_content_frame, text=" 🧩 작업 스타일 (매일 반복: 나누기 + 이름) ", padding=8)
+        f.pack(fill="x", pady=4)
+        self.style_container = ttk.Frame(f)
+        self.style_container.pack(fill="x")
+        b = ttk.Frame(f)
+        b.pack(fill="x", pady=(4, 0))
+        ttk.Button(b, text="▶ 모두 적용", command=lambda: self.apply_split_styles()).pack(side="left", fill="x", expand=True, padx=(0, 2))
+        ttk.Button(b, text="＋ 선택한 칸을 스타일로 저장", command=self.save_split_style).pack(side="left", fill="x", expand=True, padx=(2, 0))
+        av = tk.BooleanVar(value=self.split_styles_auto)
+
+        def set_auto():
+            self.split_styles_auto = bool(av.get())
+            self.save_autosave()
+        ttk.Checkbutton(f, text="PDF를 열 때 자동으로 모두 적용", variable=av, command=set_auto).pack(anchor="w", pady=(4, 0))
+        self.refresh_style_ui()
+
+    def refresh_style_ui(self):
+        box = getattr(self, "style_container", None)
+        if box is None or not box.winfo_exists():
+            return
+        for w in box.winfo_children():
+            w.destroy()
+        if not self.split_styles:
+            ttk.Label(box, text="저장된 스타일이 없습니다. 한 칸을 나누고 이름을 넣은 뒤\n그 칸을 선택하고 [＋ 선택한 칸을 스타일로 저장]을 누르세요.",
+                      font=(self.ui_font_family, 8), foreground="#64748b", justify="left").pack(anchor="w")
+            return
+        for i, st in enumerate(self.split_styles):
+            row = tk.Frame(box, bg="#f8fafc", bd=1, relief="groove")
+            row.pack(fill="x", pady=1)
+            n = len(self._style_targets(st)) if self.pdf_path else 0
+            tk.Label(row, text=f"🧩 {st.get('name', '')}", bg="#f8fafc", font=(self.ui_font_family, 8, "bold"),
+                     anchor="w").pack(side="left", padx=4)
+            tk.Button(row, text="X", bg="#fee2e2", fg="#dc2626", bd=0, font=(self.ui_font_family, 7, "bold"),
+                      command=lambda k=i: self.delete_split_style(k)).pack(side="right", padx=2)
+            tk.Button(row, text=f"적용 ({n})", bg="#dbeafe", bd=1, font=(self.ui_font_family, 7),
+                      state="normal" if n else "disabled",
+                      command=lambda s_=st: self.apply_split_styles([s_])).pack(side="right", padx=2)
+            tk.Label(row, text=f"찾기: {st.get('keyword', '')}", bg="#f8fafc", fg="#64748b",
+                     font=(self.ui_font_family, 7)).pack(side="right", padx=4)
 
     def _recompute_rel_boxes(self, gid):
         gbs = [b for b in self.blocks if b.get("group_id") == gid]
