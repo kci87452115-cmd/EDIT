@@ -45,7 +45,7 @@ def schedule_badge_dir():
         return os.path.join(home, "데이터", "편성표", "badges")
     return os.path.abspath("badges")
 
-APP_VERSION = "3.12.0"
+APP_VERSION = "3.12.1"
 
 
 def _detect_profile():
@@ -2450,6 +2450,69 @@ class ScheduleEditor:
         self.canvas.bind("<MouseWheel>", self.on_mouse_wheel)
         self.canvas.bind("<Button-4>", self.on_mouse_wheel)
         self.canvas.bind("<Button-5>", self.on_mouse_wheel)
+        self.canvas.bind("<Button-3>", self.on_right_click_pdf)        # 오른쪽 마우스: 칸 메뉴
+        self.canvas.bind("<Button-2>", self.on_right_click_pdf)        # (맥 트랙패드)
+
+    def on_right_click_pdf(self, event):
+        """칸 위에서 오른쪽 클릭: 작업 스타일 저장·적용, 파렛트, 여기서 나누기."""
+        if not self.pdf_path:
+            return
+        cx, cy = self.canvas.canvasx(event.x), self.canvas.canvasy(event.y)
+        block = self._block_at(cx, cy)
+        if not block:
+            return
+        if block["id"] not in self.selected:          # 오른쪽 클릭한 칸을 선택한다
+            self.selected = {block["id"]}
+            self.draw_pdf()
+        fnt = (self.ui_font_family, 9)
+        m = tk.Menu(self.root, tearoff=0, font=fnt)
+        m.add_command(label="🧩 이 칸을 작업 스타일로 저장…", command=self.save_split_style)
+        sm = tk.Menu(m, tearoff=0, font=fnt)
+        fresh = block.get("group_id") is None and self._orig_match(block) is not None
+        kw_txt = self._norm_kw(self._text_in_rect(block["rect"]))
+        for st in self.split_styles:
+            hit = bool(self._norm_kw(st.get("keyword"))) and self._norm_kw(st.get("keyword")) in kw_txt
+            sm.add_command(label=("✔ " if hit else "    ") + st.get("name", ""),
+                           state="normal" if fresh else "disabled",
+                           command=lambda s_=st: self._apply_style_here(block, s_))
+        if not self.split_styles:
+            sm.add_command(label="(저장된 스타일 없음)", state="disabled")
+        m.add_cascade(label="🧩 이 칸에 스타일 적용" + ("" if fresh else "  (이미 나눈 칸)"), menu=sm)
+        m.add_command(label="▶ 이 페이지에 스타일 모두 적용", command=lambda: self.apply_split_styles(),
+                      state="normal" if self.split_styles else "disabled")
+        m.add_separator()
+        tgt = self._split_target(block, *self._to_doc(cx, cy), False)
+        m.add_command(label="✂ 여기서 나누기" + (f"  ({tgt[1]})" if tgt and tgt[1] else ""),
+                      state="normal" if tgt else "disabled",
+                      command=lambda: tgt and self._do_split(block, tgt[0], False))
+        m.add_separator()
+        pm = tk.Menu(m, tearoff=0, font=fnt)
+        for pr in self.favorite_presets:
+            pm.add_command(label=pr.get("title", ""), command=lambda p_=pr: self.apply_favorite_preset_to_selected(p_))
+        m.add_cascade(label="⭐ 파렛트 적용", menu=pm)
+        m.add_command(label="⭐ 파렛트로 저장", command=self.save_to_favorites)
+        m.add_separator()
+        m.add_command(label="↩ 되돌리기 (Ctrl+Z)", command=self.undo_action)
+        try:
+            m.tk_popup(event.x_root, event.y_root)
+        finally:
+            m.grab_release()
+
+    def _apply_style_here(self, block, style):
+        """오른쪽 클릭한 그 칸 하나에만 스타일 적용 (찾을 글자가 달라도 적용)."""
+        if block not in self.blocks:
+            return
+        self.push_history()
+        new = self._apply_style_to(block, style)
+        if not new:
+            self.history.pop() if self.history else None
+            messagebox.showinfo("작업 스타일", "이 칸은 짧아서 같은 자리에서 나눌 수 없습니다.")
+            return
+        self.page_blocks[self.current_page] = self.blocks
+        self.selected = {new[-1]["id"]}
+        self.draw_pdf()
+        self.save_autosave()
+        self.refresh_style_ui()
 
     def _page_origin(self):
         """PDF 페이지 원점(CropBox 여백이 있으면 0이 아님). 화면 좌표 <-> PDF 좌표 변환에 쓴다."""
