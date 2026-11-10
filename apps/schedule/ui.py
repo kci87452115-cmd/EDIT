@@ -45,7 +45,7 @@ def schedule_badge_dir():
         return os.path.join(home, "데이터", "편성표", "badges")
     return os.path.abspath("badges")
 
-APP_VERSION = "3.12.5"
+APP_VERSION = "3.12.6"
 
 
 def _detect_profile():
@@ -1280,6 +1280,7 @@ class ScheduleEditor:
                 "border_width": b.get("border_width"),
                 "orig_fill": b.get("orig_fill", ""),
                 "shade": b.get("shade"),
+                "split_dash": b.get("split_dash", False),
             }
             for b in self.blocks
         ]
@@ -2484,6 +2485,9 @@ class ScheduleEditor:
         m.add_command(label="✂ 여기서 나누기" + (f"  ({tgt[1]})" if tgt and tgt[1] else ""),
                       state="normal" if tgt else "disabled",
                       command=lambda: tgt and self._do_split(block, tgt[0], False))
+        if block.get("group_id") is not None:
+            m.add_command(label=("━ 나눈 경계선을 실선으로" if block.get("split_dash") else "┄ 나눈 경계선을 점선으로"),
+                          command=lambda: self.set_split_dash(block))
         m.add_separator()
         pm = tk.Menu(m, tearoff=0, font=fnt)
         for pr in self.favorite_presets:
@@ -2737,6 +2741,12 @@ class ScheduleEditor:
             self._draw_shade(c, x0, y0, x1, y1, _sc)
 
         rect_id = c.create_rectangle(x0, y0, x1, y1, fill="", outline=outline_color, width=width)
+        _rb = b.get("rel_box")
+        if b.get("split_dash") and b.get("group_id") is not None and _rb:   # 점선으로 바꾼 나눈 경계선 (출력과 같은 모양)
+            if _rb[1] > 0.001:
+                c.create_line(x0, y0, x1, y0, fill="#111111", dash=(4, 3), width=max(1, round(self.zoom * 0.6)))
+            if _rb[0] > 0.001:
+                c.create_line(x0, y0, x0, y1, fill="#111111", dash=(4, 3), width=max(1, round(self.zoom * 0.6)))
         
         opts = b.get("options", {})
         top_enabled = opts.get("top_time_enabled", opts.get("time_enabled", False))
@@ -3126,6 +3136,10 @@ class ScheduleEditor:
                     ttk.Button(erow, text=minus_txt, width=3, command=lambda e=edge: self.modify_block_edge(block, e, -1)).pack(side="right", padx=1)
 
             self.split_title_vars = {}             # (예전 '선택적 블록 분할' 패널은 툴바 '✂ 나누기 (S)' 로 하나로 합침)
+            if block.get("group_id") is not None:
+                _dv = tk.BooleanVar(value=bool(block.get("split_dash")))
+                ttk.Checkbutton(self.info_frame, text="┄ 나눈 경계선을 점선으로", variable=_dv,
+                                command=lambda: self.set_split_dash(block, _dv.get())).pack(anchor="w", pady=(4, 0))
             ttk.Label(self.info_frame, text="✂ 칸 나누기: 툴바의 [✂ 나누기 (S)]를 켜거나 S 키 → 칸 안을 클릭 (5분 눈금에 맞춤, Shift+클릭 = 좌우)",
                       font=(self.ui_font_family, 8), foreground="#64748b", wraplength=330, justify="left").pack(anchor="w", pady=(4, 0))
 
@@ -3868,6 +3882,15 @@ class ScheduleEditor:
             if not custom_w and any(all(abs(a - c) <= 0.5 for a, c in zip(rt, orr)) for orr in orig_rects):
                 continue
             col = tuple(b.get("border_color") or DEFAULT_BORDER_COLOR)
+            rb = b.get("rel_box")
+            if b.get("split_dash") and b.get("group_id") is not None and rb:
+                # 나눈 경계선을 점선으로: 바깥 테두리만 실선, 안쪽 경계는 아래에서 점선으로 그린다
+                wd = self._eff_border_width(b, modified)
+                for (p1, p2), inner in (((r.tl, r.tr), rb[1] > 0.001), ((r.bl, r.br), rb[3] < 0.999),
+                                        ((r.tl, r.bl), rb[0] > 0.001), ((r.tr, r.br), rb[2] < 0.999)):
+                    if not inner:
+                        page.draw_line(p1, p2, color=col, width=wd)
+                continue
             page.draw_rect(r, color=col, fill=None, width=self._eff_border_width(b, modified))
 
         for b in blocks:
@@ -3947,10 +3970,11 @@ class ScheduleEditor:
             r = fitz.Rect(b["rect"])
             col = tuple(b.get("border_color") or DEFAULT_BORDER_COLOR)
             wid = self._eff_border_width(b, b["id"] in mod_ids)
+            dash = {"dashes": "[2 1.5] 0"} if b.get("split_dash") else {}   # 나눈 경계선: 실선 / 점선
             if rb[1] > 0.001:
-                page.draw_line(fitz.Point(r.x0, r.y0), fitz.Point(r.x1, r.y0), color=col, width=wid)
+                page.draw_line(fitz.Point(r.x0, r.y0), fitz.Point(r.x1, r.y0), color=col, width=wid, **dash)
             if rb[0] > 0.001:
-                page.draw_line(fitz.Point(r.x0, r.y0), fitz.Point(r.x0, r.y1), color=col, width=wid)
+                page.draw_line(fitz.Point(r.x0, r.y0), fitz.Point(r.x0, r.y1), color=col, width=wid, **dash)
 
         self._draw_header_pdf(page, font_name, measure_font)
         out_bytes = doc.tobytes() if for_preview else doc.tobytes(garbage=3, deflate=True)   # 저장본은 압축해서 용량을 줄인다
@@ -4028,6 +4052,21 @@ class ScheduleEditor:
                 o[f"{which}_time_val"] = val
                 o[f"{which}_time_auto"] = True        # 자동 값 (블록 자리가 바뀌면 따라 바뀐다)
         self.on_option_changed(block)
+
+    def set_split_dash(self, block, on=None):
+        """나눈 칸(같은 묶음) 사이 경계선을 실선/점선으로."""
+        gid = block.get("group_id")
+        if gid is None:
+            messagebox.showinfo("나눈 경계선", "나눈 칸이 아닙니다. 칸을 먼저 나눠 주세요.")
+            return
+        group = [b for b in self.blocks if b.get("group_id") == gid]
+        on = (not block.get("split_dash")) if on is None else bool(on)
+        self.push_history()
+        for b in group:
+            b["split_dash"] = on
+        self.page_blocks[self.current_page] = self.blocks
+        self.draw_pdf()
+        self.save_autosave()
 
     def _sync_auto_times(self, block):
         """나누거나 고친 블록: 상단/하단 시간 값을 지금 자리의 분으로 맞춘다.
@@ -4213,7 +4252,8 @@ class ScheduleEditor:
                 cut = {"ratio": round((b["rect"][0] - gx0) / max(gx1 - gx0, 1e-6), 4)}
             cuts.append(cut)
         keep = ("title",)                                 # 나누기 + 프로그램 이름만 (시간·뱃지는 사용자가 따로)
-        style = {"axis": axis, "cuts": cuts, "parts": [{k: copy.deepcopy(b.get(k)) for k in keep if k in b} for b in parts]}
+        style = {"axis": axis, "cuts": cuts, "parts": [{k: copy.deepcopy(b.get(k)) for k in keep if k in b} for b in parts],
+                 "dash": bool(parts[0].get("split_dash")) if len(parts) > 1 else False}
         src = self._text_in_rect((gx0, gy0, gx1, gy1))
         toks = [w for w in src.split() if not re.fullmatch(r"\d{1,2}|UHD|ALL|L|자|수|해|재|\d{1,2}세?", w)]
         style["keyword"] = " ".join(toks).strip() or (parts[0].get("title") or "")
@@ -4341,6 +4381,8 @@ class ScheduleEditor:
                 nb["rect"] = nb["orig_rect"] = r
                 nb["group_id"] = gid
             nb["title"] = sp.get("title", "")             # 프로그램 이름만 넣는다 (시간·뱃지 등은 사용자가 따로)
+            if len(parts) > 1:
+                nb["split_dash"] = bool(style.get("dash"))    # 나눈 경계선 실선/점선도 스타일대로
             new.append(nb)
         i = self.blocks.index(block)
         self.blocks[i:i + 1] = new
