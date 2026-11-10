@@ -45,7 +45,7 @@ def schedule_badge_dir():
         return os.path.join(home, "데이터", "편성표", "badges")
     return os.path.abspath("badges")
 
-APP_VERSION = "3.19.6"
+APP_VERSION = "3.19.7"
 
 
 def _detect_profile():
@@ -146,6 +146,67 @@ def update_tv_preview_status(key, **fields):
         os.replace(path + ".tmp", path)
     except Exception:
         pass
+
+
+
+def flow_layout(frame, pad_x=8, pad_y=4):
+    """툴바의 버튼들을 창 너비에 맞게 자동으로 줄 바꿈 (넓으면 1줄, 좁으면 2줄 이상).
+    버튼 크기·글씨는 그대로, 순서도 그대로 (오른쪽에 붙여 둔 것은 맨 뒤)."""
+    try:
+        items = [(w, w.pack_info()) for w in frame.pack_slaves()]
+    except Exception:
+        return
+    order = [it for it in items if it[1].get("side") != "right"] + [it for it in items if it[1].get("side") == "right"]
+
+    def _pad(v):
+        try:
+            if isinstance(v, (tuple, list)):
+                return int(float(v[0])), int(float(v[-1]))
+            p = [int(float(x)) for x in str(v).split()]
+            return (p[0], p[-1]) if p else (0, 0)
+        except Exception:
+            return 0, 0
+    lay = []
+    for w, info in order:
+        w.pack_forget()
+        lay.append((w, _pad(info.get("padx", 0)), info.get("fill") in ("y", "both")))
+    frame._flow_last_w = None
+
+    def reflow(_e=None):
+        W = frame.winfo_width()
+        if W <= 1:
+            W = frame.winfo_toplevel().winfo_width()
+        if W <= 1 or W == frame._flow_last_w:
+            return
+        frame._flow_last_w = W
+        x, y, rowh, rows = pad_x, pad_y, 0, [[]]
+        for w, (pl, pr), fill_y in lay:
+            if not w.winfo_exists():
+                continue
+            ww = w.winfo_reqwidth() + pl + pr
+            hh = w.winfo_reqheight() + 4
+            if x > pad_x and x + ww > W - pad_x:            # 자리가 모자라면 다음 줄로
+                x, y, rowh = pad_x, y + rowh, 0
+                rows.append([])
+            rows[-1].append((w, x + pl, y, fill_y))
+            x += ww
+            rowh = max(rowh, hh)
+        top = pad_y
+        for row in rows:
+            if not row:
+                continue
+            rh = max(w_.winfo_reqheight() for w_, *_ in row) + 4
+            for w_, xx, _yy, fill_y in row:
+                if fill_y:
+                    w_.place(x=xx, y=top + 2, height=rh - 4)
+                else:
+                    w_.place(x=xx, y=top + (rh - w_.winfo_reqheight()) // 2)
+            top += rh
+        frame.configure(height=top + pad_y)
+
+    frame.bind("<Configure>", reflow)
+    frame.after_idle(reflow)
+    frame.after(150, lambda: (setattr(frame, "_flow_last_w", None), reflow()))
 
 
 def schedule_settings_path():
@@ -1759,12 +1820,20 @@ class ScheduleEditor:
             widget.destroy()
 
     def _build_default_toolbar(self):
+        self._build_default_toolbar_items()
+        flow_layout(self.toolbar)                     # 창이 좁으면 버튼이 둘째 줄로
+
+    def _build_default_toolbar_items(self):
         self.clear_toolbar()
         ttk.Button(self.toolbar, text="PDF 열기", command=self.open_pdf).pack(side="left", padx=3)
         ttk.Button(self.toolbar, text="⚙️ 설정 (폰트/뱃지)", command=self.open_settings_window).pack(side="left", padx=3)
         ttk.Label(self.toolbar, text=f"  [v{APP_VERSION}] 상단의 'PDF 열기'를 눌러 시작하세요.").pack(side="left", padx=12)
 
     def _build_pdf_toolbar(self):
+        self._build_pdf_toolbar_items()
+        flow_layout(self.toolbar)                     # 창이 좁으면 버튼이 둘째 줄로
+
+    def _build_pdf_toolbar_items(self):
         self.clear_toolbar()
         ttk.Button(self.toolbar, text="PDF 열기", command=self.open_pdf).pack(side="left", padx=3)
         ttk.Button(self.toolbar, text="⚙️ 설정 (폰트/뱃지)", command=self.open_settings_window).pack(side="left", padx=3)
