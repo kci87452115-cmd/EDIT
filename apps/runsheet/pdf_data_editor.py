@@ -25,7 +25,7 @@ except ImportError:
     except ImportError:
         fitz = None
 
-APP_VERSION = "2.9.4"
+APP_VERSION = "2.9.5"
 APP_TITLE = f"운행표 데이터 편집기 v{APP_VERSION}"
 APP_MUTEX = "RunSheetEditor_Running"      # 설치 프로그램이 '실행 중'을 알아보는 이름 (setup.iss 의 AppMutex 와 같아야 함)
 RUN_BY_LAUNCHER = bool(os.environ.get("RADIO_LAUNCHER"))   # 편집 프로그램 런처로 실행됨 -> 업데이트는 런처가 한다
@@ -1602,6 +1602,8 @@ class DataEditor:
         self.update_dir = UPDATE_DIR_DEFAULT
         self.update_check = True     # 켤 때 새 버전 확인
         self.page_check_on = True     # 다음 장으로 넘어갈 때 시간 초과·부족 행 알림
+        self.preview_view = None      # 미리보기 마지막 보기: 'fit' / 'width' / 배율(숫자), None 이면 편집 화면 배율
+        self.preview_geom = ""
         self.preset_detached = False  # '미리 만든 데이터'를 따로 창으로 띄워 둠
         self.preset_win_geom = ""
         self.preset_win_top = False
@@ -1698,6 +1700,9 @@ class DataEditor:
             self.view_on = bool(data.get("view_on", False))
             self.preset_detached = bool(data.get("preset_detached", False))
             self.page_check_on = bool(data.get("page_check_on", True))
+            pv_ = data.get("preview_view")
+            self.preview_view = pv_ if pv_ in ("fit", "width") or isinstance(pv_, (int, float)) else None
+            self.preview_geom = str(data.get("preview_geom", "") or "")
             self.preset_win_geom = str(data.get("preset_win_geom", "") or "")
             self.preset_win_top = bool(data.get("preset_win_top", False))
             try:
@@ -1713,7 +1718,7 @@ class DataEditor:
                 json.dump({"font_path": self.font_path, "db_path": self.db_path, "sort_key": self.sort_key, "sort_desc": self.sort_desc, "preview_before_save": self.preview_var.get(), "highlight_output": self.highlight_var.get(), "show_today": self.show_today.get(), "preset_cols": self.preset_cols, "mark_opts": self.mark_opts,
                            "backup_dir": self.backup_dir, "backup_keep": self.backup_keep, "backup_on": self.backup_on,
                            "update_dir": self.update_dir, "update_check": self.update_check, "view_on": self.view_on, "view_port": self.view_port,
-                           "preset_detached": self.preset_detached, "page_check_on": self.page_check_on, "preset_win_geom": self.preset_win_geom, "preset_win_top": self.preset_win_top,
+                           "preset_detached": self.preset_detached, "page_check_on": self.page_check_on, "preview_view": self.preview_view, "preview_geom": self.preview_geom, "preset_win_geom": self.preset_win_geom, "preset_win_top": self.preset_win_top,
                            "app_version": APP_VERSION}, f, ensure_ascii=False, indent=1)
         except Exception:
             pass
@@ -5517,7 +5522,11 @@ Start-Process (Join-Path $prog 'RunSheetEditor.exe') -WorkingDirectory $prog
             return None
         win = tk.Toplevel(self.root)
         win.title("👁 저장 전 미리보기")
-        win.geometry("980x960")
+        try:
+            win.geometry(self.preview_geom or "980x960")       # 마지막 창 크기·위치
+        except Exception:
+            win.geometry("980x960")
+        win.bind("<Configure>", lambda e: e.widget is win and setattr(self, "preview_geom", win.geometry()), add="+")
         win.transient(self.root)
         win.grab_set()
         st = {"page": min(self.cur, pdoc.page_count - 1), "zoom": self.zoom, "photo": None, "ok": False, "data": data, "doc": pdoc}
@@ -5553,8 +5562,8 @@ Start-Process (Join-Path $prog 'RunSheetEditor.exe') -WorkingDirectory $prog
         zl = ttk.Label(nav, text="", width=6, anchor="center", font=(self.ui_font_family, 9, "bold"))
         zl.pack(side="left")
         ttk.Button(nav, text="🔍+", width=4, command=lambda: set_zoom(st["zoom"] * 1.25)).pack(side="left")
-        ttk.Button(nav, text="⤢ 전체 보기", command=lambda: set_zoom(fit_zoom())).pack(side="left", padx=(10, 2))
-        ttk.Button(nav, text="↔ 너비 맞춤", command=lambda: set_zoom(fit_zoom(True))).pack(side="left", padx=2)
+        ttk.Button(nav, text="⤢ 전체 보기", command=lambda: set_zoom(fit_zoom(), "fit")).pack(side="left", padx=(10, 2))
+        ttk.Button(nav, text="↔ 너비 맞춤", command=lambda: set_zoom(fit_zoom(True), "width")).pack(side="left", padx=2)
         ttk.Button(nav, text="100%", command=lambda: set_zoom(1.0)).pack(side="left", padx=2)
         ttk.Label(nav, text="Ctrl + 휠: 확대/축소", foreground="#64748b", font=(self.ui_font_family, 8)).pack(side="right")
 
@@ -5619,8 +5628,9 @@ Start-Process (Join-Path $prog 'RunSheetEditor.exe') -WorkingDirectory $prog
             zw = cw / pg.rect.width
             return zw if width_only else min(zw, ch / pg.rect.height)
 
-        def set_zoom(z):
+        def set_zoom(z, mode=None):
             z = max(0.25, min(6.0, z))               # 25% ~ 600% (100% = PDF 실제 크기)
+            self.preview_view = mode or round(z, 3)  # 마지막 보기 기억
             if abs(z - st["zoom"]) < 1e-3:
                 return
             fx, fy = cv.xview()[0], cv.yview()[0]
@@ -5642,7 +5652,7 @@ Start-Process (Join-Path $prog 'RunSheetEditor.exe') -WorkingDirectory $prog
         win.bind("<Control-plus>", lambda e: set_zoom(st["zoom"] * 1.25))
         win.bind("<Control-equal>", lambda e: set_zoom(st["zoom"] * 1.25))
         win.bind("<Control-minus>", lambda e: set_zoom(st["zoom"] / 1.25))
-        win.bind("<Control-0>", lambda e: set_zoom(fit_zoom()))
+        win.bind("<Control-0>", lambda e: set_zoom(fit_zoom(), "fit"))
 
         cv.bind("<MouseWheel>", wheel)
         cv.bind("<Button-4>", wheel)
@@ -5658,7 +5668,15 @@ Start-Process (Join-Path $prog 'RunSheetEditor.exe') -WorkingDirectory $prog
         ttk.Button(bf, text="🖨 출력", command=lambda: self.print_pdf_data(st["data"], win)).pack(side="left", padx=6)
         ttk.Button(bf, text="돌아가서 수정", command=win.destroy).pack(side="left", padx=6)
         draw()
+        pv0 = self.preview_view                       # 마지막에 보던 방식으로
+        if pv0 == "fit":
+            win.after(60, lambda: set_zoom(fit_zoom(), "fit"))
+        elif pv0 == "width":
+            win.after(60, lambda: set_zoom(fit_zoom(True), "width"))
+        elif isinstance(pv0, (int, float)):
+            win.after(60, lambda: set_zoom(float(pv0)))
         win.wait_window(win)
+        self._save_settings()
         try:
             st["doc"].close()
         except Exception:

@@ -45,7 +45,7 @@ def schedule_badge_dir():
         return os.path.join(home, "데이터", "편성표", "badges")
     return os.path.abspath("badges")
 
-APP_VERSION = "3.20.0"
+APP_VERSION = "3.20.1"
 
 
 def _detect_profile():
@@ -1154,6 +1154,8 @@ class ScheduleEditor:
         self.unmod_shade_color = "#60a5fa"     # 수정 안 한 칸 음영 색
         self.pick_shade_last = "#fde047"       # 고른 칸 음영: 마지막에 쓴 색
         self.shade_color_counts = {}           # 칸 음영 색별로 쓴 횟수 -> '자주 쓴 색' 줄
+        self.preview_view = "fit"              # 미리보기 마지막 보기: 'fit' / 'width' / 배율(숫자)
+        self.preview_geom = ""                 # 미리보기 창 크기·위치
         self.foot_history = ["R/L"]            # 덧붙임에 썼던 글자 (최근 것이 앞)
         self.pick_shade_in_export = True       # 고른 칸 음영을 저장 PDF에도 넣기
         self.mod_border_width = None           # 수정 블록 공통 테두리 두께(pt), None = 원본 유지
@@ -1466,6 +1468,8 @@ class ScheduleEditor:
                 "unmod_shade_color": self.unmod_shade_color,
                 "pick_shade_last": self.pick_shade_last,
                 "shade_color_counts": self.shade_color_counts,
+                "preview_view": self.preview_view,
+                "preview_geom": self.preview_geom,
                 "foot_history": self.foot_history,
                 "pick_shade_in_export": self.pick_shade_in_export,
                 "mod_border_width": self.mod_border_width,
@@ -1723,6 +1727,10 @@ class ScheduleEditor:
                     self.mod_shade_enabled = data["mod_shade_enabled"]
                 if isinstance(data.get("mod_shade_in_export"), bool):
                     self.mod_shade_in_export = data["mod_shade_in_export"]
+                if data.get("preview_view") in ("fit", "width") or isinstance(data.get("preview_view"), (int, float)):
+                    self.preview_view = data["preview_view"]
+                if isinstance(data.get("preview_geom"), str):
+                    self.preview_geom = data["preview_geom"]
                 if isinstance(data.get("foot_history"), list):
                     self.foot_history = [str(x)[:40] for x in data["foot_history"] if str(x).strip()][:12] or ["R/L"]
                 if isinstance(data.get("shade_color_counts"), dict):
@@ -4305,7 +4313,15 @@ class ScheduleEditor:
             return
         preview_win = tk.Toplevel(self.root)
         preview_win.title("🔍 PDF 출력 최종 미리보기")
-        preview_win.geometry("900x800")
+        try:
+            preview_win.geometry(self.preview_geom or "900x800")     # 마지막 창 크기·위치
+        except Exception:
+            preview_win.geometry("900x800")
+
+        def _remember_geom(e=None):
+            if e is None or e.widget is preview_win:
+                self.preview_geom = preview_win.geometry()
+        preview_win.bind("<Configure>", _remember_geom, add="+")
         
         lbl = ttk.Label(preview_win, text="최종 PDF 렌더링 생성 중...", font=(self.ui_font_family, 11))
         lbl.pack(expand=True)
@@ -4338,8 +4354,8 @@ class ScheduleEditor:
             ttk.Button(bar, text="🔍-", width=4, command=lambda: set_zoom(st["zoom"] / 1.25)).pack(side="left")
             zlbl.pack(side="left", padx=2)
             ttk.Button(bar, text="🔍+", width=4, command=lambda: set_zoom(st["zoom"] * 1.25)).pack(side="left")
-            ttk.Button(bar, text="⤢ 전체 보기", command=lambda: set_zoom(fit_zoom())).pack(side="left", padx=(10, 2))
-            ttk.Button(bar, text="↔ 너비 맞춤", command=lambda: set_zoom(fit_zoom(width_only=True))).pack(side="left", padx=2)
+            ttk.Button(bar, text="⤢ 전체 보기", command=lambda: set_zoom(fit_zoom(), "fit")).pack(side="left", padx=(10, 2))
+            ttk.Button(bar, text="↔ 너비 맞춤", command=lambda: set_zoom(fit_zoom(width_only=True), "width")).pack(side="left", padx=2)
             ttk.Button(bar, text="100%", command=lambda: set_zoom(1.0)).pack(side="left", padx=2)
             ttk.Label(bar, text="Ctrl + 휠: 확대/축소", foreground="#64748b", font=(self.ui_font_family, 8)).pack(side="right")
 
@@ -4360,8 +4376,9 @@ class ScheduleEditor:
                 zw = cw / page.rect.width
                 return zw if width_only else min(zw, ch / page.rect.height)
 
-            def set_zoom(z):
+            def set_zoom(z, mode=None):
                 z = max(0.25, min(6.0, z))           # 25% ~ 600% (100% = PDF 실제 크기)
+                self.preview_view = mode or round(z, 3)     # 마지막 보기 기억 (전체 보기·너비 맞춤은 그 방식으로)
                 if st["zoom"] is not None and abs(z - st["zoom"]) < 1e-3:
                     return
                 fx = c.xview()[0] if st["zoom"] else 0
@@ -4399,8 +4416,18 @@ class ScheduleEditor:
             win.bind("<Control-plus>", lambda e: set_zoom(st["zoom"] * 1.25))
             win.bind("<Control-equal>", lambda e: set_zoom(st["zoom"] * 1.25))
             win.bind("<Control-minus>", lambda e: set_zoom(st["zoom"] / 1.25))
-            win.bind("<Control-0>", lambda e: set_zoom(fit_zoom()))
-            win.after(50, lambda: set_zoom(fit_zoom()))   # 처음엔 한 장 전체가 보이게
+            win.bind("<Control-0>", lambda e: set_zoom(fit_zoom(), "fit"))
+
+            def first_view():                        # 처음엔 마지막에 보던 방식으로 (기본: 한 장 전체)
+                pv_ = self.preview_view
+                if pv_ == "width":
+                    set_zoom(fit_zoom(width_only=True), "width")
+                elif isinstance(pv_, (int, float)):
+                    set_zoom(float(pv_))
+                else:
+                    set_zoom(fit_zoom(), "fit")
+            win.after(50, first_view)
+            win.bind("<Destroy>", lambda e: e.widget is win and self.save_autosave(), add="+")
 
         def show_err(win, err_msg):
             messagebox.showerror("미리보기 실패", err_msg, parent=win)
