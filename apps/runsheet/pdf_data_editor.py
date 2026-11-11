@@ -25,7 +25,7 @@ except ImportError:
     except ImportError:
         fitz = None
 
-APP_VERSION = "2.10.1"
+APP_VERSION = "2.11.0"
 APP_TITLE = f"운행표 데이터 편집기 v{APP_VERSION}"
 APP_MUTEX = "RunSheetEditor_Running"      # 설치 프로그램이 '실행 중'을 알아보는 이름 (setup.iss 의 AppMutex 와 같아야 함)
 RUN_BY_LAUNCHER = bool(os.environ.get("RADIO_LAUNCHER"))   # 편집 프로그램 런처로 실행됨 -> 업데이트는 런처가 한다
@@ -808,6 +808,23 @@ class Store:
                             f"FROM records{where} ORDER BY air_date,media,time,line,cell", par)
             return [tuple(r) for r in cur.fetchall()]
 
+    # --- 웹 달력용
+    def calendar_counts(self, date_from, date_to, keyword="", grp="", media="", target="name"):
+        """방송일별 [건수, 총 초수, AM 건수, FM 건수]."""
+        where, par = self._where(date_from, date_to, keyword, grp, media, target)
+        with self._conn() as c:
+            cur = c.execute("SELECT air_date, COUNT(*), SUM(seconds), SUM(CASE WHEN media IN ('AM','') THEN 1 ELSE 0 END), "
+                            f"SUM(CASE WHEN media='FM' THEN 1 ELSE 0 END) FROM records{where} GROUP BY air_date", par)
+            return {r[0]: [r[1], r[2] or 0, r[3] or 0, r[4] or 0] for r in cur.fetchall()}
+
+    def day_by_name(self, air_date, keyword="", grp="", media="", target="name"):
+        """그날 광고주별 (광고주, 그룹, 횟수, 총 초수). 횟수가 많은 순."""
+        where, par = self._where(air_date, air_date, keyword, grp, media, target)
+        with self._conn() as c:
+            cur = c.execute(f"SELECT name, GROUP_CONCAT(DISTINCT NULLIF(grp,'')), COUNT(*), SUM(seconds) FROM records{where} "
+                            "GROUP BY name ORDER BY COUNT(*) DESC, name", par)
+            return [(r[0], r[1] or "", r[2], r[3] or 0) for r in cur.fetchall()]
+
     # --- 일정표용
     def schedule_records(self, name, date_from, date_to, seconds=None):
         sec_sql, par = ("", [name, date_from, date_to]) if seconds is None else (" AND seconds=?", [name, date_from, date_to, int(seconds)])
@@ -1172,6 +1189,20 @@ td.n,th.n{text-align:right}
 .scroll{height:62vh;overflow:auto;border:1px solid #e5e7eb}
 .total{text-align:right;font-weight:bold;margin-top:5px}
 .msg{color:#6b7280;font-size:12px;margin:4px 0}
+.cal{display:grid;grid-template-columns:repeat(7,1fr);gap:4px;margin:6px 0}
+.cal .h{text-align:center;font-weight:bold;color:#374151;padding:3px 0}
+.cal .d{border:1px solid #e5e7eb;border-radius:6px;min-height:68px;padding:4px 6px;cursor:pointer;background:#fff;position:relative}
+.cal .d:hover{border-color:#93c5fd;background:#f8fbff}
+.cal .d.out{background:#f9fafb;color:#c0c4cc;cursor:default}
+.cal .d.today{border:2px solid #1e3a8a}
+.cal .d.sel{background:#dbeafe;border-color:#2563eb}
+.cal .dn{font-weight:bold;font-size:15px} .cal .sun{color:#dc2626} .cal .sat{color:#2563eb}
+.cal .cnt{font-size:20px;font-weight:bold;color:#1e3a8a;text-align:right;margin-top:2px}
+.cal .sub{font-size:11px;color:#6b7280;text-align:right}
+.cal .st{position:absolute;top:5px;right:6px;font-size:11px}
+.dayh{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:10px 0 4px;font-weight:bold;font-size:15px}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:0 10px}
+@media(max-width:900px){.two{grid-template-columns:1fr}}
 </style></head><body>
 <header><b>💰 정산 / 검색</b><span id="who"></span><span>조회 전용 — 이 화면에서는 기록을 바꿀 수 없습니다</span></header>
 <main>
@@ -1183,6 +1214,17 @@ td.n,th.n{text-align:right}
    <label>매체:</label><select id="smedia"><option value="">전체</option><option>AM</option><option>FM</option></select>
    <button class="btn" onclick="run()">조회</button>
    <a class="right" id="scsv" href="#">⬇ CSV 저장</a></div>
+ </div>
+ <div id="fC" style="display:none">
+  <div class="row"><button class="btn lite" onclick="mv(-1)">◀</button><select id="cy"></select><select id="cm"></select><button class="btn lite" onclick="mv(1)">▶</button>
+   <button class="btn lite" onclick="thisMonth()">이번 달</button>
+   <label>매체:</label><select id="cmedia" onchange="cal()"><option value="">전체</option><option>AM</option><option>FM</option></select>
+   <label>광고주:</label><input id="ckw" size="16" placeholder="비우면 전체">
+   <label>그룹:</label><input id="cgrp" list="grps" size="12">
+   <button class="btn" onclick="cal()">조회</button></div>
+  <div class="msg" id="cmsg"></div>
+  <div id="calv"></div>
+  <div id="dayv"></div>
  </div>
  <div id="fQ" style="display:none">
   <div class="row"><label>검색어:</label><input id="kw" size="22">
@@ -1201,8 +1243,8 @@ td.n,th.n{text-align:right}
 </div>
 </main>
 <script>
-const $=id=>document.getElementById(id);let cur='일',info=null;
-const TABS=[['일',' 일 정산 '],['월',' 월 정산 '],['년',' 년 정산 '],['Q',' 검색 / 그룹 검색 '],['P','📄 운행표 미리보기 · 인쇄'],['T','📺 TV 주간 편성표']];
+const $=id=>document.getElementById(id);let cur='C',info=null;const WK='일월화수목금토';
+const TABS=[['C','📅 달력'],['일',' 일 정산 '],['월',' 월 정산 '],['년',' 년 정산 '],['Q',' 검색 / 그룹 검색 '],['P','📄 운행표 미리보기 · 인쇄'],['T','📺 TV 주간 편성표']];
 const pad=n=>String(n).padStart(2,'0');const t0=new Date();const today=t0.getFullYear()+'-'+pad(t0.getMonth()+1)+'-'+pad(t0.getDate());
 const refs={'일':today,'월':today.slice(0,7),'년':today.slice(0,4)},bys={'일':'광고주별','월':'광고주별','년':'광고주별'},meds={'일':'','월':'','년':''};
 const num=v=>Number(v||0).toLocaleString('ko-KR');
@@ -1210,6 +1252,7 @@ const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&g
 function drawTabs(){$('tabs').innerHTML=TABS.map(([k,t])=>'<button class="'+(k===cur?'on':'')+'" onclick="tab(\''+k+'\')">'+esc(t)+'</button>').join('')}
 function keep(){if('일월년'.includes(cur)){refs[cur]=$('kref').value;bys[cur]=$('sby').value;meds[cur]=$('smedia').value}}
 function tab(k){keep();cur=k;drawTabs();const s='일월년'.includes(k);$('fS').style.display=s?'':'none';$('fQ').style.display=k==='Q'?'':'none';
+ $('fC').style.display=k==='C'?'':'none';$('msg').textContent='';document.querySelector('.scroll').style.display=k==='C'?'none':'';
  $('total').textContent='';
  if(s){$('kLbl').textContent={'일':'기준일:','월':'기준월:','년':'기준연도:'}[k];$('kHint').textContent={'일':'(2026-10-30)','월':'(2026-10)','년':'(2026)'}[k];
   $('kref').value=refs[k];$('sby').value=bys[k];$('smedia').value=meds[k]}
@@ -1219,7 +1262,46 @@ function qq(){return new URLSearchParams({kw:$('kw').value.trim(),target:$('targ
 function aggTable(by,rows){let h='<tr><th>'+esc(by.replace('별',''))+'</th><th class=n>건수</th><th class=n>총 초수</th></tr>';
  for(const x of rows)h+='<tr><td>'+esc(x[0]||'(없음)')+'</td><td class=n>'+num(x[1])+'</td><td class=n>'+num(x[2])+'</td></tr>';return h}
 async function get(u){const r=await fetch(u);const d=await r.json();if(d.error)throw new Error(d.error);return d}
-async function run(){if(cur==='P')return previews();if(cur==='T')return tvsheets();
+const cq=()=>({media:$('cmedia').value,kw:$('ckw').value.trim(),grp:$('cgrp').value.trim(),target:'광고주만'});
+let selDay=today;
+function thisMonth(){$('cy').value=today.slice(0,4);$('cm').value=today.slice(5,7);cal()}
+function mv(n){let y=+$('cy').value,m=+$('cm').value+n;if(m<1){m=12;y--}if(m>12){m=1;y++}
+ if(![...$('cy').options].some(o=>o.value==y)){const o=document.createElement('option');o.value=o.textContent=y;$('cy').appendChild(o)}
+ $('cy').value=y;$('cm').value=pad(m);cal()}
+async function cal(){const y=+$('cy').value,m=+$('cm').value,ym=y+'-'+pad(m);$('cmsg').textContent='불러오는 중…';
+ try{const d=await get('api/calendar?'+new URLSearchParams(Object.assign({ym},cq())));
+  const first=new Date(y,m-1,1),last=new Date(y,m,0).getDate();let h='';
+  for(const [i,w] of [...WK].entries())h+='<div class="h '+(i===0?'sun':i===6?'sat':'')+'">'+w+'</div>';
+  for(let i=0;i<first.getDay();i++)h+='<div class="d out"></div>';
+  let mc=0,ms=0;
+  for(let dd=1;dd<=last;dd++){const iso=ym+'-'+pad(dd),x=d.days[iso],wd=(first.getDay()+dd-1)%7;
+   if(x){mc+=x[0];ms+=x[1]}
+   const st=(d.status[iso]||[]).map(s=>'<span title="'+esc(s.media+' '+s.state)+'" style="color:'+(s.state==='수정완료'?'#15803d':'#c2410c')+'">'+(s.state==='수정완료'?'✔':'✏')+esc(s.media)+'</span>').join(' ');
+   h+='<div class="d'+(iso===today?' today':'')+(iso===selDay?' sel':'')+'" onclick="day(\''+iso+'\')"><div class="dn '+(wd===0?'sun':wd===6?'sat':'')+'">'+dd+'</div>'
+    +(st?'<div class="st">'+st+'</div>':'')
+    +(x?'<div class="cnt">'+num(x[0])+'</div><div class="sub">AM '+num(x[2])+' · FM '+num(x[3])+' · '+num(x[1])+'초</div>':'')+'</div>'}
+  $('calv').innerHTML='<div class="cal">'+h+'</div>';
+  $('cmsg').textContent=y+'년 '+m+'월'+($('ckw').value.trim()?' · 「'+$('ckw').value.trim()+'」':'')+' — 건수 '+num(mc)+' · 총 초수 '+num(ms)+'  (날짜를 누르면 그날 내역이 아래에 나옵니다)';
+  if(selDay&&selDay.slice(0,7)===ym)day(selDay,true);else $('dayv').innerHTML=''}
+ catch(e){$('cmsg').textContent='⚠ '+(e instanceof TypeError?'편집기 PC에 연결하지 못했습니다.':e.message)}}
+function shift(iso,n){const d=new Date(iso+'T00:00:00');d.setDate(d.getDate()+n);return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())}
+async function day(iso,keepCal){selDay=iso;
+ if(iso.slice(0,7)!==$('cy').value+'-'+$('cm').value){$('cy').value=iso.slice(0,4);$('cm').value=iso.slice(5,7);if(![...$('cy').options].some(o=>o.value==iso.slice(0,4))){const o=document.createElement('option');o.value=o.textContent=iso.slice(0,4);$('cy').appendChild(o);$('cy').value=iso.slice(0,4)}return cal()}
+ if(!keepCal)document.querySelectorAll('.cal .d').forEach(e=>e.classList.toggle('sel',(e.getAttribute('onclick')||'').includes(iso)));
+ try{const qs=new URLSearchParams(Object.assign({date:iso},cq())).toString();const d=await get('api/day?'+qs);
+  const pv=d.previews.map(x=>x.has_pdf?'<a target="_blank" href="runsheet/'+esc(x.key)+'.pdf">📄 '+esc(x.media)+' 운행표 보기·인쇄</a> <span style="font-size:12px;color:'+(x.state==='수정완료'?'#15803d':'#c2410c')+'">('+esc(x.state)+')</span>':'').join(' &nbsp; ');
+  let h='<div class="dayh"><button class="btn lite" onclick="day(shift(selDay,-1))">◀</button>'+esc(iso)+' ('+WK[new Date(iso+'T00:00:00').getDay()]+') 운행 내역<button class="btn lite" onclick="day(shift(selDay,1))">▶</button>'
+   +'<span style="font-weight:normal;font-size:13px">'+(pv||'<span class="hint">(이 날 운행표 미리보기 없음)</span>')+'</span></div>';
+  h+='<div class="row"><b>광고주별 횟수</b><span class="hint">총 '+d.names.length+'곳 · '+num(d.rows.length)+'건</span><a class="right" href="api/day.csv?part=names&'+qs+'">⬇ CSV 저장</a></div>';
+  h+='<div class="scroll" style="height:auto;max-height:300px"><table><tr><th>광고주</th><th>그룹</th><th class=n>횟수</th><th class=n>총 초수</th></tr>'
+   +d.names.map(x=>'<tr><td>'+esc(x[0])+'</td><td>'+esc(x[1])+'</td><td class=n>'+num(x[2])+'회</td><td class=n>'+num(x[3])+'</td></tr>').join('')+'</table></div>';
+  const half=Math.ceil(d.rows.length/2),tb=rs=>'<table><tr><th>시분초</th><th>매체</th><th>프로그램</th><th>광고주</th><th class=n>초수</th></tr>'
+   +rs.map(x=>'<tr><td>'+esc(x[0])+'</td><td>'+esc(x[1])+'</td><td>'+esc(x[2])+'</td><td>'+esc(x[3])+'</td><td class=n>'+num(x[4])+'</td></tr>').join('')+'</table>';
+  h+='<div class="row" style="margin-top:10px"><b>운행 내역</b><span class="hint">시각 순</span><a class="right" href="api/day.csv?part=rows&'+qs+'">⬇ CSV 저장</a></div>';
+  h+=d.rows.length?'<div class="two"><div>'+tb(d.rows.slice(0,half))+'</div><div>'+tb(d.rows.slice(half))+'</div></div>':'<div class="hint">이 날 기록이 없습니다.</div>';
+  $('dayv').innerHTML=h;if(!keepCal)$('dayv').scrollIntoView({behavior:'smooth',block:'start'})}
+ catch(e){$('dayv').innerHTML='<div class="msg">⚠ '+esc(e instanceof TypeError?'편집기 PC에 연결하지 못했습니다.':e.message)+'</div>'}}
+async function run(){if(cur==='C')return cal();if(cur==='P')return previews();if(cur==='T')return tvsheets();
  $('msg').textContent='불러오는 중…';
  try{if(cur==='Q'){$('qcsv').href='api/search.csv?'+qq();const d=await get('api/search?'+qq());
    if(d.mode==='detail'){let h='<tr><th>방송일</th><th>매체</th><th>시분초</th><th>프로그램</th><th>칸</th><th>광고주</th><th class=n>초수</th><th>그룹</th></tr>';
@@ -1250,7 +1332,6 @@ async function tvsheets(){$('msg').textContent='TV 편성표 PC를 찾는 중…
    :'TV 편성표 PC를 찾지 못했습니다. TV 편집기 ⚙ 설정에서 「다른 PC에서 보기」를 켜 주세요.')
   +(bad.length?' ⚠ 연결 안 됨: '+esc(bad.join(', ')):'')+' <a href="#" onclick="tvManual();return false">주소 직접 넣기</a>'}
 setInterval(()=>{if(cur==='T'&&!document.hidden)tvsheets()},30000);
-const WK='일월화수목금토';
 function dlabel(s){const d=new Date(s+'T00:00:00');return isNaN(d)?s:(s.slice(5).replace('-','/')+'('+WK[d.getDay()]+')')}
 async function previews(){$('msg').textContent='불러오는 중…';
  try{const d=await (await fetch('api/runsheets')).json();
@@ -1273,7 +1354,11 @@ const opt=(sel,list)=>{for(const t of list){const o=document.createElement('opti
   $('target').value='광고주만';$('sby').value='광고주별';}catch(e){}
  $('kw').addEventListener('keydown',e=>{if(e.key==='Enter')run()});
  $('kref').addEventListener('keydown',e=>{if(e.key==='Enter')run()});
- tab('일')})();
+ $('ckw').addEventListener('keydown',e=>{if(e.key==='Enter')cal()});$('cgrp').addEventListener('keydown',e=>{if(e.key==='Enter')cal()});
+ const Y=+today.slice(0,4);for(let y=Y-3;y<=Y+1;y++){const o=document.createElement('option');o.value=o.textContent=y;$('cy').appendChild(o)}
+ for(let m=1;m<=12;m++){const o=document.createElement('option');o.value=pad(m);o.textContent=m+'월';$('cm').appendChild(o)}
+ $('cy').onchange=$('cm').onchange=()=>cal();$('cy').value=Y;$('cm').value=today.slice(5,7);
+ tab('C')})();
 </script></body></html>
 """
 
@@ -1401,6 +1486,38 @@ class ViewServer:
                         return self._json({"app": "runsheet-view", "host": owner.host_kind,
                                            "name": computer_name(), "version": APP_VERSION, "groups": store.distinct_groups(),
                                            "by": list(BY_OPTIONS), "targets": list(SEARCH_TARGETS)})
+                    if route == "/api/calendar":                       # 📅 달력: 한 달의 날짜별 건수
+                        ym = p.get("ym", "")
+                        if not re.fullmatch(r"\d{4}-\d{2}", ym):
+                            return self._json({"error": "연-월을 확인해 주세요."}, 400)
+                        media = p.get("media", "") if p.get("media", "") in ("", "AM", "FM") else ""
+                        kw, grp = p.get("kw", "").strip()[:100], p.get("grp", "").strip()[:100]
+                        target = SEARCH_TARGETS.get(p.get("target", ""), "name")
+                        days = store.calendar_counts(ym + "-01", ym + "-31", kw, grp, media, target)
+                        status = {}
+                        for x in list_previews():
+                            if x["air_date"][:7] == ym:
+                                status.setdefault(x["air_date"], []).append({"media": x["media"], "key": x["key"], "has_pdf": x["has_pdf"],
+                                                                             "state": "편집중" if x["dirty"] or x["state"] != "수정완료" else "수정완료"})
+                        return self._json({"days": days, "status": status})
+                    if route in ("/api/day", "/api/day.csv"):         # 📅 달력: 날짜를 누르면 나오는 그날 내역
+                        day = p.get("date", "")
+                        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+                            return self._json({"error": "날짜를 확인해 주세요."}, 400)
+                        media = p.get("media", "") if p.get("media", "") in ("", "AM", "FM") else ""
+                        kw, grp = p.get("kw", "").strip()[:100], p.get("grp", "").strip()[:100]
+                        target = SEARCH_TARGETS.get(p.get("target", ""), "name")
+                        agg = store.day_by_name(day, kw, grp, media, target)
+                        rows = sorted(((t, m, pg, n, sec) for a, m, t, pg, c_, n, sec, pr, g in store.detail(day, day, kw, grp, media=media, target=target)),
+                                      key=lambda r: (r[0], r[1]))
+                        if route == "/api/day.csv":
+                            if p.get("part") == "names":
+                                return self._csv(["광고주", "그룹", "횟수", "총 초수"], agg, f"{day}_광고주별횟수.csv")
+                            return self._csv(["시분초", "매체", "프로그램", "광고주", "초수"], rows, f"{day}_운행내역.csv")
+                        pv = [{"media": x["media"], "key": x["key"], "has_pdf": x["has_pdf"],
+                               "state": "편집중" if x["dirty"] or x["state"] != "수정완료" else "수정완료"}
+                              for x in list_previews() if x["air_date"] == day]
+                        return self._json({"names": agg, "rows": rows, "previews": pv})
                     if route in ("/api/settle", "/api/settle.csv"):      # 편집기 「일/월/년 정산」 탭과 같은 조회
                         kind = p.get("kind", "")
                         if kind not in ("일", "월", "년"):
