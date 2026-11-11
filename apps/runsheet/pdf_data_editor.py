@@ -25,7 +25,7 @@ except ImportError:
     except ImportError:
         fitz = None
 
-APP_VERSION = "2.10.0"
+APP_VERSION = "2.10.1"
 APP_TITLE = f"운행표 데이터 편집기 v{APP_VERSION}"
 APP_MUTEX = "RunSheetEditor_Running"      # 설치 프로그램이 '실행 중'을 알아보는 이름 (setup.iss 의 AppMutex 와 같아야 함)
 RUN_BY_LAUNCHER = bool(os.environ.get("RADIO_LAUNCHER"))   # 편집 프로그램 런처로 실행됨 -> 업데이트는 런처가 한다
@@ -3275,6 +3275,24 @@ Start-Process (Join-Path $prog 'RunSheetEditor.exe') -WorkingDirectory $prog
             lx, ly = self.d2c(lb["x0"], lb["yc"])
             c.create_text(lx, ly, text=lb["text"], anchor="w", font=(self.ui_font_family, -max(4, int(round(lb["fs"] * lb["xs"] * z * 1.05)))), fill="#1d4ed8")
         if self.show_caps.get():
+            seen_link = set()
+            for row in self.rows.get(self.cur, []):        # Spot·캠페인 묶음: 오른쪽에 합산 '합 판매/재원' (화면에만)
+                lk = self._link_key(row)
+                if not lk or lk in seen_link:
+                    continue
+                seen_link.add(lk)
+                grp = self.linked_rows(row)
+                chk = self.row_check(row) if len(grp) > 1 else None
+                if not chk:
+                    continue
+                col = self.CAP_COLORS[self.cap_state(row)]
+                ys = [r["lines"][0]["cy"] for r in grp]
+                a, b = self.d2c(AMOUNT_X1 - 1, min(ys) - CELL_HALF_H + 1)
+                cc, d = self.d2c(AMOUNT_X1 + 1, max(ys) + CELL_HALF_H - 1)
+                c.create_line(a, b, a, d, fill=col, width=max(2, round(2 * z)))
+                tx, ty = self.d2c(AMOUNT_X1 + 3, (min(ys) + max(ys)) / 2)
+                c.create_text(tx, ty, text=f"합 {chk[3]}/{chk[1]}", anchor="w", fill=col,
+                              font=(self.ui_font_family, -max(6, int(round(7 * z))), "bold"))
             for row in self.rows.get(self.cur, []):
                 if not self.row_is_custom(row):
                     continue
@@ -3530,7 +3548,11 @@ Start-Process (Join-Path $prog 'RunSheetEditor.exe') -WorkingDirectory $prog
         extra = ""
         tag = " (설정)" if any(self.row_is_custom(r) for r in self.linked_rows(row)) else ""
         if len(self.linked_rows(row)) > 1:
-            tag += "  [" + " + ".join(r["program"] for r in self.linked_rows(row)) + " 합산]"
+            parts = []
+            for r in self.linked_rows(row):
+                am = self.row_amount(r)
+                parts.append(f"{r['program']} {am[0]}/{am[1]}" if am else r["program"])
+            tag += "  [" + " + ".join(parts) + " 합산]"
         if chk:
             sold, cap, added, total = chk
             rt = self.remain_text(cap, total, bool(tag))
@@ -3576,13 +3598,13 @@ Start-Process (Join-Path $prog 'RunSheetEditor.exe') -WorkingDirectory $prog
     def row_check(self, row, extra_key=None, extra_sec=0):
         """(원본 판매, 재원, 추가한 초, 합계). 재원을 못 읽은 행은 None.
         extra_key 칸의 기존 입력은 빼고 extra_sec 를 더해 '넣으면 어떻게 되는지'를 미리 계산할 수 있다.
-        **59 Spot 과 **59캠페인은 한 자리로 보고 판매·추가 초를 합치고, 재원은 둘 중 큰 것을 쓴다."""
+        같은 시각의 Spot 과 캠페인(예: Spot 1659 · 1659캠페인)은 한 자리로 보고 판매·재원·추가 초를 모두 합친다."""
         group = self.linked_rows(row)
         amts = [a for a in (self.row_amount(r) for r in group) if a]
         if not amts:
             return None
         sold = sum(a[0] for a in amts)
-        cap = max(a[1] for a in amts)
+        cap = sum(a[1] for a in amts)          # 두 행의 재원 총량을 합산 (예: 80 + 70 = 150)
         rks = {(r["page"], r["time"], r["program"]) for r in group}
         added = sum(e["seconds"] for k, e in self.entries.items() if k[:3] in rks and k != extra_key) + extra_sec
         return sold, cap, added, sold + added
