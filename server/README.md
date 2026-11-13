@@ -27,8 +27,10 @@ bash ~/edit/server/install.sh
 - 상태 보기: `journalctl -u edit-mirror -f`
 - 데이터 위치: `~/edit-mirror/` (radio / tv / state.json)
 
-## 사내망 알림이 막힌 경우
-`~/edit-mirror/config.json` 에 편집기 주소를 직접 적습니다.
+## 공유기 안쪽에 있거나 사내망 알림이 막힌 경우
+알림(UDP)은 공유기를 넘지 못합니다. `~/edit-mirror/config.json` 에 편집기 주소를 직접 적고 `sudo systemctl restart edit-mirror`.
 ```json
-{"radio": ["192.168.0.50:8080"], "tv": ["192.168.0.60:8081"]}
+{"radio": ["10.10.5.31:8080"], "tv": ["10.10.5.42:8081"], "public_host": "10.10.5.20"}
 ```
+- `public_host`: 사무실 PC가 녹음 PC 웹에 들어오는 주소 (공유기의 회사망 쪽 주소). 운행표 화면의 'TV 주간 편성표' 탭에 씁니다.
+- 공유기에서 녹음 PC에 **DHCP 고정 할당** + **포트 포워딩 80 → 녹음 PC:80** 을 해 두세요.
