@@ -472,7 +472,8 @@ function go(p,src,title){
  if(p==='home'){$('frame').style.display='none';$('home').style.display='';$('newwin').style.display='none';home()}
  else{$('home').style.display='none';const f=$('frame');f.style.display='block';if(f.getAttribute('src')!==url)f.src=url;
   $('newwin').href=url;$('newwin').style.display=''}
- if(!src){try{localStorage.setItem('hub_page',p)}catch(e){}history.replaceState(null,'','#'+p)}
+ if(!src){try{localStorage.setItem('hub_page',p)}catch(e){}}
+ if(location.hash||location.search)history.replaceState(null,'',location.pathname);   // 주소창에는 기본 주소만
  $('side').classList.remove('open');
 }
 document.querySelectorAll('.nav').forEach(a=>a.onclick=()=>go(a.dataset.p));
