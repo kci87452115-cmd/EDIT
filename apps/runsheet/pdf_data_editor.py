@@ -25,7 +25,7 @@ except ImportError:
     except ImportError:
         fitz = None
 
-APP_VERSION = "2.11.0"
+APP_VERSION = "2.12.0"
 APP_TITLE = f"운행표 데이터 편집기 v{APP_VERSION}"
 APP_MUTEX = "RunSheetEditor_Running"      # 설치 프로그램이 '실행 중'을 알아보는 이름 (setup.iss 의 AppMutex 와 같아야 함)
 RUN_BY_LAUNCHER = bool(os.environ.get("RADIO_LAUNCHER"))   # 편집 프로그램 런처로 실행됨 -> 업데이트는 런처가 한다
@@ -1163,6 +1163,31 @@ def computer_name():
     return os.environ.get("COMPUTERNAME") or socket.gethostname() or "편집기"
 
 
+def quote_hdr(s):
+    """HTTP 머리글에 한글을 넣을 수 있게 %XX 로 바꾼다."""
+    from urllib.parse import quote
+    return quote(str(s or ""), safe="")
+
+
+# 사내망에서 서로 찾기 (런처의 Discovery 와 같은 약속: UDP 50808, {"app": "edit-view", ...})
+#   조회 페이지를 연 편집기/런처가 '여기 운행표 조회 있음'을 알리면 녹음 PC 서버(사본)가 찾아와 데이터를 모아 간다.
+DISCOVERY_PORT = 50808
+
+
+def announce_view(kind, port):
+    import socket
+    msg = json.dumps({"app": "edit-view", "kind": kind, "port": int(port), "name": computer_name()}).encode("utf-8")
+    try:
+        sk = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            sk.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            sk.sendto(msg, ("255.255.255.255", DISCOVERY_PORT))
+        finally:
+            sk.close()
+    except Exception:
+        pass
+
+
 _VIEW_HTML = r"""<!DOCTYPE html>
 <html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>💰 정산 / 검색 (조회 전용)</title>
@@ -1393,10 +1418,11 @@ class ViewServer:
     """읽기 전용 조회 서버. start() 로 켜고 stop() 으로 끈다.
     같은 포트를 런처(또는 편집기)가 이미 열어 두었으면 그것을 쓴다 (external)."""
 
-    def __init__(self, get_store, host_kind="편집기", peers_fn=None):
+    def __init__(self, get_store, host_kind="편집기", peers_fn=None, announce=True):
         self.get_store = get_store
         self.host_kind = host_kind
         self.peers_fn = peers_fn          # 런처가 사내망에서 찾은 TV 편성표 조회 PC 목록
+        self.announce = announce          # 사내망에 '운행표 조회 있음' 알리기 (녹음 PC 서버의 사본은 알리지 않는다)
         self.httpd = None
         self.port = None
         self.error = ""
@@ -1482,6 +1508,8 @@ class ViewServer:
                         with open(path, "rb") as f:
                             data = f.read()
                         return self._send(200, data, "application/pdf", {"Content-Disposition": f'inline; filename="{key}.pdf"'})
+                    if route == "/api/snapshot":                       # 녹음 PC 서버(사본)가 가져가는 데이터 사본 (읽기 전용)
+                        return self._snapshot(store, p.get("since", ""))
                     if route == "/api/info":
                         return self._json({"app": "runsheet-view", "host": owner.host_kind,
                                            "name": computer_name(), "version": APP_VERSION, "groups": store.distinct_groups(),
@@ -1585,6 +1613,39 @@ class ViewServer:
                     except Exception:
                         pass
 
+            def _snapshot(self, store, since):
+                """데이터 파일(.db)을 SQLite 백업 기능으로 안전하게 복사해 보낸다. 바뀐 것이 없으면 304."""
+                import tempfile
+                db = getattr(store, "path", "") or ""
+                if not db or not os.path.exists(db):
+                    return self._json({"error": "데이터 파일이 없습니다."}, 404)
+                st = os.stat(db)
+                tag = f"{st.st_mtime_ns}-{st.st_size}"
+                if since and since == tag:
+                    self.send_response(304)
+                    self.send_header("X-Data-Tag", tag)
+                    self.end_headers()
+                    return
+                fd, tmp = tempfile.mkstemp(suffix=".db")
+                os.close(fd)
+                try:
+                    src = sqlite3.connect(db)
+                    dst = sqlite3.connect(tmp)
+                    try:
+                        src.backup(dst)
+                    finally:
+                        dst.close()
+                        src.close()
+                    with open(tmp, "rb") as f:
+                        data = f.read()
+                finally:
+                    try:
+                        os.remove(tmp)
+                    except OSError:
+                        pass
+                return self._send(200, data, "application/octet-stream",
+                                  {"X-Data-Tag": tag, "X-App-Version": APP_VERSION, "X-Source-Name": quote_hdr(computer_name())})
+
             def _deny(self):
                 self._json({"error": "조회 전용입니다."}, 405)
 
@@ -1612,6 +1673,12 @@ class ViewServer:
         httpd.daemon_threads = True
         self.httpd, self.port = httpd, int(port)
         threading.Thread(target=httpd.serve_forever, kwargs={"poll_interval": 0.5}, daemon=True).start()
+        if self.announce:
+            def _announce_loop(h=httpd, p=int(port)):
+                while self.httpd is h:                       # 이 서버가 켜져 있는 동안 5초마다 알린다
+                    announce_view("radio", p)
+                    time.sleep(5)
+            threading.Thread(target=_announce_loop, daemon=True).start()
         return True
 
     def stop(self):

@@ -8,6 +8,7 @@
 | `apps/schedule/` | TV 편성표 편집기 (`ui.py`, `APP_VERSION`) — TV |
 | `launcher/` | 편집 프로그램 런처 (`LAUNCHER_VERSION`, 공용 실행 환경 `RUNTIME`) |
 | `installer/` | Inno Setup 설치 스크립트 |
+| `server/` | 녹음 PC 서버 — 편집기 자료를 모아 웹으로 항상 조회 (Debian, [설명](server/README.md)) |
 | `tools/build_packages.py` | catalog.json · 프로그램 꾸러미 · 설치 zip (앱 목록·그룹은 여기 `APPS`) |
 
 `main` 에 올리면 GitHub Actions(윈도우)가 빌드해서 Releases 에 올립니다.

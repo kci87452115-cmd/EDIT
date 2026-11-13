@@ -1,0 +1,18 @@
+[Unit]
+Description=녹음 PC 서버 - 편집기 자료 모으기 (라디오 운행표 / TV 편성표)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=rec
+WorkingDirectory=/home/rec/edit/server
+ExecStart=/usr/bin/python3 /home/rec/edit/server/edit_mirror.py
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+# 녹음이 언제나 먼저: CPU·디스크 우선순위를 낮춘다
+Nice=10
+IOSchedulingClass=idle
+
+[Install]
+WantedBy=multi-user.target
