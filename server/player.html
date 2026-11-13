@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>녹음 플레이어</title>
+<style>
+  :root { --bg:#111; --panel:#1c1c1c; --line:#333; --fg:#eee; --dim:#888; --acc:#3fa9f5; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font-family:"Noto Sans KR","Malgun Gothic",sans-serif; }
+  .wrap { max-width:1400px; margin:0 auto; padding:16px; display:flex; gap:16px; height:100vh; }
+  #list { width:320px; flex-shrink:0; background:var(--panel); border-radius:10px; overflow:auto; padding:8px; }
+  #list .path { font-size:13px; color:var(--dim); padding:6px 8px; word-break:break-all; }
+  #list a { display:block; padding:7px 10px; color:var(--fg); text-decoration:none; border-radius:6px; font-size:14px; }
+  #list a:hover { background:#2a2a2a; }
+  #list a.on { background:var(--acc); color:#000; }
+  #list a.dir { color:#f5c26b; }
+  main { flex:1; display:flex; flex-direction:column; gap:18px; min-width:0; }
+  #title { font-size:18px; font-weight:bold; word-break:break-all; }
+  .clock { display:flex; gap:28px; align-items:baseline; flex-wrap:wrap; }
+  .clock .big { font-size:42px; font-variant-numeric:tabular-nums; }
+  .clock .lbl { font-size:12px; color:var(--dim); display:block; }
+  /* 진행바 */
+  #bar { position:relative; height:64px; background:var(--panel); border-radius:8px; cursor:pointer; user-select:none; }
+  #fill { position:absolute; left:0; top:0; bottom:0; width:0; background:rgba(63,169,245,.35); border-radius:8px 0 0 8px; }
+  #head { position:absolute; top:0; bottom:0; width:3px; background:var(--acc); left:0; }
+  .tick { position:absolute; bottom:0; width:1px; height:14px; background:#666; }
+  .tick.major { height:28px; background:#aaa; }
+  .tick span { position:absolute; bottom:30px; left:4px; font-size:12px; color:var(--dim); white-space:nowrap; }
+  #tip { position:absolute; top:-30px; padding:3px 7px; background:#000; border:1px solid var(--line); border-radius:4px; font-size:12px; display:none; transform:translateX(-50%); white-space:nowrap; }
+  .btns { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  button { background:#2a2a2a; color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:10px 16px; font-size:15px; cursor:pointer; }
+  button:hover { background:#383838; }
+  button.play { background:var(--acc); color:#000; font-weight:bold; min-width:90px; }
+  button.sp.on { border-color:var(--acc); color:var(--acc); }
+  .vol { margin-left:auto; display:flex; align-items:center; gap:6px; color:var(--dim); font-size:13px; }
+  .dlbtn { background:#2a2a2a; color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:10px 16px; font-size:15px; text-decoration:none; }
+  .dlbtn:hover { background:#383838; }
+  #list .row { display:flex; align-items:center; }
+  #list .row a.f { flex:1; min-width:0; }
+  #list .row a.d { flex:0 0 auto; padding:7px 9px; color:var(--dim); }
+  #list .row a.d:hover { color:var(--acc); }
+  .help { font-size:12px; color:var(--dim); }
+  #msg { color:#f77; font-size:13px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <nav id="list"></nav>
+  <main>
+    <div id="title">왼쪽에서 파일을 고르세요</div>
+    <div class="clock">
+      <div><span class="lbl">재생 위치</span><span class="big" id="pos">0:00:00</span><span id="dur" style="color:var(--dim)"> / 0:00:00</span></div>
+      <div id="bcWrap" style="display:none"><span class="lbl">방송 시각</span><span class="big" id="bc">--:--:--</span></div>
+    </div>
+    <div id="bar"><div id="fill"></div><div id="head"></div><div id="tip"></div></div>
+    <div class="btns">
+      <button data-j="-60">⏪ 1분</button>
+      <button data-j="-10">◀ 10초</button>
+      <button class="play" id="play">▶ 재생</button>
+      <button data-j="10">10초 ▶</button>
+      <button data-j="60">1분 ⏩</button>
+      <span style="width:12px"></span>
+      <button class="sp on" data-s="1">1x</button>
+      <button class="sp" data-s="1.5">1.5x</button>
+      <button class="sp" data-s="2">2x</button>
+      <a id="dl" class="dlbtn" style="display:none" download>⬇ 다운로드</a>
+      <div class="vol">🔊 <input type="range" id="vol" min="0" max="1" step="0.05" value="1"></div>
+    </div>
+    <div class="help">단축키: Space 재생/정지 · ←/→ 10초 · Shift+←/→ 1분 · 진행바 클릭·드래그로 이동</div>
+    <div id="msg"></div>
+  </main>
+</div>
+<audio id="au" preload="metadata"></audio>
+<script>
+const au = document.getElementById('au');
+const bar = document.getElementById('bar'), fill = document.getElementById('fill'),
+      head = document.getElementById('head'), tip = document.getElementById('tip');
+const $ = id => document.getElementById(id);
+const AUDIO = /\.(mp3|m4a|aac|wav|ogg|opus|flac)$/i;
+let startClock = null;   // 파일 이름에서 읽은 녹음 시작 시각(초)
+
+function fmt(s){ s=Math.max(0,Math.floor(s||0)); const h=Math.floor(s/3600), m=Math.floor(s%3600/60), x=s%60;
+  return h+':'+String(m).padStart(2,'0')+':'+String(x).padStart(2,'0'); }
+function fmtClock(s){ s=Math.floor(s)%86400; const h=Math.floor(s/3600), m=Math.floor(s%3600/60), x=s%60;
+  return [h,m,x].map(v=>String(v).padStart(2,'0')).join(':'); }
+
+// 파일 이름에서 날짜/시각 추정: 20261112_1900, 2026-11-12_19-00, 20261112-19 등
+function parseStart(name){
+  const m = name.match(/(20\d{2})[-_.]?(\d{2})[-_.]?(\d{2})[ _T.-]*(\d{2})(?:[-_:.h]?(\d{2}))?(?:[-_:.m]?(\d{2}))?/);
+  if(!m) return null;
+  const h=+m[4], mi=+(m[5]||0), se=+(m[6]||0);
+  if(h>23||mi>59||se>59) return null;
+  return h*3600+mi*60+se;
+}
+
+// ---- 폴더 목록 (웹서버 폴더 목록 페이지를 읽어서 표시) ----
+// 폴더 이동은 페이지 안에서만 처리 (주소창은 player.html 그대로)
+let dir = './';
+function go(d){ dir = d || './'; loadList(); }
+function navLink(a, d){ a.href='#'; a.onclick=e=>{ e.preventDefault(); go(d); }; }
+async function loadList(){
+  const list = $('list');
+  list.innerHTML = '<div class="path">불러오는 중…</div>';
+  try{
+    const r = await fetch(dir); const html = await r.text();
+    const doc = new DOMParser().parseFromString(html,'text/html');
+    const base = new URL(dir, location.href);
+    const seen = new Set(), dirs=[], files=[];
+    doc.querySelectorAll('a[href]').forEach(a=>{
+      const href=a.getAttribute('href');
+      if(!href || href.startsWith('?') || href.startsWith('#') || href.startsWith('../') || href==='/' ) return;
+      const u = new URL(href, base);
+      if(!u.href.startsWith(base.href) || u.href===base.href || seen.has(u.href)) return;
+      seen.add(u.href);
+      const name = decodeURIComponent(u.pathname.slice(base.pathname.length));
+      if(name.endsWith('/') && !name.slice(0,-1).includes('/')) dirs.push({name,u});
+      else if(AUDIO.test(name) && !name.includes('/')) files.push({name,u});
+    });
+    dirs.sort((a,b)=>b.name.localeCompare(a.name)); files.sort((a,b)=>b.name.localeCompare(a.name));
+    list.innerHTML = '<div class="path">📁 '+decodeURIComponent(base.pathname)+'</div>';
+    if(dir!=='./'){ const up=document.createElement('a'); up.className='dir'; up.textContent='⬆ 상위 폴더';
+      navLink(up, dir.replace(/[^/]+\/$/,'')); list.appendChild(up); }
+    dirs.forEach(d=>{ const a=document.createElement('a'); a.className='dir'; a.textContent='📁 '+d.name;
+      navLink(a, (dir==='./'?'':dir)+d.name); list.appendChild(a); });
+    files.forEach(f=>{ const row=document.createElement('div'); row.className='row';
+      const a=document.createElement('a'); a.className='f'; a.textContent='🎵 '+f.name; a.href='#';
+      a.onclick=e=>{ e.preventDefault(); list.querySelectorAll('a.on').forEach(x=>x.classList.remove('on')); a.classList.add('on'); openFile(f); };
+      const d=document.createElement('a'); d.className='d'; d.textContent='⬇'; d.title='다운로드';
+      d.href=f.u.href; d.setAttribute('download', f.name);
+      row.appendChild(a); row.appendChild(d); list.appendChild(row); });
+    if(!dirs.length && !files.length) list.innerHTML+='<div class="path">녹음 파일이 없습니다</div>';
+  }catch(e){ list.innerHTML='<div class="path">폴더 목록을 읽지 못했습니다: '+e+'</div>'; }
+}
+
+function openFile(f){
+  au.src = f.u.href; $('title').textContent = f.name; $('msg').textContent='';
+  const dl=$('dl'); dl.href=f.u.href; dl.setAttribute('download', f.name); dl.style.display='';
+  startClock = parseStart(f.name);
+  $('bcWrap').style.display = startClock==null ? 'none' : '';
+  au.play().catch(()=>{});
+}
+
+// ---- 눈금 ----
+function drawTicks(){
+  bar.querySelectorAll('.tick').forEach(t=>t.remove());
+  const d = au.duration; if(!isFinite(d)||d<=0) return;
+  const minor = d>1800 ? 60 : (d>300 ? 30 : 10);          // 작은 눈금
+  const major = d>1800 ? 600 : (d>300 ? 60 : 30);         // 큰 눈금(라벨)
+  for(let t=0; t<=d; t+=minor){
+    const el=document.createElement('div'); el.className='tick'+(t%major===0?' major':'');
+    el.style.left=(t/d*100)+'%';
+    if(t%major===0){ const s=document.createElement('span');
+      s.textContent = startClock!=null ? fmtClock(startClock+t).slice(0,5) : (d>=3600? fmt(t).slice(0,-3) : fmt(t).slice(2));
+      el.appendChild(s); }
+    bar.appendChild(el);
+  }
+}
+
+function update(){
+  const d=au.duration, t=au.currentTime, p = d? t/d*100 : 0;
+  fill.style.width=p+'%'; head.style.left=p+'%';
+  $('pos').textContent=fmt(t); $('dur').textContent=' / '+fmt(d);
+  if(startClock!=null) $('bc').textContent=fmtClock(startClock+t);
+  $('play').textContent = au.paused ? '▶ 재생' : '⏸ 정지';
+}
+au.addEventListener('timeupdate',update);
+au.addEventListener('play',update); au.addEventListener('pause',update);
+au.addEventListener('loadedmetadata',()=>{ drawTicks(); update(); });
+au.addEventListener('error',()=>{ $('msg').textContent='파일을 재생할 수 없습니다.'; });
+
+// ---- 진행바 클릭/드래그 ----
+function posFrom(e){ const r=bar.getBoundingClientRect(); return Math.min(1,Math.max(0,(e.clientX-r.left)/r.width)); }
+let drag=false;
+bar.addEventListener('mousedown',e=>{ drag=true; seekTo(posFrom(e)); });
+window.addEventListener('mouseup',()=>drag=false);
+bar.addEventListener('mousemove',e=>{
+  const p=posFrom(e), d=au.duration; if(!d) return;
+  tip.style.display='block'; tip.style.left=(p*100)+'%';
+  tip.textContent = fmt(p*d) + (startClock!=null ? '  ('+fmtClock(startClock+p*d)+')' : '');
+  if(drag) seekTo(p);
+});
+bar.addEventListener('mouseleave',()=>tip.style.display='none');
+function seekTo(p){ if(au.duration) { au.currentTime=p*au.duration; update(); } }
+
+// ---- 버튼 ----
+$('play').onclick=()=> au.src && (au.paused? au.play() : au.pause());
+document.querySelectorAll('[data-j]').forEach(b=>b.onclick=()=>{ au.currentTime=Math.max(0,au.currentTime+(+b.dataset.j)); update(); });
+document.querySelectorAll('.sp').forEach(b=>b.onclick=()=>{ au.playbackRate=+b.dataset.s;
+  document.querySelectorAll('.sp').forEach(x=>x.classList.toggle('on',x===b)); });
+$('vol').oninput=e=>au.volume=+e.target.value;
+document.addEventListener('keydown',e=>{
+  if(e.target.tagName==='INPUT') return;
+  if(e.code==='Space'){ e.preventDefault(); $('play').click(); }
+  if(e.code==='ArrowLeft'){ au.currentTime-= e.shiftKey?60:10; update(); }
+  if(e.code==='ArrowRight'){ au.currentTime+= e.shiftKey?60:10; update(); }
+});
+window.addEventListener('resize',drawTicks);
+loadList();
+</script>
+</body>
+</html>
