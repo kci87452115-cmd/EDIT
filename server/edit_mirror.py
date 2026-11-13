@@ -190,8 +190,13 @@ class Mirror:
     def status(self):
         with self.lock:
             st = json.loads(json.dumps(self.state))
-        st["radio"]["online"] = [s["name"] or s["url"] for s in sources(self.discovery, "radio", {})]
-        st["tv"]["online"] = [s["name"] or s["url"] for s in sources(self.discovery, "tv", {})]
+        # 연결됨 = 최근 3분 안에 실제로 자료를 받아 왔음 (사내망 알림이 막혀 직접 넣은 주소로 받는 경우도 포함)
+        for k in ("radio", "tv"):
+            x = st[k]
+            fresh = bool(x.get("synced")) and not x.get("error") and \
+                time.time() - time.mktime(time.strptime(x["synced"], "%Y-%m-%d %H:%M:%S")) < 180
+            names = x.get("sources") or [x.get("source_name") or x.get("source") or "편집기"]
+            x["online"] = names if fresh else []
         st["server"] = {"name": socket.gethostname(), "ip": lan_ip(), "now": now_str()}
         return st
 
@@ -371,35 +376,163 @@ class RadioView:
 # ---------------------------------------------------------------- 첫 화면 · TV · 상태
 HUB_HTML = r"""<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>방송 자료 조회</title><style>
-body{font-family:"Malgun Gothic","맑은 고딕","Noto Sans KR",sans-serif;margin:0;background:#f5f6f8;color:#1f2937}
-header{background:#111827;color:#fff;padding:14px 22px}header b{font-size:19px}header span{opacity:.7;font-size:12px;margin-left:10px}
-main{max-width:1000px;margin:0 auto;padding:22px}
-.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px}
-a.card{display:block;background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:20px;text-decoration:none;color:inherit;box-shadow:0 1px 2px rgba(0,0,0,.04)}
-a.card:hover{border-color:#3b82f6;box-shadow:0 4px 14px rgba(59,130,246,.15)}
-.ic{font-size:30px}.t{font-size:18px;font-weight:bold;margin:8px 0 4px}.d{font-size:13px;color:#6b7280}
-.st{margin-top:12px;font-size:12px;line-height:1.6}.ok{color:#15803d}.warn{color:#b45309}.bad{color:#b91c1c}
-.foot{margin-top:22px;font-size:12px;color:#9ca3af}
-</style></head><body><header><b>📡 방송 자료 조회</b><span id="srv"></span></header><main>
-<div class="cards">
-<a class="card" href="radio/"><div class="ic">💰</div><div class="t">라디오 운행표</div><div class="d">달력 · 일/월/년 정산 · 검색 · 운행표 미리보기</div><div class="st" id="sr">확인 중…</div></a>
-<a class="card" href="tv/"><div class="ic">📺</div><div class="t">TV 주간 편성표</div><div class="d">주·판별 편성표 PDF 보기 · 인쇄</div><div class="st" id="st">확인 중…</div></a>
-<a class="card" href="rec/player.html"><div class="ic">🎧</div><div class="t">녹음 듣기</div><div class="d">정각 단위 녹음 파일 재생 · 다운로드</div><div class="st ok">항상 이용 가능</div></a>
+:root{--side:#0f172a;--side2:#1e293b;--line:#e5e7eb;--muted:#64748b;--acc:#2563eb;--ok:#16a34a;--warn:#d97706;--bad:#dc2626}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{font-family:"Malgun Gothic","맑은 고딕","Noto Sans KR",sans-serif;background:#f1f5f9;color:#0f172a;font-size:14px;display:flex}
+a{color:inherit}
+/* ---- 왼쪽 패널 */
+#side{width:260px;flex-shrink:0;background:var(--side);color:#cbd5e1;display:flex;flex-direction:column;height:100vh;overflow:hidden}
+.brand{padding:18px 18px 14px;border-bottom:1px solid #1e293b}
+.brand b{display:block;color:#fff;font-size:17px;letter-spacing:-.3px}.brand span{font-size:11px;color:#64748b}
+.scroll{flex:1;overflow-y:auto;padding:8px 0 12px}
+.grp{padding:14px 18px 6px;font-size:11px;color:#64748b;letter-spacing:.5px;font-weight:bold}
+.nav{display:flex;align-items:center;gap:10px;padding:9px 18px;margin:1px 8px;border-radius:8px;cursor:pointer;text-decoration:none;color:#cbd5e1}
+.nav:hover{background:var(--side2);color:#fff}.nav.on{background:var(--acc);color:#fff}
+.nav .i{width:22px;text-align:center;font-size:16px}.nav .n{flex:1}.nav .c{font-size:11px;background:#334155;color:#e2e8f0;border-radius:10px;padding:1px 7px}
+.nav.on .c{background:rgba(255,255,255,.25)}
+.sub{display:flex;align-items:center;gap:8px;padding:6px 18px 6px 26px;margin:0 8px;border-radius:6px;cursor:pointer;font-size:13px;color:#94a3b8}
+.sub:hover{background:var(--side2);color:#fff}.sub.on{background:#1e3a8a;color:#fff}
+.sub .d{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dot{width:7px;height:7px;border-radius:50%;flex-shrink:0;background:#475569}.dot.ok{background:#22c55e}.dot.warn{background:#f59e0b}
+.empty{padding:4px 18px 4px 26px;font-size:12px;color:#475569}
+.status{border-top:1px solid #1e293b;padding:12px 18px;font-size:12px;line-height:1.75}
+.status .row{display:flex;align-items:center;gap:8px}.status .row span{flex:1}.status small{color:#64748b}
+#clock{color:#fff;font-size:20px;font-variant-numeric:tabular-nums;margin-bottom:4px}
+/* ---- 오른쪽 */
+#main{flex:1;display:flex;flex-direction:column;min-width:0;height:100vh}
+#top{height:52px;flex-shrink:0;background:#fff;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:12px;padding:0 18px}
+#top h1{font-size:16px;margin:0;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tb{border:1px solid var(--line);background:#fff;border-radius:8px;padding:6px 12px;font:inherit;font-size:13px;cursor:pointer;text-decoration:none;color:#334155}
+.tb:hover{background:#f8fafc;border-color:#cbd5e1}
+#menu{display:none}
+#frame{flex:1;border:0;width:100%;background:#fff;display:none}
+#home{flex:1;overflow-y:auto;padding:22px 26px}
+/* ---- 오늘 한눈에 */
+.hd{display:flex;align-items:baseline;gap:12px;margin-bottom:16px}.hd b{font-size:22px}.hd span{color:var(--muted)}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px;margin-bottom:18px}
+.kpi{background:#fff;border:1px solid var(--line);border-radius:12px;padding:16px 18px;cursor:pointer}
+.kpi:hover{border-color:#93c5fd}
+.kpi .l{font-size:12px;color:var(--muted)}.kpi .v{font-size:28px;font-weight:bold;margin:4px 0 2px;letter-spacing:-.5px}.kpi .s{font-size:12px;color:var(--muted)}
+.badge{display:inline-block;font-size:11px;border-radius:10px;padding:1px 8px;margin-right:4px;font-weight:bold}
+.b-ok{background:#dcfce7;color:#166534}.b-warn{background:#fef3c7;color:#92400e}.b-none{background:#f1f5f9;color:#64748b}
+.cols{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.card{background:#fff;border:1px solid var(--line);border-radius:12px;overflow:hidden;display:flex;flex-direction:column;max-height:520px}
+.card h3{margin:0;font-size:14px;padding:12px 16px;border-bottom:1px solid var(--line);display:flex;gap:8px;align-items:center}
+.card h3 span{flex:1}.card h3 a{font-size:12px;font-weight:normal;color:var(--acc);text-decoration:none;cursor:pointer}
+.card .body{overflow-y:auto}
+table{border-collapse:collapse;width:100%}th,td{padding:7px 14px;text-align:left;border-bottom:1px solid #f1f5f9;white-space:nowrap}
+th{background:#f8fafc;font-size:12px;color:var(--muted);position:sticky;top:0}td.n,th.n{text-align:right}
+.bar{height:6px;background:#dbeafe;border-radius:3px;overflow:hidden;min-width:60px}.bar i{display:block;height:100%;background:#3b82f6}
+.none{padding:22px;text-align:center;color:#94a3b8}
+.am{color:#1d4ed8;font-weight:bold}.fm{color:#c2410c;font-weight:bold}
+@media(max-width:1000px){.cols{grid-template-columns:1fr}}
+@media(max-width:820px){#side{position:fixed;left:-270px;top:0;z-index:20;transition:left .2s;box-shadow:4px 0 20px rgba(0,0,0,.3)}
+ #side.open{left:0}#menu{display:inline-block}}
+</style></head><body>
+<aside id="side">
+ <div class="brand"><b>📡 방송 자료 조회</b><span id="srv">녹음 PC 서버</span></div>
+ <div class="scroll">
+  <div class="grp">보기</div>
+  <a class="nav" data-p="home"><span class="i">🏠</span><span class="n">오늘 한눈에</span></a>
+  <a class="nav" data-p="radio"><span class="i">💰</span><span class="n">라디오 운행표</span></a>
+  <a class="nav" data-p="tv"><span class="i">📺</span><span class="n">TV 편성표</span><span class="c" id="ctv"></span></a>
+  <a class="nav" data-p="rec"><span class="i">🎧</span><span class="n">녹음 듣기</span></a>
+  <div class="grp">운행표 PDF</div><div id="lrs"><div class="empty">불러오는 중…</div></div>
+  <div class="grp">TV 편성표 PDF</div><div id="ltv"><div class="empty">불러오는 중…</div></div>
+ </div>
+ <div class="status">
+  <div id="clock">--:--:--</div>
+  <div class="row"><i class="dot" id="dr"></i><span>라디오 편집기</span><small id="sr">-</small></div>
+  <div class="row"><i class="dot" id="dt"></i><span>TV 편집기</span><small id="st">-</small></div>
+  <small id="sm">편집기에서 저장한 내용을 1분마다 모읍니다</small>
+ </div>
+</aside>
+<div id="main">
+ <div id="top"><button class="tb" id="menu">☰</button><h1 id="ttl">오늘 한눈에</h1>
+  <button class="tb" id="reload">⟳ 새로고침</button><a class="tb" id="newwin" target="_blank" style="display:none">↗ 새 창</a></div>
+ <iframe id="frame" title="내용"></iframe>
+ <div id="home"></div>
 </div>
-<div class="foot">편집은 각 편집기 PC에서 합니다. 이 페이지는 편집기에서 저장한 내용을 1분마다 모아 둔 사본이라, 편집기 PC가 꺼져 있어도 볼 수 있습니다.</div>
-</main><script>
+<script>
+const $=id=>document.getElementById(id);
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-function line(x,on){let h='';
- if(x.synced)h+='<span class="ok">✔ 마지막으로 모은 시각 '+esc(x.synced.slice(5,16))+'</span><br>';else h+='<span class="warn">아직 모은 자료가 없습니다</span><br>';
- h+=on.length?'<span class="ok">● 편집기 연결됨: '+esc(on.join(', '))+'</span>':'<span class="warn">○ 편집기 PC 꺼짐 — 마지막 사본을 보여 줍니다</span>';
- if(x.error&&on.length)h+='<br><span class="bad">⚠ '+esc(x.error)+'</span>';return h}
-async function load(){try{const d=await (await fetch('api/status')).json();
- document.getElementById('srv').textContent=d.server.name+' · '+d.server.ip;
- let r=line(d.radio,d.radio.online);if(d.radio.records!=null)r+='<br>입력 기록 '+Number(d.radio.records).toLocaleString('ko-KR')+'건';
- document.getElementById('sr').innerHTML=r;
- let t=line(d.tv,d.tv.online);if(d.tv.count!=null)t+='<br>편성표 '+d.tv.count+'개';document.getElementById('st').innerHTML=t;
-}catch(e){document.getElementById('sr').textContent=document.getElementById('st').textContent='⚠ 서버 상태를 읽지 못했습니다'}}
-load();setInterval(()=>{if(!document.hidden)load()},30000);
+const pad=n=>String(n).padStart(2,'0');const num=v=>Number(v||0).toLocaleString('ko-KR');
+const WK='일월화수목금토';
+function today(){const d=new Date();return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())}
+function secs(s){s=+s||0;const m=Math.floor(s/60);return m?m+'분 '+(s%60?s%60+'초':''):s+'초'}
+const PAGES={home:['🏠 오늘 한눈에',''],radio:['💰 라디오 운행표 — 달력 · 정산 · 검색','radio/'],tv:['📺 TV 주간 편성표','tv/'],rec:['🎧 녹음 듣기','rec/player.html']};
+let cur='';
+function go(p,src,title){
+ if(!PAGES[p]&&!src)p='home';cur=p;
+ const [t,u]=PAGES[p]||[title,src];const url=src||u;
+ document.querySelectorAll('.nav').forEach(a=>a.classList.toggle('on',a.dataset.p===p));
+ document.querySelectorAll('.sub').forEach(a=>a.classList.toggle('on',!!src&&a.dataset.u===src));
+ $('ttl').textContent=title||t;
+ if(p==='home'){$('frame').style.display='none';$('home').style.display='';$('newwin').style.display='none';home()}
+ else{$('home').style.display='none';const f=$('frame');f.style.display='block';if(f.getAttribute('src')!==url)f.src=url;
+  $('newwin').href=url;$('newwin').style.display=''}
+ if(!src){try{localStorage.setItem('hub_page',p)}catch(e){}history.replaceState(null,'','#'+p)}
+ $('side').classList.remove('open');
+}
+document.querySelectorAll('.nav').forEach(a=>a.onclick=()=>go(a.dataset.p));
+$('menu').onclick=()=>$('side').classList.toggle('open');
+$('reload').onclick=()=>{if(cur==='home')home();else{const f=$('frame');try{f.contentWindow.location.reload()}catch(e){f.src=f.src}}side()};
+async function J(u){const r=await fetch(u,{cache:'no-store'});if(!r.ok)throw new Error(r.status);return r.json()}
+function sub(box,items,emptyMsg){
+ $(box).innerHTML=items.length?items.map(x=>'<div class="sub" data-u="'+esc(x.u)+'" data-t="'+esc(x.t)+'"><i class="dot '+x.dot+'"></i><span class="d">'+x.h+'</span></div>').join(''):'<div class="empty">'+emptyMsg+'</div>';
+ $(box).querySelectorAll('.sub').forEach(a=>a.onclick=()=>go('pdf',a.dataset.u,a.dataset.t));
+}
+function stTxt(x){return x.dirty||x.state!=='수정완료'?['warn','편집중']:['ok','수정완료']}
+async function side(){
+ try{const d=await J('api/status');$('srv').textContent=d.server.name+' · '+d.server.ip;
+  const f=(x,dot,lab)=>{const on=(x.online||[]).length;$(dot).className='dot '+(on?'ok':(x.synced?'warn':''));
+   $(lab).textContent=on?'연결됨':(x.synced?'꺼짐':'없음');$(lab).title=x.synced?'마지막으로 모은 시각 '+x.synced:''};
+  f(d.radio,'dr','sr');f(d.tv,'dt','st');
+  const last=[d.radio.synced,d.tv.synced].filter(Boolean).sort().pop();$('sm').textContent=last?'마지막으로 모은 시각 '+last.slice(5,16):'아직 모은 자료가 없습니다';
+ }catch(e){$('sm').textContent='⚠ 서버 상태를 읽지 못했습니다'}
+ try{const d=await J('radio/api/runsheets');
+  sub('lrs',d.rows.filter(x=>x.has_pdf).slice(0,10).map(x=>{const [c,l]=stTxt(x);const dt=x.air_date.slice(5).replace('-','/');
+   return {u:'radio/runsheet/'+x.key+'.pdf',t:'📄 '+x.media+' 운행표 '+x.air_date+' ('+l+')',dot:c,
+    h:'<span class="'+(x.media==='FM'?'fm':'am')+'">'+esc(x.media)+'</span> '+esc(dt)+(x.rel?' <small>'+esc(x.rel)+'</small>':'')}}),'운행표가 없습니다')}
+ catch(e){$('lrs').innerHTML='<div class="empty">운행표를 읽지 못했습니다</div>'}
+ try{const d=await J('tv/api/tv');$('ctv').textContent=d.rows.length||'';
+  sub('ltv',d.rows.filter(x=>x.has_pdf).slice(0,8).map(x=>{const [c,l]=stTxt(x);
+   return {u:'tv/tv/'+encodeURIComponent(x.key)+'.pdf',t:'📺 '+(x.title||x.key)+' ('+l+')',dot:c,h:esc(x.title||x.src||x.key)}}),'편성표가 없습니다')}
+ catch(e){$('ltv').innerHTML='<div class="empty">편성표를 읽지 못했습니다</div>'}
+}
+async function recToday(){
+ try{const r=await fetch('rec/'+today()+'/',{cache:'no-store'});if(!r.ok)return [];
+  const doc=new DOMParser().parseFromString(await r.text(),'text/html');
+  return [...doc.querySelectorAll('a[href]')].map(a=>decodeURIComponent(a.getAttribute('href'))).filter(h=>/\.(mp3|m4a|wav|ogg)$/i.test(h)).sort()}catch(e){return []}
+}
+async function home(){
+ const t=today(),dd=new Date();
+ let h='<div class="hd"><b>'+(dd.getMonth()+1)+'월 '+dd.getDate()+'일 ('+WK[dd.getDay()]+')</b><span>오늘 한눈에 보기</span></div><div class="kpis" id="kp"></div><div class="cols"><div class="card"><h3><span>📋 오늘 광고주별</span><a onclick="go(\'radio\')">달력·정산에서 보기 →</a></h3><div class="body" id="cn"><div class="none">불러오는 중…</div></div></div><div class="card"><h3><span>🕘 오늘 운행 내역 (시각순)</span></h3><div class="body" id="cr"><div class="none">불러오는 중…</div></div></div></div>';
+ if(!$('kp'))$('home').innerHTML=h;
+ let cal={},day={names:[],rows:[],previews:[]},tvn=0,recs=[];
+ try{cal=(await J('radio/api/calendar?ym='+t.slice(0,7))).days||{}}catch(e){}
+ try{day=await J('radio/api/day?date='+t)}catch(e){}
+ try{tvn=(await J('tv/api/tv')).rows.length}catch(e){}
+ recs=await recToday();
+ const td=cal[t]||[0,0,0,0];let mc=0,ms=0;for(const k in cal){mc+=cal[k][0];ms+=cal[k][1]}
+ const pv=m=>{const x=(day.previews||[]).find(v=>v.media===m);return x?'<span class="badge '+(x.state==='수정완료'?'b-ok':'b-warn')+'">'+m+' '+esc(x.state)+'</span>':'<span class="badge b-none">'+m+' 없음</span>'};
+ $('kp').innerHTML=
+  '<div class="kpi" onclick="go(\'radio\')"><div class="l">오늘 추가한 광고</div><div class="v">'+num(td[0])+'<small style="font-size:14px"> 건</small></div><div class="s">총 '+secs(td[1])+' · <span class="am">AM '+td[2]+'</span> · <span class="fm">FM '+td[3]+'</span></div></div>'
+  +'<div class="kpi" onclick="go(\'radio\')"><div class="l">이번 달 누적</div><div class="v">'+num(mc)+'<small style="font-size:14px"> 건</small></div><div class="s">총 '+secs(ms)+' · '+Object.keys(cal).length+'일</div></div>'
+  +'<div class="kpi" onclick="go(\'radio\')"><div class="l">오늘 운행표</div><div class="v" style="font-size:16px;margin:12px 0 8px">'+pv('AM')+pv('FM')+'</div><div class="s">편집기에서 저장하면 바뀝니다</div></div>'
+  +'<div class="kpi" onclick="go(\'tv\')"><div class="l">TV 편성표</div><div class="v">'+tvn+'<small style="font-size:14px"> 개</small></div><div class="s">주·판별 PDF</div></div>'
+  +'<div class="kpi" onclick="go(\'rec\')"><div class="l">오늘 녹음</div><div class="v">'+recs.length+'<small style="font-size:14px"> 개</small></div><div class="s">'+(recs.length?'최근 '+esc(recs[recs.length-1]).replace(/^.*_(\d\d)(\d\d)\.\w+$/,'$1:$2')+' 시작':'아직 없음')+'</div></div>';
+ const names=day.names||[],mx=Math.max(1,...names.map(n=>n[2]));
+ $('cn').innerHTML=names.length?'<table><tr><th>광고주</th><th>그룹</th><th class="n">횟수</th><th class="n">총 초수</th><th></th></tr>'+names.map(n=>'<tr><td><b>'+esc(n[0])+'</b></td><td>'+esc(n[1])+'</td><td class="n">'+n[2]+'</td><td class="n">'+num(n[3])+'</td><td style="width:30%"><div class="bar"><i style="width:'+(n[2]/mx*100)+'%"></i></div></td></tr>').join('')+'</table>':'<div class="none">오늘 추가한 광고가 없습니다</div>';
+ const rows=day.rows||[];
+ $('cr').innerHTML=rows.length?'<table><tr><th>시각</th><th>매체</th><th>프로그램</th><th>광고주</th><th class="n">초</th></tr>'+rows.map(r=>'<tr><td>'+esc(r[0])+'</td><td class="'+(r[1]==='FM'?'fm':'am')+'">'+esc(r[1]||'AM')+'</td><td>'+esc(r[2])+'</td><td>'+esc(r[3])+'</td><td class="n">'+r[4]+'</td></tr>').join('')+'</table>':'<div class="none">운행 내역이 없습니다</div>';
+}
+function tick(){const d=new Date();$('clock').textContent=pad(d.getHours())+':'+pad(d.getMinutes())+':'+pad(d.getSeconds())}
+setInterval(tick,1000);tick();
+let first=(location.hash||'').slice(1);if(!PAGES[first]){try{first=localStorage.getItem('hub_page')||'home'}catch(e){first='home'}}
+side();go(PAGES[first]?first:'home');
+setInterval(()=>{if(!document.hidden){side();if(cur==='home')home()}},60000);
 </script></body></html>"""
 
 TV_HTML = r"""<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -408,9 +541,10 @@ body{font-family:"Malgun Gothic","맑은 고딕","Noto Sans KR",sans-serif;margi
 header{background:#7c2d12;color:#fff;padding:10px 18px}header b{font-size:17px}header a{color:#fed7aa;font-size:13px;margin-right:12px;text-decoration:none}
 main{padding:14px 18px;max-width:1100px}table{border-collapse:collapse;width:100%;background:#fff}
 th,td{border:1px solid #e5e7eb;padding:6px 8px;text-align:left}th{background:#fff7ed}.msg{color:#6b7280;font-size:12px;margin:6px 0}
-</style></head><body><header><a href="../">← 처음</a><b>📺 TV 주간 편성표</b> <span id="who" style="font-size:12px;opacity:.85"></span></header>
+</style></head><body><header><a href="../" id="back">← 처음</a><b>📺 TV 주간 편성표</b> <span id="who" style="font-size:12px;opacity:.85"></span></header>
 <main><div class="msg" id="msg">불러오는 중…</div><table id="tbl"></table></main><script>
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+if(window.top!==window.self)document.getElementById('back').style.display='none';
 async function load(){try{const d=await (await fetch('api/tv')).json();document.getElementById('who').textContent=' — '+d.name;
  let h='<tr><th>편성표</th><th>종류</th><th>상태</th><th>마지막 저장</th><th>편집기 PC</th><th>미리보기 · 인쇄</th></tr>';
  for(const x of d.rows){const st=x.dirty?'<b style="color:#c2410c">✏ 편집중</b> <span style="font-size:12px;color:#9a3412">(마지막 저장 상태)</span>':(x.state==='수정완료'?'<b style="color:#15803d">✔ 수정완료</b>':'<b style="color:#c2410c">✏ 편집중</b>');
