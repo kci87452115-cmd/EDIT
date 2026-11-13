@@ -361,8 +361,15 @@ class RadioView:
             return self.store
 
         def peers():
+            # 운행표 화면의 'TV 주간 편성표' 탭이 읽는 곳. 공유기 안쪽에 있으면 사무실 PC가 보는 주소(public_host)로 알려 준다
             tv = load_json(os.path.join(TV_DIR, "status.json"), {})
-            return [{"ip": lan_ip(), "port": HUB_PORT, "name": "TV 편성표 (녹음 PC 서버 사본)"}] if tv else []
+            if not tv:
+                return []
+            pub = str(load_json(CONFIG_FILE, {}).get("public_host", "")).strip()
+            if pub:
+                host, _, port = pub.partition(":")
+                return [{"ip": host, "port": int(port or 80), "name": "TV 편성표 (녹음 PC 서버 사본)"}]
+            return [{"ip": lan_ip(), "port": HUB_PORT, "name": "TV 편성표 (녹음 PC 서버 사본)"}]
 
         try:
             self.srv = mod.ViewServer(get_store, "녹음 PC 서버(사본)", peers_fn=peers, announce=False)
