@@ -499,7 +499,7 @@ const WK='일월화수목금토';
 function today(){const d=new Date();return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())}
 function secs(s){s=+s||0;const m=Math.floor(s/60);return m?m+'분 '+(s%60?s%60+'초':''):s+'초'}
 const PAGES={home:['🏠 오늘 한눈에',''],radio:['💰 라디오 운행표 — 달력 · 정산 · 검색','radio/'],tv:['📺 TV 주간 편성표','tv/'],rec:['🎧 AM 녹음 듣기','rec/player.html'],recfm:['📻 FM 녹음 듣기','rec-fm/player.html']};
-let cur='';
+let cur='',hasFM=false;
 function go(p,src,title){
  if(!PAGES[p]&&!src)p='home';cur=p;
  const [t,u]=PAGES[p]||[title,src];const url=src||u;
@@ -522,7 +522,10 @@ function sub(box,items,emptyMsg){
  $(box).querySelectorAll('.sub').forEach(a=>a.onclick=()=>go('pdf',a.dataset.u,a.dataset.t));
 }
 function stTxt(x){return x.dirty||x.state!=='수정완료'?['warn','편집중']:['ok','수정완료']}
+async function checkFM(){try{const r=await fetch('rec-fm/',{cache:'no-store'});hasFM=r.ok}catch(e){hasFM=false}
+ $('navfm').style.display=hasFM?'':'none';if(!hasFM&&cur==='recfm')$('navfm').style.display='';return hasFM}
 async function side(){
+ checkFM();
  try{const d=await J('api/status');$('srv').textContent=d.server.name+' · '+d.server.ip;
   const f=(x,dot,lab)=>{const on=(x.online||[]).length;$(dot).className='dot '+(on?'ok':(x.synced?'warn':''));
    $(lab).textContent=on?'연결됨':(x.synced?'꺼짐':'없음');$(lab).title=x.synced?'마지막으로 모은 시각 '+x.synced:''};
@@ -540,7 +543,6 @@ async function side(){
    return {u:'tv/tv/'+encodeURIComponent(x.key)+'.pdf',t:'📺 '+(x.title||x.key)+' ('+l+')',dot:c,h:esc(x.title||x.src||x.key)}}),'편성표가 없습니다')}
  catch(e){$('ltv').innerHTML='<div class="empty">편성표를 읽지 못했습니다</div>'}
 }
-let hasFM=false;
 async function recToday(base){
  try{const r=await fetch(base+today()+'/',{cache:'no-store'});if(!r.ok)return [];
   const doc=new DOMParser().parseFromString(await r.text(),'text/html');
@@ -555,8 +557,7 @@ async function home(){
  try{day=await J('radio/api/day?date='+t)}catch(e){}
  try{tvn=(await J('tv/api/tv')).rows.length}catch(e){}
  recs=await recToday('rec/');
- let fm=null;try{const r=await fetch('rec-fm/',{cache:'no-store'});hasFM=r.ok}catch(e){hasFM=false}
- $('navfm').style.display=hasFM?'':'none';if(hasFM)fm=await recToday('rec-fm/');
+ let fm=null;if(await checkFM())fm=await recToday('rec-fm/');
  const td=cal[t]||[0,0,0,0];let mc=0,ms=0;for(const k in cal){mc+=cal[k][0];ms+=cal[k][1]}
  const pv=m=>{const x=(day.previews||[]).find(v=>v.media===m);return x?'<span class="badge '+(x.state==='수정완료'?'b-ok':'b-warn')+'">'+m+' '+esc(x.state)+'</span>':'<span class="badge b-none">'+m+' 없음</span>'};
  $('kp').innerHTML=
