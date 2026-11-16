@@ -25,7 +25,7 @@ except ImportError:
     except ImportError:
         fitz = None
 
-APP_VERSION = "2.13.0"
+APP_VERSION = "2.14.0"
 APP_TITLE = f"운행표 데이터 편집기 v{APP_VERSION}"
 APP_MUTEX = "RunSheetEditor_Running"      # 설치 프로그램이 '실행 중'을 알아보는 이름 (setup.iss 의 AppMutex 와 같아야 함)
 RUN_BY_LAUNCHER = bool(os.environ.get("RADIO_LAUNCHER"))   # 편집 프로그램 런처로 실행됨 -> 업데이트는 런처가 한다
@@ -6071,7 +6071,48 @@ Start-Process (Join-Path $prog 'RunSheetEditor.exe') -WorkingDirectory $prog
         self._finish_exit()
 
 
+_SINGLE_HANDLE = None
+
+
+def _already_running():
+    """운행표 편집기가 이미 켜져 있으면 그 창을 앞으로 가져오고 True. (윈도우 전용, 실패하면 False)"""
+    global _SINGLE_HANDLE
+    try:
+        import ctypes
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.CreateMutexW.restype = ctypes.c_void_p
+        _SINGLE_HANDLE = k32.CreateMutexW(None, False, "RunSheetEditor_Single")
+        if ctypes.get_last_error() != 183:          # 183 = ERROR_ALREADY_EXISTS
+            return False
+    except Exception:
+        return False
+    try:                                            # 이미 켜진 창을 찾아 앞으로
+        u32 = ctypes.WinDLL("user32")
+        found = []
+        proto = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+
+        def _cb(hwnd, _):
+            n = u32.GetWindowTextLengthW(hwnd)
+            if n and u32.IsWindowVisible(hwnd):
+                buf = ctypes.create_unicode_buffer(n + 1)
+                u32.GetWindowTextW(hwnd, buf, n + 1)
+                if buf.value.startswith("운행표 데이터 편집기"):
+                    found.append(hwnd)
+                    return False
+            return True
+        u32.EnumWindows(proto(_cb), 0)
+        if found:
+            if u32.IsIconic(found[0]):
+                u32.ShowWindow(found[0], 9)         # SW_RESTORE
+            u32.SetForegroundWindow(found[0])
+    except Exception:
+        pass
+    return True
+
+
 if __name__ == "__main__":
+    if _already_running():                          # 두 번 눌러도 하나만: 이미 켜진 창을 앞으로 가져오고 끝낸다
+        sys.exit(0)
     root = tk.Tk()
     app = DataEditor(root)
     root.mainloop()
