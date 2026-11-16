@@ -25,7 +25,7 @@ except ImportError:
     except ImportError:
         fitz = None
 
-APP_VERSION = "2.12.4"
+APP_VERSION = "2.13.0"
 APP_TITLE = f"운행표 데이터 편집기 v{APP_VERSION}"
 APP_MUTEX = "RunSheetEditor_Running"      # 설치 프로그램이 '실행 중'을 알아보는 이름 (setup.iss 의 AppMutex 와 같아야 함)
 RUN_BY_LAUNCHER = bool(os.environ.get("RADIO_LAUNCHER"))   # 편집 프로그램 런처로 실행됨 -> 업데이트는 런처가 한다
@@ -1192,43 +1192,54 @@ _VIEW_HTML = r"""<!DOCTYPE html>
 <html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>💰 정산 / 검색 (조회 전용)</title>
 <style>
-body{font-family:"Malgun Gothic","맑은 고딕",sans-serif;margin:0;background:#f5f6f8;color:#1f2937;font-size:14px}
-header{background:#1e3a8a;color:#fff;padding:10px 18px;display:flex;gap:16px;align-items:baseline;flex-wrap:wrap}
-header b{font-size:17px} header span{opacity:.85;font-size:12px}
-main{padding:12px 18px;max-width:1300px}
-.tabs{display:flex;gap:2px;flex-wrap:wrap;border-bottom:1px solid #cbd5e1}
-.tabs button{background:#e5e7eb;color:#1f2937;border:1px solid #cbd5e1;border-bottom:none;border-radius:6px 6px 0 0;padding:6px 14px;cursor:pointer}
-.tabs button.on{background:#fff;color:#1e3a8a;font-weight:bold;position:relative;top:1px}
-.pane{background:#fff;border:1px solid #cbd5e1;border-top:none;padding:10px 12px}
-.row{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:3px 0 6px}
-label{font-weight:bold;font-size:13px;color:#1f2937;margin-left:8px} label:first-child{margin-left:0}
-.hint{color:#666;font-size:12px}
-input,select,button{font:inherit;padding:3px 6px;border:1px solid #cbd5e1;border-radius:4px;background:#fff}
-.btn{background:#2563eb;color:#fff;border-color:#2563eb;cursor:pointer;padding:4px 14px}
-.btn.lite{background:#fff;color:#1e3a8a}
+:root{--acc:#2563eb;--ink:#0f172a;--mut:#64748b;--line:#e2e8f0;--soft:#f8fafc}
+*{box-sizing:border-box}
+body{font-family:"Malgun Gothic","맑은 고딕","Noto Sans KR",sans-serif;margin:0;background:#f1f5f9;color:var(--ink);font-size:14px}
+header{background:#0f172a;color:#fff;padding:12px 22px;display:flex;gap:14px;align-items:baseline;flex-wrap:wrap}
+header b{font-size:17px} header span{color:#94a3b8;font-size:12px}
+main{padding:16px 22px;max-width:1400px}
+.tabs{display:flex;gap:4px;flex-wrap:wrap;background:#e2e8f0;padding:4px;border-radius:10px;width:fit-content;max-width:100%}
+.tabs button{background:transparent;color:#475569;border:0;border-radius:7px;padding:7px 14px;cursor:pointer;font-size:13.5px}
+.tabs button:hover{color:var(--ink);background:rgba(255,255,255,.55)}
+.tabs button.on{background:#fff;color:var(--acc);font-weight:bold;box-shadow:0 1px 3px rgba(15,23,42,.12)}
+.pane{background:#fff;border:1px solid var(--line);border-radius:12px;padding:14px 16px;margin-top:10px;box-shadow:0 1px 2px rgba(15,23,42,.04)}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:2px 0 10px}
+label{font-weight:bold;font-size:13px;color:#334155;margin-left:10px} label:first-child{margin-left:0}
+.hint{color:var(--mut);font-size:12px}
+input,select,button{font:inherit;font-size:13.5px;padding:5px 9px;border:1px solid #cbd5e1;border-radius:7px;background:#fff;color:var(--ink);height:32px}
+input:focus,select:focus{outline:2px solid #bfdbfe;border-color:var(--acc)}
+.btn{background:var(--acc);color:#fff;border-color:var(--acc);cursor:pointer;padding:5px 16px;font-weight:bold}
+.btn:hover{background:#1d4ed8}
+.btn.lite{background:#fff;color:#334155;font-weight:normal}.btn.lite:hover{background:var(--soft)}
+a{color:var(--acc)}
 .right{margin-left:auto}
-table{border-collapse:collapse;width:100%;background:#fff}
-th,td{border:1px solid #e5e7eb;padding:3px 7px;text-align:left;white-space:nowrap}
-th{background:#eef2ff;position:sticky;top:0}
-td.n,th.n{text-align:right}
-.scroll{height:62vh;overflow:auto;border:1px solid #e5e7eb}
-.total{text-align:right;font-weight:bold;margin-top:5px}
-.msg{color:#6b7280;font-size:12px;margin:4px 0}
-.cal{display:grid;grid-template-columns:repeat(7,1fr);gap:4px;margin:6px 0}
-.cal .h{text-align:center;font-weight:bold;color:#374151;padding:3px 0}
-.cal .d{border:1px solid #e5e7eb;border-radius:6px;min-height:68px;padding:4px 6px;cursor:pointer;background:#fff;position:relative}
+table{border-collapse:separate;border-spacing:0;width:100%;background:#fff}
+th,td{border-bottom:1px solid #f1f5f9;padding:7px 10px;text-align:left;white-space:nowrap}
+th{background:var(--soft);color:var(--mut);font-size:12px;font-weight:bold;border-bottom:1px solid var(--line);position:sticky;top:0;z-index:1}
+tr:hover td{background:#f8fbff}
+td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
+.scroll{max-height:64vh;overflow:auto;border:1px solid var(--line);border-radius:10px}
+.total{text-align:right;font-weight:bold;margin-top:8px;color:#334155}
+.msg{color:var(--mut);font-size:12px;margin:4px 0 8px}
+.cal{display:grid;grid-template-columns:repeat(7,1fr);gap:6px;margin:8px 0}
+.cal .h{text-align:center;font-weight:bold;color:var(--mut);font-size:12px;padding:3px 0}
+.cal .d{border:1px solid var(--line);border-radius:10px;min-height:72px;padding:6px 8px;cursor:pointer;background:#fff;position:relative;transition:border-color .1s}
 .cal .d:hover{border-color:#93c5fd;background:#f8fbff}
-.cal .d.out{background:#f9fafb;color:#c0c4cc;cursor:default}
-.cal .d.today{border:2px solid #1e3a8a}
-.cal .d.sel{background:#dbeafe;border-color:#2563eb}
-.cal .dn{font-weight:bold;font-size:15px} .cal .sun{color:#dc2626} .cal .sat{color:#2563eb}
-.cal .cnt{font-size:20px;font-weight:bold;color:#1e3a8a;text-align:right;margin-top:2px}
-.cal .sub{font-size:11px;color:#6b7280;text-align:right}
-.cal .st{position:absolute;top:5px;right:6px;font-size:11px}
-.dayh{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:10px 0 4px;font-weight:bold;font-size:15px}
-.two{display:grid;grid-template-columns:1fr 1fr;gap:0 10px}
+.cal .d.out{background:var(--soft);color:#cbd5e1;cursor:default}
+.cal .d.today{border:2px solid var(--acc)}
+.cal .d.sel{background:#eff6ff;border-color:var(--acc);box-shadow:0 0 0 3px #dbeafe}
+.cal .dn{font-weight:bold;font-size:14px} .cal .sun{color:#dc2626} .cal .sat{color:#2563eb}
+.cal .cnt{font-size:22px;font-weight:bold;color:#1e3a8a;text-align:right;margin-top:2px;letter-spacing:-.5px}
+.cal .sub{font-size:11px;color:var(--mut);text-align:right}
+.cal .st{position:absolute;top:6px;right:8px;font-size:11px}
+.dayh{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:16px 0 6px;font-weight:bold;font-size:15px}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:0 12px}
 @media(max-width:900px){.two{grid-template-columns:1fr}}
-</style></head><body>
+/* 녹음 PC 서버 첫 화면 안에 들어가 있을 때: 머리글을 가볍게 */
+.embed header{background:transparent;color:var(--mut);padding:10px 22px 0}
+.embed header b{display:none}
+.embed main{max-width:none;padding-top:8px}
+</style><script>if(window.top!==window.self)document.documentElement.classList.add('embed')</script></head><body>
 <header><b>💰 정산 / 검색</b><span id="who"></span><span>조회 전용 — 이 화면에서는 기록을 바꿀 수 없습니다</span></header>
 <main>
 <div class="tabs" id="tabs"></div>
