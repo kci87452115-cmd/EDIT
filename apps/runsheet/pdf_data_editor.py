@@ -25,7 +25,7 @@ except ImportError:
     except ImportError:
         fitz = None
 
-APP_VERSION = "2.12.0"
+APP_VERSION = "2.12.1"
 APP_TITLE = f"운행표 데이터 편집기 v{APP_VERSION}"
 APP_MUTEX = "RunSheetEditor_Running"      # 설치 프로그램이 '실행 중'을 알아보는 이름 (setup.iss 의 AppMutex 와 같아야 함)
 RUN_BY_LAUNCHER = bool(os.environ.get("RADIO_LAUNCHER"))   # 편집 프로그램 런처로 실행됨 -> 업데이트는 런처가 한다
@@ -1279,8 +1279,9 @@ function keep(){if('일월년'.includes(cur)){refs[cur]=$('kref').value;bys[cur]
 function tab(k){keep();cur=k;drawTabs();const s='일월년'.includes(k);$('fS').style.display=s?'':'none';$('fQ').style.display=k==='Q'?'':'none';
  $('fC').style.display=k==='C'?'':'none';$('msg').textContent='';document.querySelector('.scroll').style.display=k==='C'?'none':'';
  $('total').textContent='';
- if(s){$('kLbl').textContent={'일':'기준일:','월':'기준월:','년':'기준연도:'}[k];$('kHint').textContent={'일':'(2026-10-30)','월':'(2026-10)','년':'(2026)'}[k];
-  $('kref').value=refs[k];$('sby').value=bys[k];$('smedia').value=meds[k]}
+ if(s){$('kLbl').textContent={'일':'기준일:','월':'기준월:','년':'기준연도:'}[k];$('kHint').textContent={'일':'📅 달력에서 고르기','월':'📅 달력에서 고르기','년':'(2026)'}[k];
+  const kr=$('kref');kr.type={'일':'date','월':'month','년':'number'}[k];if(k==='년'){kr.min=2000;kr.max=2100;kr.style.width='6em'}else{kr.removeAttribute('min');kr.removeAttribute('max');kr.style.width=''}
+  kr.value=refs[k];$('sby').value=bys[k];$('smedia').value=meds[k]}
  run()}
 function sq(){return new URLSearchParams({kind:cur,ref:$('kref').value.trim(),by:$('sby').value,media:$('smedia').value}).toString()}
 function qq(){return new URLSearchParams({kw:$('kw').value.trim(),target:$('target').value,media:$('qmedia').value,grp:$('grp').value.trim(),from:$('from').value,to:$('to').value,by:$('qby').value}).toString()}
@@ -1379,6 +1380,7 @@ const opt=(sel,list)=>{for(const t of list){const o=document.createElement('opti
   $('target').value='광고주만';$('sby').value='광고주별';}catch(e){}
  $('kw').addEventListener('keydown',e=>{if(e.key==='Enter')run()});
  $('kref').addEventListener('keydown',e=>{if(e.key==='Enter')run()});
+ $('kref').addEventListener('change',()=>{if(/^\d{4}(-\d{2}){0,2}$/.test($('kref').value))run()});   // 달력에서 고르면 바로 조회
  $('ckw').addEventListener('keydown',e=>{if(e.key==='Enter')cal()});$('cgrp').addEventListener('keydown',e=>{if(e.key==='Enter')cal()});
  const Y=+today.slice(0,4);for(let y=Y-3;y<=Y+1;y++){const o=document.createElement('option');o.value=o.textContent=y;$('cy').appendChild(o)}
  for(let m=1;m<=12;m++){const o=document.createElement('option');o.value=pad(m);o.textContent=m+'월';$('cm').appendChild(o)}
