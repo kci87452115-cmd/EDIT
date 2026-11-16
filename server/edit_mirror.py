@@ -16,13 +16,16 @@
 
 편집 기능은 없다 (모두 읽기 전용). 원본은 언제나 편집기 PC에 있다.
 """
+import hashlib
 import json
 import os
 import re
 import socket
 import sqlite3
 import subprocess
+import shutil
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
@@ -622,6 +625,164 @@ def tv_rows():
     return out
 
 
+# ---------------------------------------------------------------- 녹음 구간 잘라 받기 (/api/clip)
+# 원본 녹음 파일은 건드리지 않는다. 고른 구간만 새 MP3 로 만들어 내려 준다.
+# 녹음에 영향이 없도록: 가장 낮은 우선순위(nice 19, ionice idle), 동시에 몇 건만, 길이 제한.
+REC_DIR = os.environ.get("EDIT_REC_DIR") or os.path.join(os.path.expanduser("~"), "Recordings")
+FM_CONF = "/etc/nginx/edit-extra/fm.conf"
+CLIP_AUDIO_RE = re.compile(r"\.(mp3|m4a|aac|wav|ogg|opus|flac)$", re.I)
+CLIP_VOL = {   # 소리 크기 맞춤
+    "0": None,
+    "6": "volume=6dB,alimiter=limit=0.95",
+    "12": "volume=12dB,alimiter=limit=0.95",
+    "auto": "loudnorm=I=-16:TP=-1.5:LRA=11",
+}
+CLIP_CACHE = os.path.join(tempfile.gettempdir(), "edit-clip")
+CLIP_CACHE_SEC = 600
+
+
+def clip_limits():
+    c = load_json(CONFIG_FILE, {})
+    try:
+        mx = max(1, min(180, int(c.get("clip_max_min", 30))))
+    except Exception:
+        mx = 30
+    try:
+        wk = max(1, min(4, int(c.get("clip_workers", 1))))
+    except Exception:
+        wk = 1
+    return mx, wk
+
+
+_clip_lock = threading.Lock()
+_clip_running = 0
+_clip_busy_ip = set()
+
+
+def _fm_base():
+    """FM 녹음 PC 주소 (add-fm.sh 가 만든 nginx 설정에서 읽음)"""
+    try:
+        with open(FM_CONF, encoding="utf-8") as f:
+            m = re.search(r"proxy_pass\s+(http://[0-9.]+(?::\d+)?)/rec/;", f.read())
+        if m:
+            return m.group(1) + "/rec/"
+    except Exception:
+        pass
+    return "http://127.0.0.1/rec-fm/"
+
+
+def clip_source(src):
+    """웹 주소(/rec/... /rec-fm/...) → ffmpeg 입력. 잘못되면 ValueError"""
+    if not isinstance(src, str) or ".." in src or "\\" in src or not CLIP_AUDIO_RE.search(src):
+        raise ValueError("녹음 파일만 자를 수 있습니다.")
+    if src.startswith("/rec/"):
+        rel = src[len("/rec/"):]
+        base = os.path.realpath(REC_DIR)
+        f = os.path.realpath(os.path.join(base, rel))
+        if not f.startswith(base + os.sep) or not os.path.isfile(f):
+            raise ValueError("녹음 파일을 찾지 못했습니다.")
+        return f, ""
+    if src.startswith("/rec-fm/"):
+        rel = src[len("/rec-fm/"):]
+        return _fm_base() + urllib.parse.quote(rel), "FM_"
+    raise ValueError("녹음 파일만 자를 수 있습니다.")
+
+
+def _clock_of(name):
+    m = re.search(r"(20\d{2})[-_.]?(\d{2})[-_.]?(\d{2})[ _T.-]*(\d{2})(?:[-_:.h]?(\d{2}))?(?:[-_:.m]?(\d{2}))?", name)
+    if not m:
+        return None
+    h, mi, se = int(m.group(4)), int(m.group(5) or 0), int(m.group(6) or 0)
+    if h > 23 or mi > 59 or se > 59:
+        return None
+    return h * 3600 + mi * 60 + se
+
+
+def clip_filename(src, s, e, prefix):
+    stem = os.path.splitext(os.path.basename(src))[0]
+    c = _clock_of(stem)
+    if c is not None:
+        def hms(x):
+            x = int(x) % 86400
+            return f"{x // 3600:02d}{x % 3600 // 60:02d}{x % 60:02d}"
+        tail = f"{hms(c + s)}-{hms(c + e)}"
+    else:
+        def ms(x):
+            x = int(x)
+            return f"{x // 3600}h{x % 3600 // 60:02d}m{x % 60:02d}s"
+        tail = f"{ms(s)}-{ms(e)}"
+    return f"{prefix}{stem}_{tail}.mp3"
+
+
+def make_clip(src, s, e, vol, ip):
+    """→ (파일경로, 내려받을 이름). 바쁘면 RuntimeError"""
+    global _clip_running
+    max_min, workers = clip_limits()
+    if not (0 <= s < e):
+        raise ValueError("시작이 끝보다 앞이어야 합니다.")
+    if e - s > max_min * 60:
+        raise ValueError(f"한 번에 {max_min}분까지만 자를 수 있습니다.")
+    if vol not in CLIP_VOL:
+        raise ValueError("소리 크기 설정이 올바르지 않습니다.")
+    inp, prefix = clip_source(src)
+    name = clip_filename(src, s, e, prefix)
+    os.makedirs(CLIP_CACHE, exist_ok=True)
+    now = time.time()
+    for old in os.listdir(CLIP_CACHE):                      # 오래된 결과 지우기
+        fp = os.path.join(CLIP_CACHE, old)
+        try:
+            if now - os.path.getmtime(fp) > CLIP_CACHE_SEC:
+                os.remove(fp)
+        except OSError:
+            pass
+    key = hashlib.sha1(f"{src}|{s:.1f}|{e:.1f}|{vol}".encode("utf-8")).hexdigest()
+    out = os.path.join(CLIP_CACHE, key + ".mp3")
+    if os.path.exists(out) and os.path.getsize(out) > 0:
+        os.utime(out)
+        return out, name
+    with _clip_lock:
+        if ip in _clip_busy_ip:
+            raise RuntimeError("이미 만들고 있는 구간이 있습니다. 끝난 뒤 다시 눌러 주세요.")
+        if _clip_running >= workers:
+            raise RuntimeError("다른 사람이 구간을 만들고 있습니다. 잠시 후 다시 눌러 주세요.")
+        _clip_running += 1
+        _clip_busy_ip.add(ip)
+    tmp = out + ".part"
+    try:
+        cmd = []
+        if shutil.which("nice"):
+            cmd += ["nice", "-n", "19"]
+        if shutil.which("ionice"):
+            cmd += ["ionice", "-c3"]
+        cmd += ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+                "-ss", f"{s:.2f}", "-i", inp, "-t", f"{e - s:.2f}", "-vn", "-map_metadata", "-1"]
+        af = CLIP_VOL[vol]
+        if af is None and inp.lower().split("?")[0].endswith(".mp3"):
+            cmd += ["-c:a", "copy"]                       # 소리 그대로면 다시 압축하지 않음 (빠르고 음질 그대로)
+        else:
+            if af:
+                cmd += ["-af", af]
+            cmd += ["-c:a", "libmp3lame", "-b:a", "128k"]
+        cmd += ["-f", "mp3", tmp]
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=420)
+        if r.returncode != 0 or not os.path.exists(tmp) or os.path.getsize(tmp) == 0:
+            log("구간 자르기 실패:", (r.stderr or "").strip()[-300:])
+            raise ValueError("구간을 만들지 못했습니다. (파일을 읽지 못함)")
+        os.replace(tmp, out)
+        log(f"구간 저장: {ip} {name}")
+        return out, name
+    except subprocess.TimeoutExpired:
+        raise ValueError("시간이 너무 오래 걸려 멈췄습니다. 구간을 짧게 해 주세요.")
+    finally:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        with _clip_lock:
+            _clip_running -= 1
+            _clip_busy_ip.discard(ip)
+
+
 def make_hub_handler(mirror):
     class H(BaseHTTPRequestHandler):
         server_version = "EditMirror/1"
@@ -646,6 +807,35 @@ def make_hub_handler(mirror):
         def _json(self, obj, code=200):
             self._send(code, json.dumps(obj, ensure_ascii=False), "application/json; charset=utf-8")
 
+        def _clip(self):
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            g = lambda k: (q.get(k) or [""])[0]
+            ip = self.headers.get("X-Real-IP") or self.client_address[0]
+            if g("info"):
+                mx, _ = clip_limits()
+                return self._json({"max_min": mx})
+            try:
+                s, e = float(g("s")), float(g("e"))
+            except ValueError:
+                return self._json({"error": "시작/끝 시간이 올바르지 않습니다."}, 400)
+            try:
+                f, name = make_clip(g("src"), s, e, g("vol") or "0", ip)
+            except RuntimeError as exc:
+                return self._json({"error": str(exc)}, 503)
+            except ValueError as exc:
+                return self._json({"error": str(exc)}, 400)
+            size = os.path.getsize(f)
+            self.send_response(200)
+            self.send_header("Content-Type", "audio/mpeg")
+            self.send_header("Content-Length", str(size))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Disposition", f"attachment; filename*=UTF-8''{urllib.parse.quote(name)}")
+            self.end_headers()
+            if self.command == "HEAD":
+                return
+            with open(f, "rb") as fh:
+                shutil.copyfileobj(fh, self.wfile, 256 * 1024)
+
         def do_HEAD(self):
             self.do_GET()
 
@@ -654,6 +844,8 @@ def make_hub_handler(mirror):
                 path = urllib.parse.unquote(urllib.parse.urlparse(self.path).path)
                 if path in ("/", "/index.html"):
                     return self._send(200, HUB_HTML, "text/html; charset=utf-8")
+                if path == "/api/clip":
+                    return self._clip()
                 if path == "/api/status":
                     return self._json(mirror.status())
                 if path in ("/tv", "/tv/", "/tv/index.html"):

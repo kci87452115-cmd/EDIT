@@ -45,6 +45,7 @@ echo "== 확인"
 systemctl is-active edit-mirror nginx
 curl -s -o /dev/null -w "첫 화면: HTTP %{http_code}\n" http://localhost/
 curl -s -o /dev/null -w "녹음 플레이어: HTTP %{http_code}\n" http://localhost/rec/player.html
+curl -s -o /dev/null -w "구간 저장: HTTP %{http_code}\n" "http://localhost/api/clip?info=1"
 IP=$(hostname -I | awk '{print $1}')
 echo
 echo "끝. 사내 PC 브라우저에서:  http://$IP/   (또는 http://$(hostname).local/)"

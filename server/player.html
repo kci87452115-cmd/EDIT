@@ -42,6 +42,31 @@
   #list .row a.d:hover { color:var(--acc); }
   .help { font-size:12px; color:var(--dim); }
   #msg { color:#f77; font-size:13px; }
+  /* 구간 저장 */
+  #region { position:absolute; top:0; bottom:0; background:rgba(245,194,107,.22); border-left:2px solid #f5c26b; border-right:2px solid #f5c26b; pointer-events:none; display:none; }
+  #clip { background:var(--panel); border:1px solid #4a3d22; border-radius:10px; padding:14px 16px; display:none; flex-direction:column; gap:12px; }
+  #clip .crow { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  #clip .ttl { font-weight:bold; color:#f5c26b; }
+  #clip input.tm { width:110px; background:#111; color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:9px 10px; font-size:16px; font-variant-numeric:tabular-nums; text-align:center; }
+  #clip input.tm:focus { outline:none; border-color:#f5c26b; }
+  #clip button { padding:8px 12px; font-size:14px; }
+  #clip .lbl2 { color:var(--dim); font-size:13px; }
+  #clip label { display:inline-flex; align-items:center; gap:5px; padding:7px 11px; border:1px solid var(--line); border-radius:6px; cursor:pointer; font-size:14px; }
+  #clip label:has(input:checked) { border-color:#f5c26b; color:#f5c26b; }
+  #clip label input { accent-color:#f5c26b; margin:0; }
+  #cSave { background:#f5c26b; color:#000; font-weight:bold; }
+  #cSave:disabled { opacity:.6; cursor:wait; }
+  #cmsg { font-size:13px; }
+  #cmsg.err { color:#f77; } #cmsg.ok { color:#7c7; }
+  button.clipon { border-color:#f5c26b; color:#f5c26b; }
+  /* 휴대폰: 목록을 위로, 플레이어를 아래로 */
+  @media (max-width:760px){
+    .wrap { flex-direction:column; height:auto; padding:10px; }
+    #list { width:auto; max-height:38vh; }
+    .clock .big { font-size:30px; }
+    .vol { margin-left:0; }
+    #clip input.tm { width:96px; }
+  }
 </style>
 </head>
 <body>
@@ -53,7 +78,7 @@
       <div><span class="lbl">재생 위치</span><span class="big" id="pos">0:00:00</span><span id="dur" style="color:var(--dim)"> / 0:00:00</span></div>
       <div id="bcWrap" style="display:none"><span class="lbl">방송 시각</span><span class="big" id="bc">--:--:--</span></div>
     </div>
-    <div id="bar"><div id="fill"></div><div id="head"></div><div id="tip"></div></div>
+    <div id="bar"><div id="region"></div><div id="fill"></div><div id="head"></div><div id="tip"></div></div>
     <div class="btns">
       <button data-j="-60">⏪ 1분</button>
       <button data-j="-10">◀ 10초</button>
@@ -65,9 +90,34 @@
       <button class="sp" data-s="1.5">1.5x</button>
       <button class="sp" data-s="2">2x</button>
       <a id="dl" class="dlbtn" style="display:none" download>⬇ 다운로드</a>
+      <button id="clipBtn" style="display:none" title="필요한 부분만 잘라 MP3로 내려받기">✂ 구간 저장</button>
       <div class="vol" title="100%보다 크게 하면 소리를 키웁니다 (최대 300%, 찢어지지 않게 자동 제한)">🔊 <input type="range" id="vol" min="0" max="3" step="0.05" value="1"><span id="volv" style="min-width:42px;text-align:right">100%</span></div>
     </div>
-    <div class="help">단축키: Space 재생/정지 · ←/→ 10초 · Shift+←/→ 1분 · 진행바 클릭·드래그로 이동</div>
+    <div id="clip">
+      <div class="crow"><span class="ttl">✂ 구간 저장</span>
+        <span class="lbl2">원본 녹음은 그대로 두고, 고른 부분만 새 MP3 파일로 내려받습니다 · 한 번에 최대 <b id="cmax">30</b>분</span></div>
+      <div class="crow">
+        <span class="lbl2" id="cmode">시작</span>
+        <input class="tm" id="cs" placeholder="00:00:00"><button id="csNow" title="단축키 [">지금 위치로</button>
+        <span style="width:10px"></span>
+        <span class="lbl2">끝</span>
+        <input class="tm" id="ce" placeholder="00:00:00"><button id="ceNow" title="단축키 ]">지금 위치로</button>
+        <span style="width:10px"></span>
+        <span class="lbl2">길이</span> <b id="clen">-</b>
+      </div>
+      <div class="crow"><span class="lbl2">소리 크기</span>
+        <label><input type="radio" name="cvol" value="0" checked>그대로</label>
+        <label><input type="radio" name="cvol" value="6">조금 크게</label>
+        <label><input type="radio" name="cvol" value="12">크게</label>
+        <label title="작은 소리·큰 소리를 방송 기준 크기로 고르게 맞춥니다"><input type="radio" name="cvol" value="auto">자동 맞춤</label>
+      </div>
+      <div class="crow">
+        <button id="cPrev">▶ 구간 미리 듣기</button>
+        <button id="cSave">⬇ MP3로 저장</button>
+        <span id="cmsg"></span>
+      </div>
+    </div>
+    <div class="help">단축키: Space 재생/정지 · ←/→ 10초 · Shift+←/→ 1분 · 진행바 클릭·드래그로 이동 · 구간 저장: [ 시작 · ] 끝</div>
     <div id="msg"></div>
   </main>
 </div>
@@ -140,6 +190,7 @@ function openFile(f){
   const dl=$('dl'); dl.href=f.u.href; dl.setAttribute('download', f.name); dl.style.display='';
   startClock = parseStart(f.name);
   $('bcWrap').style.display = startClock==null ? 'none' : '';
+  $('clipBtn').style.display=''; clipS=null; clipE=null; clipShow();
   au.play().catch(()=>{});
 }
 
@@ -215,8 +266,80 @@ $('vol').oninput=()=>{ if(+$('vol').value>1) ensureAudio(); applyVol(); };
 au.addEventListener('play',()=>{ if(+$('vol').value>1) ensureAudio(); if(actx&&actx.state==='suspended') actx.resume(); });
 try{ const sv=parseFloat(localStorage.getItem('player_vol')); if(sv>=0&&sv<=3) $('vol').value=sv; }catch(e){}
 applyVol();
+
+// ---- 구간 저장: 고른 부분만 서버에서 잘라 새 MP3로 내려받음 (원본은 그대로) ----
+let clipS=null, clipE=null, clipMax=30, previewing=false, clipOn=false;
+fetch('/api/clip?info=1').then(r=>r.json()).then(j=>{ if(j.max_min){ clipMax=j.max_min; $('cmax').textContent=clipMax; } }).catch(()=>{});
+function clipFmt(t){ return startClock!=null ? fmtClock(startClock+t) : fmt(t); }   // 방송 시각이 있으면 시각으로
+function clipParse(v){
+  const p=String(v).trim().replace(/[^\d:]/g,'').split(':').filter(x=>x!=='').map(Number);
+  if(!p.length || p.some(isNaN)) return null;
+  while(p.length<3) p.unshift(0);
+  let t=p[0]*3600+p[1]*60+p[2];
+  if(startClock!=null){ t-=startClock; if(t<0) t+=86400; }                         // 자정 넘긴 녹음
+  const d=au.duration; if(isFinite(d)) t=Math.min(t,d);
+  return Math.max(0,t);
+}
+function clipShow(){
+  const d=au.duration, r=$('region');
+  $('cmode').textContent = startClock!=null ? '시작 (방송 시각)' : '시작 (재생 위치)';
+  if(clipS!=null && document.activeElement!==$('cs')) $('cs').value=clipFmt(clipS);
+  if(clipE!=null && document.activeElement!==$('ce')) $('ce').value=clipFmt(clipE);
+  if(clipS==null) $('cs').value=''; if(clipE==null) $('ce').value='';
+  const ok = clipS!=null && clipE!=null && clipE>clipS;
+  $('clen').textContent = ok ? fmt(clipE-clipS) : '-';
+  $('clen').style.color = ok && clipE-clipS>clipMax*60 ? '#f77' : '';
+  if(ok && isFinite(d) && d>0 && clipOn){
+    r.style.display='block'; r.style.left=(clipS/d*100)+'%'; r.style.width=((clipE-clipS)/d*100)+'%';
+  } else r.style.display='none';
+}
+function cmsg(t,c){ const m=$('cmsg'); m.textContent=t; m.className=c||''; }
+function clipOpen(on){
+  clipOn=on; $('clip').style.display = on ? 'flex' : 'none';
+  $('clipBtn').classList.toggle('clipon', on);
+  if(on && clipS==null && au.src){ clipS=au.currentTime; const d=au.duration;
+    clipE = isFinite(d) ? Math.min(d, clipS+60) : clipS+60; }
+  clipShow();
+}
+$('clipBtn').onclick=()=>clipOpen(!clipOn);
+function setS(){ if(!au.src) return; clipOpen(true); clipS=au.currentTime; if(clipE!=null && clipE<=clipS) clipE=null; clipShow(); cmsg(''); }
+function setE(){ if(!au.src) return; clipOpen(true); clipE=au.currentTime; if(clipS!=null && clipS>=clipE) clipS=null; clipShow(); cmsg(''); }
+$('csNow').onclick=setS; $('ceNow').onclick=setE;
+$('cs').onchange=()=>{ const t=clipParse($('cs').value); if(t!=null) clipS=t; clipShow(); };
+$('ce').onchange=()=>{ const t=clipParse($('ce').value); if(t!=null) clipE=t; clipShow(); };
+$('cs').onblur=$('ce').onblur=clipShow;
+$('cPrev').onclick=()=>{
+  if(clipS==null||clipE==null||clipE<=clipS){ cmsg('시작과 끝을 먼저 정해 주세요.','err'); return; }
+  au.currentTime=clipS; previewing=true; au.play().catch(()=>{});
+};
+au.addEventListener('timeupdate',()=>{ if(previewing && clipE!=null && au.currentTime>=clipE){ au.pause(); previewing=false; } });
+au.addEventListener('pause',()=>{ previewing=false; });
+$('cSave').onclick=async()=>{
+  if(!au.src) return;
+  if(clipS==null||clipE==null||clipE<=clipS){ cmsg('시작과 끝을 먼저 정해 주세요. (끝이 시작보다 뒤)','err'); return; }
+  if(clipE-clipS>clipMax*60){ cmsg('한 번에 '+clipMax+'분까지만 저장할 수 있습니다. 구간을 줄여 주세요.','err'); return; }
+  const src=decodeURIComponent(new URL(au.src).pathname);
+  const vol=document.querySelector('input[name=cvol]:checked').value;
+  const q='/api/clip?src='+encodeURIComponent(src)+'&s='+clipS.toFixed(2)+'&e='+clipE.toFixed(2)+'&vol='+vol;
+  const btn=$('cSave'); btn.disabled=true; const t0=Date.now();
+  const tick=setInterval(()=>cmsg('만드는 중… '+Math.round((Date.now()-t0)/1000)+'초'),500); cmsg('만드는 중…');
+  try{
+    const r=await fetch(q);
+    if(!r.ok){ let e='저장하지 못했습니다.'; try{ e=(await r.json()).error||e; }catch(_){}; throw new Error(e); }
+    const blob=await r.blob();
+    let name='구간.mp3'; const cd=r.headers.get('Content-Disposition')||'';
+    const m=cd.match(/filename\*=UTF-8''([^;]+)/i); if(m) name=decodeURIComponent(m[1]);
+    const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=name;
+    document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href),60000);
+    clearInterval(tick); cmsg('저장했습니다: '+name+' ('+(blob.size/1048576).toFixed(1)+'MB)','ok');
+  }catch(e){ clearInterval(tick); cmsg(String(e.message||e),'err'); }
+  finally{ btn.disabled=false; }
+};
+au.addEventListener('loadedmetadata',clipShow);
 document.addEventListener('keydown',e=>{
-  if(e.target.tagName==='INPUT') return;
+  if(e.target.tagName==='INPUT' && e.target.type!=='radio') return;
+  if(e.key==='['){ e.preventDefault(); setS(); return; }
+  if(e.key===']'){ e.preventDefault(); setE(); return; }
   if(e.code==='Space'){ e.preventDefault(); $('play').click(); }
   if(e.code==='ArrowLeft'){ au.currentTime-= e.shiftKey?60:10; update(); }
   if(e.code==='ArrowRight'){ au.currentTime+= e.shiftKey?60:10; update(); }

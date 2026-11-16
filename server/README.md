@@ -41,6 +41,16 @@ bash ~/edit/server/install.sh
 {"links": [{"name": "송출 달력", "url": "http://218.237.3.199:8000/calendar", "icon": "📅"}]}
 ```
 
+## 녹음 구간 저장 (플레이어의 ✂ 구간 저장)
+- 시작·끝을 정하면 그 부분만 새 MP3로 내려받습니다. **원본 녹음 파일은 건드리지 않습니다.**
+- 소리 크기: 그대로(다시 압축 안 함, 1초 안에 끝남) / 조금 크게(+6dB) / 크게(+12dB) / 자동 맞춤(방송 기준 -16 LUFS)
+- 녹음에 영향이 없도록 가장 낮은 우선순위로 처리하고, 길이·동시 처리 수를 제한합니다.
+  `~/edit-mirror/config.json` 에서 바꿀 수 있습니다 (서버 다시 시작 필요 없음).
+```json
+{"clip_max_min": 30, "clip_workers": 1}
+```
+- 같은 구간을 10분 안에 다시 받으면 만들어 둔 것을 바로 줍니다.
+
 ## FM 녹음 PC 연결 (AM 녹음 PC 웹에서 FM 녹음도 듣기)
 1. FM 녹음 PC: `git clone https://github.com/kci87452115-cmd/EDIT.git ~/edit && bash ~/edit/server/install-fm-pc.sh`
 2. AM 녹음 PC(웹 서버): `cd ~/edit && git pull && bash server/install.sh && bash server/add-fm.sh FM_PC_IP`
