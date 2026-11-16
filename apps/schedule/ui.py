@@ -45,7 +45,7 @@ def schedule_badge_dir():
         return os.path.join(home, "데이터", "편성표", "badges")
     return os.path.abspath("badges")
 
-APP_VERSION = "3.22.1"
+APP_VERSION = "3.22.2"
 
 
 def _detect_profile():
@@ -2185,8 +2185,52 @@ class ScheduleEditor:
             return self.unmod_shade_color
         return None
 
-    def _draw_shade(self, c, x0, y0, x1, y1, color=None):
+    def _page_rgb(self):
+        """지금 페이지 그림(흰 바탕에 합친 RGB). 페이지가 바뀔 때만 다시 만든다."""
+        if getattr(self, "_page_rgb_src", None) is not self.png_data:
+            im = Image.open(io.BytesIO(self.png_data)).convert("RGBA")
+            bg = Image.new("RGBA", im.size, (255, 255, 255, 255))
+            bg.alpha_composite(im)
+            self._page_rgb_img = bg.convert("RGB")
+            self._page_rgb_src = self.png_data
+        return self._page_rgb_img
+
+    def _multiplied_crop(self, b, x0, y0, x1, y1, color):
+        """음영을 '곱하기'로: 그 칸의 페이지 그림에 색을 곱한 그림 (글자는 원래 진하기 그대로).
+        미리보기·저장 PDF와 같은 모양. 만들 수 없으면 None (예전 방식으로 그림)."""
+        try:
+            base = self._page_rgb()
+            L, T = int(round(x0)) - 18, int(round(y0)) - 18
+            R, B = int(round(x1)) - 18, int(round(y1)) - 18
+            L, T, R, B = max(0, L), max(0, T), min(base.width, R), min(base.height, B)
+            if R - L < 1 or B - T < 1:
+                return None, 0, 0
+            crop = base.crop((L, T, R, B))
+            cover = self._cover_color(b)
+            if cover:                                   # 원본 글자를 덮어 둔 자리는 덮은 색 그대로
+                d = ImageDraw.Draw(crop)
+                for r_ in self._cover_rects(b):
+                    a_ = self._to_canvas(r_[0], r_[1])
+                    b_ = self._to_canvas(r_[2], r_[3])
+                    d.rectangle([a_[0] - 18 - L, a_[1] - 18 - T, b_[0] - 18 - L - 1, b_[1] - 18 - T - 1], fill=cover)
+            h6 = color.lstrip("#")
+            a = float(self.mod_shade_alpha)
+            lut = []
+            for ch in (int(h6[0:2], 16), int(h6[2:4], 16), int(h6[4:6], 16)):
+                f = 1 - a + a * ch / 255.0
+                lut += [int(round(v * f)) for v in range(256)]
+            return ImageTk.PhotoImage(crop.point(lut)), L + 18, T + 18
+        except Exception:
+            return None, 0, 0
+
+    def _draw_shade(self, c, x0, y0, x1, y1, color=None, block=None):
         color = color or self.mod_shade_color
+        if Image and ImageTk and block is not None and not block.get("color") and getattr(self, "png_data", None):
+            img, ix, iy = self._multiplied_crop(block, x0, y0, x1, y1, color)
+            if img is not None:
+                self.__dict__.setdefault("_shade_refs", []).append(img)   # 그림이 사라지지 않게 붙잡아 둔다
+                c.create_image(ix, iy, image=img, anchor="nw")
+                return
         if Image and ImageTk:
             w = max(1, int(round(x1 - x0)))
             h = max(1, int(round(y1 - y0)))
@@ -3164,7 +3208,7 @@ class ScheduleEditor:
             
         _sc = self._shade_color_for(b, b["id"] in self._mod_ids)
         if _sc:
-            self._draw_shade(c, x0, y0, x1, y1, _sc)
+            self._draw_shade(c, x0, y0, x1, y1, _sc, block=b)
 
         pb = self._print_border(b)
         if pb:                                       # 저장 PDF에 그려질 테두리를 기본 화면에도 (색·두께 그대로)
@@ -3387,6 +3431,7 @@ class ScheduleEditor:
         if not self.png_data: return
         c = self.canvas
         c.delete("all")
+        self._shade_refs = []                      # 지난번 음영 그림 버리기
         if getattr(self, "_photo_src", None) is not self.png_data or getattr(self, "photo", None) is None:
             self.photo = tk.PhotoImage(data=base64.b64encode(self.png_data).decode("ascii"))   # 페이지 그림은 바뀔 때만 다시 만든다
             self._photo_src = self.png_data
