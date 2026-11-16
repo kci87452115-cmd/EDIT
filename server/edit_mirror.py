@@ -414,7 +414,10 @@ class RadioView:
 
 # ---------------------------------------------------------------- 첫 화면 · TV · 상태
 HUB_HTML = r"""<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>방송운행자료 조회</title><style>
+<title>방송운행자료 조회</title><script>(function(){function ap(){var t='light';try{t=localStorage.getItem('edit_theme')||'light'}catch(e){}
+var d=t==='dark'||(t==='auto'&&window.matchMedia&&matchMedia('(prefers-color-scheme: dark)').matches);document.documentElement.classList.toggle('dark',d)}
+ap();window.applyTheme=ap;window.addEventListener('storage',function(e){if(e.key==='edit_theme')ap()});
+try{matchMedia('(prefers-color-scheme: dark)').addEventListener('change',ap)}catch(e){}})()</script><style>
 :root{--side:#0f172a;--side2:#1e293b;--line:#e5e7eb;--muted:#64748b;--acc:#2563eb;--ok:#16a34a;--warn:#d97706;--bad:#dc2626}
 *{box-sizing:border-box}
 html,body{height:100%;margin:0}
@@ -468,6 +471,22 @@ th{background:#f8fafc;font-size:12px;color:var(--muted);position:sticky;top:0}td
 @media(max-width:1000px){.cols{grid-template-columns:1fr}}
 @media(max-width:820px){#side{position:fixed;left:-270px;top:0;z-index:20;transition:left .2s;box-shadow:4px 0 20px rgba(0,0,0,.3)}
  #side.open{left:0}#menu{display:inline-block}}
+/* ---- 화면 밝기 고르기 */
+.theme{display:flex;gap:3px;margin:8px 0 6px;background:#1e293b;border-radius:8px;padding:3px}
+.theme button{flex:1;border:0;background:transparent;color:#94a3b8;font:inherit;font-size:11.5px;padding:4px 0;border-radius:6px;cursor:pointer}
+.theme button:hover{color:#fff}.theme button.on{background:#334155;color:#fff}
+/* ---- 어둡게 */
+html.dark body{background:#0b1220;color:#e2e8f0}
+html.dark #side{background:#020617}html.dark .brand,html.dark .status{border-color:#0f172a}
+html.dark #top{background:#0f172a;border-color:#1e293b}
+html.dark .tb{background:#1e293b;border-color:#334155;color:#e2e8f0}html.dark .tb:hover{background:#273449}
+html.dark #frame{background:#0b1220}
+html.dark .kpi,html.dark .card{background:#111827;border-color:#1f2937}html.dark .kpi:hover{border-color:#3b82f6}
+html.dark .card h3{border-color:#1f2937}
+html.dark th{background:#0f172a;color:#94a3b8}html.dark th,html.dark td{border-color:#1f2937}
+html.dark .bar{background:#1e3a8a}html.dark .none{color:#64748b}
+html.dark .b-ok{background:#14532d;color:#bbf7d0}html.dark .b-warn{background:#78350f;color:#fde68a}html.dark .b-none{background:#1f2937;color:#94a3b8}
+html.dark .am{color:#93c5fd}html.dark .fm{color:#fdba74}
 </style></head><body>
 <aside id="side">
  <div class="brand"><b>📡 방송운행자료 조회</b><span id="srv">녹음 PC 서버</span></div>
@@ -484,6 +503,7 @@ th{background:#f8fafc;font-size:12px;color:var(--muted);position:sticky;top:0}td
  </div>
  <div class="status">
   <div id="clock">--:--:--</div>
+  <div class="theme" id="theme" title="화면 밝기 (이 브라우저에만 기억)"><button data-t="light">☀ 밝게</button><button data-t="dark">🌙 어둡게</button><button data-t="auto">🖥 자동</button></div>
   <div class="row"><i class="dot" id="dr"></i><span>라디오 편집기</span><small id="sr">-</small></div>
   <div class="row"><i class="dot" id="dt"></i><span>TV 편집기</span><small id="st">-</small></div>
   <small id="sm">편집기에서 저장한 내용을 1분마다 모읍니다</small>
@@ -504,6 +524,13 @@ function today(){const d=new Date();return d.getFullYear()+'-'+pad(d.getMonth()+
 function secs(s){s=+s||0;const m=Math.floor(s/60);return m?m+'분 '+(s%60?s%60+'초':''):s+'초'}
 const PAGES={home:['🏠 오늘 한눈에',''],radio:['💰 라디오 운행표 — 달력 · 정산 · 검색','radio/'],tv:['📺 TV 주간편성표','tv/'],rec:['🎧 AM 녹음 듣기','rec/player.html'],recfm:['📻 FM 녹음 듣기','rec-fm/player.html']};
 let cur='',hasFM=false,UIV='';
+// 화면 밝기: 밝게 / 어둡게 / 자동(윈도우·휴대폰 설정 따라). 안의 화면(운행표·TV)도 같이 바뀜
+function themeNow(){try{return localStorage.getItem('edit_theme')||'light'}catch(e){return 'light'}}
+function setTheme(t){try{localStorage.setItem('edit_theme',t)}catch(e){}applyTheme();
+ try{const w=$('frame').contentWindow;w&&w.applyTheme&&w.applyTheme()}catch(e){}
+ document.querySelectorAll('#theme button').forEach(b=>b.classList.toggle('on',b.dataset.t===t))}
+document.querySelectorAll('#theme button').forEach(b=>b.onclick=()=>setTheme(b.dataset.t));
+document.querySelectorAll('#theme button').forEach(b=>b.classList.toggle('on',b.dataset.t===themeNow()));
 // 서버에 새 화면이 올라오면 스스로 새로 고침 (Ctrl+F5 필요 없음). 녹음을 듣는 중이면 멈출 때까지 기다림
 function playing(){try{const w=$('frame').contentWindow;return !!(w&&w.playerBusy&&w.playerBusy())}catch(e){return false}}
 let reloading=false;
@@ -590,7 +617,10 @@ document.addEventListener('visibilitychange',()=>{if(!document.hidden)side()}); 
 </script></body></html>"""
 
 TV_HTML = r"""<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>TV 주간편성표 (조회 전용)</title><style>
+<title>TV 주간편성표 (조회 전용)</title><script>(function(){function ap(){var t='light';try{t=localStorage.getItem('edit_theme')||'light'}catch(e){}
+var d=t==='dark'||(t==='auto'&&window.matchMedia&&matchMedia('(prefers-color-scheme: dark)').matches);document.documentElement.classList.toggle('dark',d)}
+ap();window.applyTheme=ap;window.addEventListener('storage',function(e){if(e.key==='edit_theme')ap()});
+try{matchMedia('(prefers-color-scheme: dark)').addEventListener('change',ap)}catch(e){}})()</script><style>
 *{box-sizing:border-box}
 body{font-family:"Malgun Gothic","맑은 고딕","Noto Sans KR",sans-serif;margin:0;background:#f1f5f9;color:#0f172a;font-size:14px}
 header{background:#0f172a;color:#fff;padding:12px 22px;display:flex;gap:12px;align-items:baseline}
@@ -605,6 +635,12 @@ td a{color:#2563eb;text-decoration:none;font-weight:bold}td a:hover{text-decorat
 .msg{color:#64748b;font-size:12px;margin:0 0 10px}
 .empty{padding:40px;text-align:center;color:#94a3b8}
 .embed header{display:none}.embed main{max-width:none}
+html.dark body{background:#0b1220;color:#e2e8f0}html.dark header{background:#020617}
+html.dark .card{background:#111827;border-color:#1f2937}html.dark table{background:#111827}
+html.dark th{background:#0f172a;color:#94a3b8;border-color:#1f2937}html.dark td{border-color:#1f2937}
+html.dark tr:hover td{background:#172033}html.dark td a{color:#93c5fd}html.dark .msg{color:#94a3b8}
+html.dark [style*="#15803d"]{color:#4ade80!important}html.dark [style*="#c2410c"]{color:#fb923c!important}
+html.dark [style*="#9a3412"]{color:#fdba74!important}
 </style><script>if(window.top!==window.self)document.documentElement.classList.add('embed')</script></head><body><header><a href="../" id="back">← 처음</a><b>📺 TV 주간편성표</b> <span id="who" style="font-size:12px;opacity:.85"></span></header>
 <main><div class="msg" id="msg">불러오는 중…</div><div class="card"><table id="tbl"></table></div></main><script>
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));

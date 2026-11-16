@@ -25,7 +25,7 @@ except ImportError:
     except ImportError:
         fitz = None
 
-APP_VERSION = "2.14.1"
+APP_VERSION = "2.14.2"
 APP_TITLE = f"운행표 데이터 편집기 v{APP_VERSION}"
 APP_MUTEX = "RunSheetEditor_Running"      # 설치 프로그램이 '실행 중'을 알아보는 이름 (setup.iss 의 AppMutex 와 같아야 함)
 RUN_BY_LAUNCHER = bool(os.environ.get("RADIO_LAUNCHER"))   # 편집 프로그램 런처로 실행됨 -> 업데이트는 런처가 한다
@@ -1191,7 +1191,10 @@ def announce_view(kind, port):
 _VIEW_HTML = r"""<!DOCTYPE html>
 <html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>💰 정산 / 검색 (조회 전용)</title>
-<style>
+<script>(function(){function ap(){var t='light';try{t=localStorage.getItem('edit_theme')||'light'}catch(e){}
+var d=t==='dark'||(t==='auto'&&window.matchMedia&&matchMedia('(prefers-color-scheme: dark)').matches);document.documentElement.classList.toggle('dark',d)}
+ap();window.applyTheme=ap;window.addEventListener('storage',function(e){if(e.key==='edit_theme')ap()});
+try{matchMedia('(prefers-color-scheme: dark)').addEventListener('change',ap)}catch(e){}})()</script><style>
 :root{--acc:#2563eb;--ink:#0f172a;--mut:#64748b;--line:#e2e8f0;--soft:#f8fafc}
 *{box-sizing:border-box}
 body{font-family:"Malgun Gothic","맑은 고딕","Noto Sans KR",sans-serif;margin:0;background:#f1f5f9;color:var(--ink);font-size:14px}
@@ -1239,6 +1242,24 @@ td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
 .embed header{background:transparent;color:var(--mut);padding:10px 22px 0}
 .embed header b{display:none}
 .embed main{max-width:none;padding-top:8px}
+/* 어둡게 (녹음 PC 첫 화면에서 '🌙 어둡게'를 고르면) */
+html.dark{--acc:#3b82f6;--ink:#e2e8f0;--mut:#94a3b8;--line:#1f2937;--soft:#0f172a}
+html.dark body{background:#0b1220}html.dark header{background:#020617}html.dark.embed header{background:transparent}
+html.dark .tabs{background:#1e293b}html.dark .tabs button{color:#94a3b8}
+html.dark .tabs button:hover{background:rgba(255,255,255,.06)}html.dark .tabs button.on{background:#0f172a;color:#93c5fd}
+html.dark .pane,html.dark table{background:#111827}
+html.dark label,html.dark .total{color:#cbd5e1}
+html.dark input,html.dark select,html.dark button{background:#0f172a;border-color:#334155;color:#e2e8f0}
+html.dark .btn{background:var(--acc);border-color:var(--acc);color:#fff}html.dark .btn:hover{background:#2563eb}
+html.dark .btn.lite{background:#1e293b;color:#e2e8f0}html.dark .btn.lite:hover{background:#273449}
+html.dark a{color:#93c5fd}
+html.dark th,html.dark td{border-color:#1f2937}html.dark tr:hover td{background:#172033}
+html.dark .cal .d{background:#111827}html.dark .cal .d:hover{background:#172033}
+html.dark .cal .d.out{background:#0b1220;color:#334155}html.dark .cal .d.sel{background:#172554;box-shadow:0 0 0 3px #1e3a8a}
+html.dark .cal .cnt{color:#93c5fd}html.dark .cal .sun{color:#f87171}html.dark .cal .sat{color:#60a5fa}
+html.dark [style*="#15803d"]{color:#4ade80!important}html.dark [style*="#c2410c"]{color:#fb923c!important}
+html.dark [style*="#9a3412"]{color:#fdba74!important}html.dark tr[style*="#f8fafc"]{background:#172033!important}
+html.dark input::placeholder{color:#64748b}html.dark ::-webkit-calendar-picker-indicator{filter:invert(.8)}
 </style><script>if(window.top!==window.self)document.documentElement.classList.add('embed')</script></head><body>
 <header><b>💰 정산 / 검색</b><span id="who"></span><span>조회 전용 — 이 화면에서는 기록을 바꿀 수 없습니다</span></header>
 <main>
