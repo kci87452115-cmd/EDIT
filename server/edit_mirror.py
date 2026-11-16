@@ -714,7 +714,7 @@ def clip_filename(src, s, e, prefix):
     return f"{prefix}{stem}_{tail}.mp3"
 
 
-def make_clip(src, s, e, vol, ip):
+def make_clip(src, s, e, vol, ip, fade=False):
     """→ (파일경로, 내려받을 이름). 바쁘면 RuntimeError"""
     global _clip_running
     max_min, workers = clip_limits()
@@ -735,7 +735,7 @@ def make_clip(src, s, e, vol, ip):
                 os.remove(fp)
         except OSError:
             pass
-    key = hashlib.sha1(f"{src}|{s:.1f}|{e:.1f}|{vol}".encode("utf-8")).hexdigest()
+    key = hashlib.sha1(f"{src}|{s:.1f}|{e:.1f}|{vol}|{int(fade)}".encode("utf-8")).hexdigest()
     out = os.path.join(CLIP_CACHE, key + ".mp3")
     if os.path.exists(out) and os.path.getsize(out) > 0:
         os.utime(out)
@@ -757,6 +757,10 @@ def make_clip(src, s, e, vol, ip):
         cmd += ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
                 "-ss", f"{s:.2f}", "-i", inp, "-t", f"{e - s:.2f}", "-vn", "-map_metadata", "-1"]
         af = CLIP_VOL[vol]
+        dur = e - s
+        if fade and dur >= 1.0:                            # 앞뒤 0.3초 서서히 (툭 끊기는 소리 없앰)
+            fd = f"afade=t=in:st=0:d=0.3,afade=t=out:st={dur - 0.3:.2f}:d=0.3"
+            af = f"{af},{fd}" if af else fd
         if af is None and inp.lower().split("?")[0].endswith(".mp3"):
             cmd += ["-c:a", "copy"]                       # 소리 그대로면 다시 압축하지 않음 (빠르고 음질 그대로)
         else:
@@ -819,7 +823,7 @@ def make_hub_handler(mirror):
             except ValueError:
                 return self._json({"error": "시작/끝 시간이 올바르지 않습니다."}, 400)
             try:
-                f, name = make_clip(g("src"), s, e, g("vol") or "0", ip)
+                f, name = make_clip(g("src"), s, e, g("vol") or "0", ip, g("fade") == "1")
             except RuntimeError as exc:
                 return self._json({"error": str(exc)}, 503)
             except ValueError as exc:

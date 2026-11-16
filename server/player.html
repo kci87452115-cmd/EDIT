@@ -43,7 +43,7 @@
   .help { font-size:12px; color:var(--dim); }
   #msg { color:#f77; font-size:13px; }
   /* 구간 저장 */
-  #region { position:absolute; top:0; bottom:0; background:rgba(245,194,107,.22); border-left:2px solid #f5c26b; border-right:2px solid #f5c26b; pointer-events:none; display:none; }
+  #region { position:absolute; top:0; bottom:0; z-index:1; background:rgba(245,194,107,.28); border-left:2px solid #f5c26b; border-right:2px solid #f5c26b; pointer-events:none; display:none; }
   #clip { background:var(--panel); border:1px solid #4a3d22; border-radius:10px; padding:14px 16px; display:none; flex-direction:column; gap:12px; }
   #clip .crow { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
   #clip .ttl { font-weight:bold; color:#f5c26b; }
@@ -54,6 +54,9 @@
   #clip label { display:inline-flex; align-items:center; gap:5px; padding:7px 11px; border:1px solid var(--line); border-radius:6px; cursor:pointer; font-size:14px; }
   #clip label:has(input:checked) { border-color:#f5c26b; color:#f5c26b; }
   #clip label input { accent-color:#f5c26b; margin:0; }
+  #clip label:has(input[type=checkbox]:checked) { border-color:#f5c26b; color:#f5c26b; }
+  #clip button.nudge { padding:8px 8px; font-size:13px; color:var(--dim); }
+  #clip button.nudge:hover { color:var(--fg); }
   #cSave { background:#f5c26b; color:#000; font-weight:bold; }
   #cSave:disabled { opacity:.6; cursor:wait; }
   #cmsg { font-size:13px; }
@@ -98,10 +101,10 @@
         <span class="lbl2">원본 녹음은 그대로 두고, 고른 부분만 새 MP3 파일로 내려받습니다 · 한 번에 최대 <b id="cmax">30</b>분</span></div>
       <div class="crow">
         <span class="lbl2" id="cmode">시작</span>
-        <input class="tm" id="cs" placeholder="00:00:00"><button id="csNow" title="단축키 [">지금 위치로</button>
+        <button class="nudge" data-n="s,-1" title="1초 앞으로">−1초</button><input class="tm" id="cs" placeholder="00:00:00"><button class="nudge" data-n="s,1" title="1초 뒤로">+1초</button><button id="csNow" title="단축키 [">지금 위치로</button>
         <span style="width:10px"></span>
         <span class="lbl2">끝</span>
-        <input class="tm" id="ce" placeholder="00:00:00"><button id="ceNow" title="단축키 ]">지금 위치로</button>
+        <button class="nudge" data-n="e,-1" title="1초 앞으로">−1초</button><input class="tm" id="ce" placeholder="00:00:00"><button class="nudge" data-n="e,1" title="1초 뒤로">+1초</button><button id="ceNow" title="단축키 ]">지금 위치로</button>
         <span style="width:10px"></span>
         <span class="lbl2">길이</span> <b id="clen">-</b>
       </div>
@@ -110,6 +113,11 @@
         <label><input type="radio" name="cvol" value="6">조금 크게</label>
         <label><input type="radio" name="cvol" value="12">크게</label>
         <label title="작은 소리·큰 소리를 방송 기준 크기로 고르게 맞춥니다"><input type="radio" name="cvol" value="auto">자동 맞춤</label>
+        <span class="lbl2" id="cvolHint"></span>
+      </div>
+      <div class="crow"><span class="lbl2">마무리</span>
+        <label title="저장 파일의 앞뒤 0.3초를 서서히 키우고 줄여서 툭 끊기는 소리를 없앱니다"><input type="checkbox" id="cfade" checked>앞뒤 부드럽게 (0.3초)</label>
+        <span class="lbl2">· 진행바에서 <b>Shift+드래그</b>로 구간 선택, 노란 구간 양 끝을 끌어 조정</span>
       </div>
       <div class="crow">
         <button id="cPrev">▶ 구간 미리 듣기</button>
@@ -117,7 +125,7 @@
         <span id="cmsg"></span>
       </div>
     </div>
-    <div class="help">단축키: Space 재생/정지 · ←/→ 10초 · Shift+←/→ 1분 · 진행바 클릭·드래그로 이동 · 구간 저장: [ 시작 · ] 끝</div>
+    <div class="help">단축키: Space 재생/정지 · ←/→ 10초 · Shift+←/→ 1분 · 진행바 클릭·드래그로 이동 · 구간 저장: [ 시작 · ] 끝 · Shift+드래그 구간 선택</div>
     <div id="msg"></div>
   </main>
 </div>
@@ -190,7 +198,7 @@ function openFile(f){
   const dl=$('dl'); dl.href=f.u.href; dl.setAttribute('download', f.name); dl.style.display='';
   startClock = parseStart(f.name);
   $('bcWrap').style.display = startClock==null ? 'none' : '';
-  $('clipBtn').style.display=''; clipS=null; clipE=null; clipShow();
+  $('clipBtn').style.display=''; clipReset();   // 다른 파일로 넘어가면 구간 저장 창을 닫고 처음 상태로
   au.play().catch(()=>{});
 }
 
@@ -224,14 +232,40 @@ au.addEventListener('error',()=>{ $('msg').textContent='파일을 재생할 수 
 
 // ---- 진행바 클릭/드래그 ----
 function posFrom(e){ const r=bar.getBoundingClientRect(); return Math.min(1,Math.max(0,(e.clientX-r.left)/r.width)); }
-let drag=false;
-bar.addEventListener('mousedown',e=>{ drag=true; seekTo(posFrom(e)); });
-window.addEventListener('mouseup',()=>drag=false);
+// drag: 'seek' 이동 · 'sel' Shift+드래그로 새 구간 · 's'/'e' 노란 구간의 시작/끝 손잡이
+let drag=null, selFrom=0;
+function edgeAt(e){   // 구간 저장이 열려 있고 노란 구간 끝 가까이(8px)면 's' / 'e'
+  const d=au.duration; if(!clipOn||!d||clipS==null||clipE==null) return null;
+  const r=bar.getBoundingClientRect(), x=e.clientX-r.left;
+  const xs=clipS/d*r.width, xe=clipE/d*r.width;
+  if(Math.abs(x-xe)<=8) return 'e';
+  if(Math.abs(x-xs)<=8) return 's';
+  return null;
+}
+bar.addEventListener('mousedown',e=>{
+  const d=au.duration; if(!d) return;
+  const edge=edgeAt(e);
+  if(edge){ drag=edge; e.preventDefault(); return; }
+  if(e.shiftKey && au.src){ clipOpen(true); drag='sel'; selFrom=posFrom(e)*d; clipS=selFrom; clipE=selFrom; clipShow(); cmsg(''); e.preventDefault(); return; }
+  drag='seek'; seekTo(posFrom(e));
+});
+window.addEventListener('mouseup',()=>{
+  if(drag==='sel' && clipE!=null && clipS!=null && clipE-clipS<0.5){ clipE=null; clipShow(); }   // 그냥 클릭이면 구간 취소
+  drag=null;
+});
+window.addEventListener('mousemove',e=>{
+  const d=au.duration; if(!drag||!d) return;
+  const t=posFrom(e)*d;
+  if(drag==='seek') seekTo(posFrom(e));
+  else if(drag==='sel'){ clipS=Math.min(selFrom,t); clipE=Math.max(selFrom,t); clipShow(); }
+  else if(drag==='s'){ clipS=Math.min(t, clipE-0.5); clipShow(); }
+  else if(drag==='e'){ clipE=Math.max(t, clipS+0.5); clipShow(); }
+});
 bar.addEventListener('mousemove',e=>{
   const p=posFrom(e), d=au.duration; if(!d) return;
   tip.style.display='block'; tip.style.left=(p*100)+'%';
   tip.textContent = fmt(p*d) + (startClock!=null ? '  ('+fmtClock(startClock+p*d)+')' : '');
-  if(drag) seekTo(p);
+  bar.style.cursor = (drag==='s'||drag==='e'||edgeAt(e)) ? 'ew-resize' : (e.shiftKey&&clipOn ? 'crosshair' : 'pointer');
 });
 bar.addEventListener('mouseleave',()=>tip.style.display='none');
 function seekTo(p){ if(au.duration) { au.currentTime=p*au.duration; update(); } }
@@ -262,7 +296,7 @@ function applyVol(){
   $('volv').style.color=v>1?'#f59e0b':'';
   try{ localStorage.setItem('player_vol',String(v)); }catch(e){}
 }
-$('vol').oninput=()=>{ if(+$('vol').value>1) ensureAudio(); applyVol(); };
+$('vol').oninput=()=>{ if(+$('vol').value>1) ensureAudio(); applyVol(); if(typeof volLink==='function') volLink(); };
 au.addEventListener('play',()=>{ if(+$('vol').value>1) ensureAudio(); if(actx&&actx.state==='suspended') actx.resume(); });
 try{ const sv=parseFloat(localStorage.getItem('player_vol')); if(sv>=0&&sv<=3) $('vol').value=sv; }catch(e){}
 applyVol();
@@ -301,7 +335,29 @@ function clipOpen(on){
     clipE = isFinite(d) ? Math.min(d, clipS+60) : clipS+60; }
   clipShow();
 }
-$('clipBtn').onclick=()=>clipOpen(!clipOn);
+$('clipBtn').onclick=()=>{ clipOpen(!clipOn); if(clipOn) volLink(); };
+function clipReset(){
+  previewing=false; clipS=null; clipE=null;
+  document.querySelector('input[name=cvol][value="0"]').checked=true; volLink();
+  $('cfade').checked=true;
+  cmsg(''); clipOpen(false);
+}
+// ④ 듣는 볼륨이 100%보다 크면 '소리 크기'를 가장 가까운 칸으로 (자동 맞춤을 골랐으면 그대로 둠)
+function volLink(){
+  const v=+$('vol').value, cur=document.querySelector('input[name=cvol]:checked');
+  if(cur && cur.value==='auto'){ $('cvolHint').textContent=''; return; }
+  const db = v>0 ? 20*Math.log10(v) : 0;
+  const pick = db<3 ? '0' : (db<9 ? '6' : '12');
+  document.querySelector('input[name=cvol][value="'+pick+'"]').checked=true;
+  $('cvolHint').textContent = v>1.001 ? '(듣는 볼륨 '+Math.round(v*100)+'%에 맞춤)' : '';
+}
+document.querySelectorAll('input[name=cvol]').forEach(r=>r.onchange=()=>{ $('cvolHint').textContent=''; });
+document.querySelectorAll('button.nudge').forEach(b=>b.onclick=()=>{
+  const [w,n]=b.dataset.n.split(','); const d=au.duration, lim=isFinite(d)?d:1e9;
+  if(w==='s'){ if(clipS==null) return; clipS=Math.max(0,Math.min(clipS+(+n), clipE!=null?clipE-0.5:lim)); au.currentTime=clipS; }
+  else { if(clipE==null) return; clipE=Math.min(lim,Math.max(clipE+(+n), clipS!=null?clipS+0.5:0)); au.currentTime=Math.max(0,clipE-3); }   // 끝은 3초 전부터 들어 보게
+  clipShow(); update();
+});
 function setS(){ if(!au.src) return; clipOpen(true); clipS=au.currentTime; if(clipE!=null && clipE<=clipS) clipE=null; clipShow(); cmsg(''); }
 function setE(){ if(!au.src) return; clipOpen(true); clipE=au.currentTime; if(clipS!=null && clipS>=clipE) clipS=null; clipShow(); cmsg(''); }
 $('csNow').onclick=setS; $('ceNow').onclick=setE;
@@ -320,7 +376,7 @@ $('cSave').onclick=async()=>{
   if(clipE-clipS>clipMax*60){ cmsg('한 번에 '+clipMax+'분까지만 저장할 수 있습니다. 구간을 줄여 주세요.','err'); return; }
   const src=decodeURIComponent(new URL(au.src).pathname);
   const vol=document.querySelector('input[name=cvol]:checked').value;
-  const q='/api/clip?src='+encodeURIComponent(src)+'&s='+clipS.toFixed(2)+'&e='+clipE.toFixed(2)+'&vol='+vol;
+  const q='/api/clip?src='+encodeURIComponent(src)+'&s='+clipS.toFixed(2)+'&e='+clipE.toFixed(2)+'&vol='+vol+'&fade='+($('cfade').checked?1:0);
   const btn=$('cSave'); btn.disabled=true; const t0=Date.now();
   const tick=setInterval(()=>cmsg('만드는 중… '+Math.round((Date.now()-t0)/1000)+'초'),500); cmsg('만드는 중…');
   try{
