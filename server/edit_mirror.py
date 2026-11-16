@@ -474,12 +474,12 @@ th{background:#f8fafc;font-size:12px;color:var(--muted);position:sticky;top:0}td
   <div class="grp">보기</div>
   <a class="nav" data-p="home"><span class="i">🏠</span><span class="n">오늘 한눈에</span></a>
   <a class="nav" data-p="radio"><span class="i">💰</span><span class="n">라디오 운행표</span></a>
-  <a class="nav" data-p="tv"><span class="i">📺</span><span class="n">TV 편성표</span><span class="c" id="ctv"></span></a>
+  <a class="nav" data-p="tv"><span class="i">📺</span><span class="n">TV 주간편성표</span><span class="c" id="ctv"></span></a>
   <a class="nav" data-p="rec"><span class="i">🎧</span><span class="n">AM 녹음 듣기</span></a>
   <a class="nav" data-p="recfm" id="navfm" style="display:none"><span class="i">📻</span><span class="n">FM 녹음 듣기</span></a>
   <div id="lk"></div>
   <div class="grp">운행표 PDF</div><div id="lrs"><div class="empty">불러오는 중…</div></div>
-  <div class="grp">TV 편성표 PDF</div><div id="ltv"><div class="empty">불러오는 중…</div></div>
+  <div class="grp">TV 주간편성표 PDF</div><div id="ltv"><div class="empty">불러오는 중…</div></div>
  </div>
  <div class="status">
   <div id="clock">--:--:--</div>
@@ -501,7 +501,7 @@ const pad=n=>String(n).padStart(2,'0');const num=v=>Number(v||0).toLocaleString(
 const WK='일월화수목금토';
 function today(){const d=new Date();return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())}
 function secs(s){s=+s||0;const m=Math.floor(s/60);return m?m+'분 '+(s%60?s%60+'초':''):s+'초'}
-const PAGES={home:['🏠 오늘 한눈에',''],radio:['💰 라디오 운행표 — 달력 · 정산 · 검색','radio/'],tv:['📺 TV 주간 편성표','tv/'],rec:['🎧 AM 녹음 듣기','rec/player.html'],recfm:['📻 FM 녹음 듣기','rec-fm/player.html']};
+const PAGES={home:['🏠 오늘 한눈에',''],radio:['💰 라디오 운행표 — 달력 · 정산 · 검색','radio/'],tv:['📺 TV 주간편성표','tv/'],rec:['🎧 AM 녹음 듣기','rec/player.html'],recfm:['📻 FM 녹음 듣기','rec-fm/player.html']};
 let cur='',hasFM=false;
 function go(p,src,title){
  if(!PAGES[p]&&!src)p='home';cur=p;
@@ -567,7 +567,7 @@ async function home(){
   '<div class="kpi" onclick="go(\'radio\')"><div class="l">오늘 추가한 광고</div><div class="v">'+num(td[0])+'<small style="font-size:14px"> 건</small></div><div class="s">총 '+secs(td[1])+' · <span class="am">AM '+td[2]+'</span> · <span class="fm">FM '+td[3]+'</span></div></div>'
   +'<div class="kpi" onclick="go(\'radio\')"><div class="l">이번 달 누적</div><div class="v">'+num(mc)+'<small style="font-size:14px"> 건</small></div><div class="s">총 '+secs(ms)+' · '+Object.keys(cal).length+'일</div></div>'
   +'<div class="kpi" onclick="go(\'radio\')"><div class="l">오늘 운행표</div><div class="v" style="font-size:16px;margin:12px 0 8px">'+pv('AM')+pv('FM')+'</div><div class="s">편집기에서 저장하면 바뀝니다</div></div>'
-  +'<div class="kpi" onclick="go(\'tv\')"><div class="l">TV 편성표</div><div class="v">'+tvn+'<small style="font-size:14px"> 개</small></div><div class="s">주·판별 PDF</div></div>'
+  +'<div class="kpi" onclick="go(\'tv\')"><div class="l">TV 주간편성표</div><div class="v">'+tvn+'<small style="font-size:14px"> 개</small></div><div class="s">주·판별 PDF</div></div>'
   +recCard('AM 녹음','rec',recs)+(fm?recCard('FM 녹음','recfm',fm):'');
  const names=day.names||[],mx=Math.max(1,...names.map(n=>n[2]));
  $('cn').innerHTML=names.length?'<table><tr><th>광고주</th><th>그룹</th><th class="n">횟수</th><th class="n">총 초수</th><th></th></tr>'+names.map(n=>'<tr><td><b>'+esc(n[0])+'</b></td><td>'+esc(n[1])+'</td><td class="n">'+n[2]+'</td><td class="n">'+num(n[3])+'</td><td style="width:30%"><div class="bar"><i style="width:'+(n[2]/mx*100)+'%"></i></div></td></tr>').join('')+'</table>':'<div class="none">오늘 추가한 광고가 없습니다</div>';
@@ -583,7 +583,7 @@ setInterval(()=>{if(!document.hidden){side();if(cur==='home')home()}},60000);
 </script></body></html>"""
 
 TV_HTML = r"""<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>TV 주간 편성표 (조회 전용)</title><style>
+<title>TV 주간편성표 (조회 전용)</title><style>
 *{box-sizing:border-box}
 body{font-family:"Malgun Gothic","맑은 고딕","Noto Sans KR",sans-serif;margin:0;background:#f1f5f9;color:#0f172a;font-size:14px}
 header{background:#0f172a;color:#fff;padding:12px 22px;display:flex;gap:12px;align-items:baseline}
@@ -598,7 +598,7 @@ td a{color:#2563eb;text-decoration:none;font-weight:bold}td a:hover{text-decorat
 .msg{color:#64748b;font-size:12px;margin:0 0 10px}
 .empty{padding:40px;text-align:center;color:#94a3b8}
 .embed header{display:none}.embed main{max-width:none}
-</style><script>if(window.top!==window.self)document.documentElement.classList.add('embed')</script></head><body><header><a href="../" id="back">← 처음</a><b>📺 TV 주간 편성표</b> <span id="who" style="font-size:12px;opacity:.85"></span></header>
+</style><script>if(window.top!==window.self)document.documentElement.classList.add('embed')</script></head><body><header><a href="../" id="back">← 처음</a><b>📺 TV 주간편성표</b> <span id="who" style="font-size:12px;opacity:.85"></span></header>
 <main><div class="msg" id="msg">불러오는 중…</div><div class="card"><table id="tbl"></table></div></main><script>
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 async function load(){try{const d=await (await fetch('api/tv')).json();document.getElementById('who').textContent=' — '+d.name;
