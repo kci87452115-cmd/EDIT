@@ -34,3 +34,9 @@ bash ~/edit/server/install.sh
 ```
 - `public_host`: 사무실 PC가 녹음 PC 웹에 들어오는 주소 (공유기의 회사망 쪽 주소). 운행표 화면의 'TV 주간 편성표' 탭에 씁니다.
 - 공유기에서 녹음 PC에 **DHCP 고정 할당** + **포트 포워딩 80 → 녹음 PC:80** 을 해 두세요.
+
+## 왼쪽 패널 '바로가기' (새 창으로 열림)
+`~/edit-mirror/config.json` 에 `links` 를 넣으면 1분 안에 패널에 나타납니다 (서버 다시 시작 필요 없음).
+```json
+{"links": [{"name": "송출 달력", "url": "http://218.237.3.199:8000/calendar", "icon": "📅"}]}
+```
