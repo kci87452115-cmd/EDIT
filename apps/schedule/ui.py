@@ -45,7 +45,7 @@ def schedule_badge_dir():
         return os.path.join(home, "데이터", "편성표", "badges")
     return os.path.abspath("badges")
 
-APP_VERSION = "3.23.0"
+APP_VERSION = "3.23.1"
 
 
 def _detect_profile():
@@ -1051,6 +1051,30 @@ def get_tk_font_family(font_path):
     
     return "맑은 고딕"
 
+
+
+def _bold_font_path(path):
+    """같은 글꼴의 굵은(Bold) 파일 경로. 없으면 None.
+    예) malgun.ttf → malgunbd.ttf, NanumGothic.ttf → NanumGothicBold.ttf, XXX-Regular.ttf → XXX-Bold.ttf"""
+    try:
+        if not path:
+            return None
+        d, f = os.path.split(path)
+        root, ext = os.path.splitext(f)
+        cands = []
+        if f.lower() == "malgun.ttf":
+            cands.append("malgunbd.ttf")
+        for a, b_ in (("Regular", "Bold"), ("regular", "bold"), ("-R", "-B")):
+            if a in root:
+                cands.append(root.replace(a, b_) + ext)
+        cands += [root + "Bold" + ext, root + "-Bold" + ext, root + "bd" + ext, root + "B" + ext]
+        for c_ in cands:
+            p_ = os.path.join(d, c_)
+            if os.path.normcase(p_) != os.path.normcase(path) and os.path.exists(p_):
+                return p_
+    except Exception:
+        pass
+    return None
 
 
 def _multiply_soft_fills(doc, page):
@@ -4714,6 +4738,16 @@ class ScheduleEditor:
         except Exception:
             measure_font = None
 
+        # 상단·하단 시간은 기본 창처럼 굵게: 같은 글꼴의 굵은 파일(맑은 고딕 → 맑은 고딕 Bold 등)이 있으면 그것으로
+        time_font = font_name
+        _bp = _bold_font_path(font_path) if font_name == "custom_korean_font" else None
+        if _bp:
+            try:
+                page.insert_font(fontname="custom_korean_bold", fontfile=_bp)
+                time_font = "custom_korean_bold"
+            except Exception:
+                time_font = font_name
+
         mod_ids = {b["id"] for b in blocks if self._is_modified(b)}
 
         # 1) 채우기: 원본 테두리를 덮지 않도록 선 굵기의 절반만큼 안쪽으로 줄여서 그린다.
@@ -4795,11 +4829,11 @@ class ScheduleEditor:
 
             if top_enabled and top_val:
                 p_top = fitz.Point(r.x0 + 3, r.y0 + top_time_fs + 2)
-                page.insert_text(p_top, top_val, fontsize=top_time_fs, fontname=font_name, color=(0.2, 0.25, 0.33))
-                
+                page.insert_text(p_top, top_val, fontsize=top_time_fs, fontname=time_font, color=(0.2, 0.25, 0.33))
+
             if bottom_enabled and bottom_val:
                 p_bot = fitz.Point(r.x0 + 3, r.y1 - 3)
-                page.insert_text(p_bot, bottom_val, fontsize=bottom_time_fs, fontname=font_name, color=(0.2, 0.25, 0.33))
+                page.insert_text(p_bot, bottom_val, fontsize=bottom_time_fs, fontname=time_font, color=(0.2, 0.25, 0.33))
 
             right_x = r.x1 - 2
             badge_y = r.y0 + 2
