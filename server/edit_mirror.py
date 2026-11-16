@@ -410,7 +410,7 @@ class RadioView:
 
 # ---------------------------------------------------------------- 첫 화면 · TV · 상태
 HUB_HTML = r"""<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>방송 자료 조회</title><style>
+<title>방송운행자료 조회</title><style>
 :root{--side:#0f172a;--side2:#1e293b;--line:#e5e7eb;--muted:#64748b;--acc:#2563eb;--ok:#16a34a;--warn:#d97706;--bad:#dc2626}
 *{box-sizing:border-box}
 html,body{height:100%;margin:0}
@@ -466,7 +466,7 @@ th{background:#f8fafc;font-size:12px;color:var(--muted);position:sticky;top:0}td
  #side.open{left:0}#menu{display:inline-block}}
 </style></head><body>
 <aside id="side">
- <div class="brand"><b>📡 방송 자료 조회</b><span id="srv">녹음 PC 서버</span></div>
+ <div class="brand"><b>📡 방송운행자료 조회</b><span id="srv">녹음 PC 서버</span></div>
  <div class="scroll">
   <div class="grp">보기</div>
   <a class="nav" data-p="home"><span class="i">🏠</span><span class="n">오늘 한눈에</span></a>
