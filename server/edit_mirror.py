@@ -156,6 +156,9 @@ def sources(discovery, kind, config):
         u = str(u).strip().rstrip("/")
         if u and not u.startswith("http"):
             u = "http://" + u
+        if u and not re.fullmatch(r"https?://[A-Za-z0-9.\-]+(:\d{1,5})?", u):
+            out.append({"url": "", "name": f"잘못된 주소 '{u}' (config.json 확인)"})
+            continue
         if u and u not in seen:
             seen.add(u)
             out.append({"url": u, "name": "직접 넣은 주소"})
@@ -222,6 +225,9 @@ class Mirror:
             return
         last_err = ""
         for s in srcs:
+            if not s["url"]:
+                last_err = s["name"]
+                continue
             try:
                 self._sync_radio_from(s)
                 return
@@ -296,6 +302,9 @@ class Mirror:
         local = load_json(os.path.join(TV_DIR, "status.json"), {})
         ok_any, errs, got = False, [], 0
         for s in srcs:
+            if not s["url"]:
+                errs.append(s["name"])
+                continue
             try:
                 d = http_json(s["url"] + "/api/tv")
                 for r in d.get("rows", []):
