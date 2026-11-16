@@ -65,7 +65,7 @@
       <button class="sp" data-s="1.5">1.5x</button>
       <button class="sp" data-s="2">2x</button>
       <a id="dl" class="dlbtn" style="display:none" download>⬇ 다운로드</a>
-      <div class="vol">🔊 <input type="range" id="vol" min="0" max="1" step="0.05" value="1"></div>
+      <div class="vol" title="100%보다 크게 하면 소리를 키웁니다 (최대 300%, 찢어지지 않게 자동 제한)">🔊 <input type="range" id="vol" min="0" max="3" step="0.05" value="1"><span id="volv" style="min-width:42px;text-align:right">100%</span></div>
     </div>
     <div class="help">단축키: Space 재생/정지 · ←/→ 10초 · Shift+←/→ 1분 · 진행바 클릭·드래그로 이동</div>
     <div id="msg"></div>
@@ -190,7 +190,31 @@ $('play').onclick=()=> au.src && (au.paused? au.play() : au.pause());
 document.querySelectorAll('[data-j]').forEach(b=>b.onclick=()=>{ au.currentTime=Math.max(0,au.currentTime+(+b.dataset.j)); update(); });
 document.querySelectorAll('.sp').forEach(b=>b.onclick=()=>{ au.playbackRate=+b.dataset.s;
   document.querySelectorAll('.sp').forEach(x=>x.classList.toggle('on',x===b)); });
-$('vol').oninput=e=>au.volume=+e.target.value;
+// ---- 소리 크기: 100%까지는 보통, 그 위로는 Web Audio로 키우고(최대 300%) 찢어지지 않게 제한
+let actx=null, gain=null;
+function ensureAudio(){
+  if(actx) return;
+  try{
+    actx=new (window.AudioContext||window.webkitAudioContext)();
+    const src=actx.createMediaElementSource(au);
+    gain=actx.createGain();
+    const lim=actx.createDynamicsCompressor();          // 리미터: 큰 소리만 눌러 줌
+    lim.threshold.value=-2; lim.knee.value=4; lim.ratio.value=20; lim.attack.value=0.002; lim.release.value=0.2;
+    src.connect(gain); gain.connect(lim); lim.connect(actx.destination);
+  }catch(e){ actx=null; gain=null; }
+  applyVol();
+}
+function applyVol(){
+  const v=+$('vol').value;
+  if(gain){ au.volume=1; gain.gain.value=v; } else { au.volume=Math.min(1,v); }
+  $('volv').textContent=Math.round(v*100)+'%';
+  $('volv').style.color=v>1?'#f59e0b':'';
+  try{ localStorage.setItem('player_vol',String(v)); }catch(e){}
+}
+$('vol').oninput=()=>{ if(+$('vol').value>1) ensureAudio(); applyVol(); };
+au.addEventListener('play',()=>{ if(+$('vol').value>1) ensureAudio(); if(actx&&actx.state==='suspended') actx.resume(); });
+try{ const sv=parseFloat(localStorage.getItem('player_vol')); if(sv>=0&&sv<=3) $('vol').value=sv; }catch(e){}
+applyVol();
 document.addEventListener('keydown',e=>{
   if(e.target.tagName==='INPUT') return;
   if(e.code==='Space'){ e.preventDefault(); $('play').click(); }
