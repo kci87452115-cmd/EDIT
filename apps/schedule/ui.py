@@ -45,7 +45,7 @@ def schedule_badge_dir():
         return os.path.join(home, "데이터", "편성표", "badges")
     return os.path.abspath("badges")
 
-APP_VERSION = "3.22.2"
+APP_VERSION = "3.23.0"
 
 
 def _detect_profile():
@@ -6339,7 +6339,50 @@ class ScheduleEditor:
             self.draw_pdf()
 
 
+_APP_MUTEX_HANDLE = None
+
+
+def _already_running():
+    """같은 편집기(TV 또는 DMB)가 이미 켜져 있으면 그 창을 앞으로 가져오고 True. (윈도우 전용, 실패하면 False)
+    TV 편성표 편집기와 DMB 편성 편집기는 서로 따로 셈한다 (둘은 함께 켤 수 있다)."""
+    global _APP_MUTEX_HANDLE
+    try:
+        import ctypes
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.CreateMutexW.restype = ctypes.c_void_p
+        _APP_MUTEX_HANDLE = k32.CreateMutexW(None, False, f"EditSchedule_{PROFILE}_Running")
+        if ctypes.get_last_error() != 183:          # 183 = ERROR_ALREADY_EXISTS
+            return False
+    except Exception:
+        return False
+    try:                                            # 이미 켜진 창을 찾아 앞으로
+        u32 = ctypes.WinDLL("user32")
+        prefix = "DMB 편성 편집기" if IS_DMB else "TV 편성표 편집기"
+        found = []
+        proto = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+
+        def _cb(hwnd, _):
+            n = u32.GetWindowTextLengthW(hwnd)
+            if n and u32.IsWindowVisible(hwnd):
+                buf = ctypes.create_unicode_buffer(n + 1)
+                u32.GetWindowTextW(hwnd, buf, n + 1)
+                if buf.value.startswith(prefix):
+                    found.append(hwnd)
+                    return False
+            return True
+        u32.EnumWindows(proto(_cb), 0)
+        if found:
+            if u32.IsIconic(found[0]):
+                u32.ShowWindow(found[0], 9)         # SW_RESTORE: 최소화돼 있으면 되살리기
+            u32.SetForegroundWindow(found[0])
+    except Exception:
+        pass
+    return True
+
+
 if __name__ == "__main__":
+    if _already_running():                          # 두 번 눌러도 하나만: 이미 켜진 창을 앞으로 가져오고 끝낸다
+        sys.exit(0)
     root = tk.Tk()
     app = ScheduleEditor(root)
     root.mainloop()
