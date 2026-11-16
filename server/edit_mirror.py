@@ -43,7 +43,7 @@ RADIO_PORT = 8080           # 운행표 조회 화면 (편집기 코드)
 HUB_PORT = 8081             # 첫 화면 + TV + 상태
 SYNC_EVERY = 60             # 초
 PEER_TIMEOUT = 90           # 이 시간 동안 알림이 없으면 '꺼짐'
-GIT_PULL_EVERY = 6 * 3600   # 저장소를 새로 받아 조회 화면을 편집기와 같은 버전으로 유지
+GIT_PULL_EVERY = 3600       # 저장소를 새로 받아 조회 화면을 편집기와 같은 버전으로 유지 (1시간마다)
 TV_KEY_RE = re.compile(r"^(schedule|dmb)-[0-9A-Za-z가-힣_\-]{1,60}$")
 RUNSHEET_KEY_RE = re.compile(r"^(AM|FM)\d{8}$")
 KEEP_DAYS = 40              # 이보다 오래된 미리보기 PDF는 지운다
@@ -218,6 +218,7 @@ class Mirror:
             x["online"] = names if fresh else []
         st["server"] = {"name": socket.gethostname(), "ip": lan_ip(), "now": now_str()}
         st["links"] = config_links()
+        st["ui_ver"] = UI_VER        # 화면 버전: 바뀌면 열려 있는 브라우저가 스스로 새로 고침
         return st
 
     # ---- 라디오
@@ -502,7 +503,11 @@ const WK='일월화수목금토';
 function today(){const d=new Date();return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())}
 function secs(s){s=+s||0;const m=Math.floor(s/60);return m?m+'분 '+(s%60?s%60+'초':''):s+'초'}
 const PAGES={home:['🏠 오늘 한눈에',''],radio:['💰 라디오 운행표 — 달력 · 정산 · 검색','radio/'],tv:['📺 TV 주간편성표','tv/'],rec:['🎧 AM 녹음 듣기','rec/player.html'],recfm:['📻 FM 녹음 듣기','rec-fm/player.html']};
-let cur='',hasFM=false;
+let cur='',hasFM=false,UIV='';
+// 서버에 새 화면이 올라오면 스스로 새로 고침 (Ctrl+F5 필요 없음). 녹음을 듣는 중이면 멈출 때까지 기다림
+function playing(){try{const w=$('frame').contentWindow;return !!(w&&w.playerBusy&&w.playerBusy())}catch(e){return false}}
+let reloading=false;
+function newVersion(){if(reloading)return;reloading=true;(function w(){if(playing())setTimeout(w,5000);else location.reload()})()}
 function go(p,src,title){
  if(!PAGES[p]&&!src)p='home';cur=p;
  const [t,u]=PAGES[p]||[title,src];const url=src||u;
@@ -533,6 +538,7 @@ async function side(){
   const f=(x,dot,lab)=>{const on=(x.online||[]).length;$(dot).className='dot '+(on?'ok':(x.synced?'warn':''));
    $(lab).textContent=on?'연결됨':(x.synced?'꺼짐':'없음');$(lab).title=x.synced?'마지막으로 모은 시각 '+x.synced:''};
   f(d.radio,'dr','sr');f(d.tv,'dt','st');
+  if(d.ui_ver){if(!UIV)UIV=d.ui_ver;else if(d.ui_ver!==UIV)newVersion()}
   const L=d.links||[];$('lk').innerHTML=L.length?'<div class="grp">바로가기</div>'+L.map(x=>'<a class="nav" target="_blank" rel="noopener" href="'+esc(x.url)+'" title="'+esc(x.url)+' (새 창)"><span class="i">'+esc(x.icon)+'</span><span class="n">'+esc(x.name)+'</span><span style="font-size:12px;opacity:.6">↗</span></a>').join(''):'';
   const last=[d.radio.synced,d.tv.synced].filter(Boolean).sort().pop();$('sm').textContent=last?'마지막으로 모은 시각 '+last.slice(5,16):'아직 모은 자료가 없습니다';
  }catch(e){$('sm').textContent='⚠ 서버 상태를 읽지 못했습니다'}
@@ -580,6 +586,7 @@ setInterval(tick,1000);tick();
 let first=(location.hash||'').slice(1);if(!PAGES[first]){try{first=localStorage.getItem('hub_page')||'home'}catch(e){first='home'}}
 side();go(PAGES[first]?first:'home');
 setInterval(()=>{if(!document.hidden){side();if(cur==='home')home()}},60000);
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)side()});   // 다른 탭에 있다가 돌아오면 바로 확인
 </script></body></html>"""
 
 TV_HTML = r"""<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -787,6 +794,43 @@ def make_clip(src, s, e, vol, ip, fade=False):
             _clip_busy_ip.discard(ip)
 
 
+# ---------------------------------------------------------------- 화면 버전 (Ctrl+F5 없이 자동 새로 고침)
+PLAYER_SRC = os.path.join(HERE, "player.html")
+
+
+def sync_player():
+    """저장소의 최신 플레이어를 녹음 폴더에 둔다 (install.sh 를 다시 돌리지 않아도 바뀌도록)"""
+    try:
+        dst = os.path.join(REC_DIR, "player.html")
+        with open(PLAYER_SRC, "rb") as f:
+            new = f.read()
+        old = b""
+        if os.path.exists(dst):
+            with open(dst, "rb") as f:
+                old = f.read()
+        if new != old and os.path.isdir(REC_DIR):
+            write_atomic(dst, new)
+            log("녹음 플레이어를 새 버전으로 바꿈")
+    except Exception as exc:
+        log("녹음 플레이어 바꾸기 실패:", exc)
+
+
+def ui_version():
+    h = hashlib.sha1()
+    for part in (HUB_HTML, TV_HTML):
+        h.update(part.encode("utf-8"))
+    for fp in (PLAYER_SRC, os.path.join(REPO, "apps", "runsheet", "pdf_data_editor.py")):
+        try:
+            with open(fp, "rb") as f:
+                h.update(f.read())
+        except OSError:
+            pass
+    return h.hexdigest()[:12]
+
+
+UI_VER = ""
+
+
 def make_hub_handler(mirror):
     class H(BaseHTTPRequestHandler):
         server_version = "EditMirror/1"
@@ -899,6 +943,9 @@ def git_pull_loop():
 
 
 def main():
+    global UI_VER
+    UI_VER = ui_version()
+    sync_player()
     os.makedirs(RADIO_PREVIEW, exist_ok=True)
     os.makedirs(TV_DIR, exist_ok=True)
     discovery = Discovery()

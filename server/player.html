@@ -402,6 +402,20 @@ document.addEventListener('keydown',e=>{
 });
 window.addEventListener('resize',drawTicks);
 loadList();
+
+// ---- 새 버전이 올라오면 스스로 새로 고침 (Ctrl+F5 필요 없음) ----
+// 듣는 중이거나, 멈춘 지 15분이 안 됐거나, 구간을 만드는 중이면 기다린다
+let lastAct=Date.now();
+['play','pause','seeked'].forEach(ev=>au.addEventListener(ev,()=>lastAct=Date.now()));
+['mousedown','keydown'].forEach(ev=>document.addEventListener(ev,()=>lastAct=Date.now()));
+window.playerBusy=()=> $('cSave').disabled || (!!au.src && !au.ended && (!au.paused || Date.now()-lastAct<15*60*1000));
+if(window.top===window.self){             // 플레이어만 따로 연 경우 (첫 화면 안이면 첫 화면이 맡음)
+  let ver='';
+  const chk=async()=>{ try{ const d=await (await fetch('/api/status',{cache:'no-store'})).json();
+    if(!d.ui_ver) return; if(!ver) ver=d.ui_ver; else if(d.ui_ver!==ver){ const w=()=>playerBusy()?setTimeout(w,30000):location.reload(); w(); ver=d.ui_ver; } }catch(e){} };
+  chk(); setInterval(()=>{ if(!document.hidden) chk(); },60000);
+  document.addEventListener('visibilitychange',()=>{ if(!document.hidden) chk(); });
+}
 </script>
 </body>
 </html>
