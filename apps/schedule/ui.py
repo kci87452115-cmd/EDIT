@@ -45,7 +45,7 @@ def schedule_badge_dir():
         return os.path.join(home, "데이터", "편성표", "badges")
     return os.path.abspath("badges")
 
-APP_VERSION = "3.23.2"
+APP_VERSION = "3.23.3"
 
 
 def _detect_profile():
@@ -2270,6 +2270,8 @@ class ScheduleEditor:
         else:
             c.create_rectangle(x0, y0, x1, y1, fill=color, outline="", stipple="gray25")
 
+    BOTTOM_ROOM = 160                              # 기본 창·미리보기 페이지 아래 여유(px)
+
     PICK_SHADE_COLORS = ("#fde047", "#86efac", "#93c5fd", "#f9a8d4", "#fdba74", "#cbd5e1")
 
     def _build_pick_shade_row(self):
@@ -3470,7 +3472,7 @@ class ScheduleEditor:
         
         c.create_rectangle(18, 18, 18 + page_width, 18 + page_height, fill="#ffffff", outline="")   # 종이 바탕(투명한 곳이 회색으로 보이지 않게)
         c.create_image(18, 18, image=self.photo, anchor="nw")
-        c.configure(scrollregion=(0, 0, page_width + 36, page_height + 36))
+        c.configure(scrollregion=(0, 0, page_width + 36, page_height + 36 + self.BOTTOM_ROOM))   # 아래 여유: 맨 아래 칸도 마우스로 잡기 쉽게
 
         self.item_map.clear()
         
@@ -4559,7 +4561,7 @@ class ScheduleEditor:
                 st["photo"] = tk.PhotoImage(data=base64.b64encode(png).decode("ascii"))
                 c.delete("all")
                 c.create_image(M, M, image=st["photo"], anchor="nw")
-                c.configure(scrollregion=(0, 0, st["photo"].width() + 2 * M, st["photo"].height() + 2 * M))
+                c.configure(scrollregion=(0, 0, st["photo"].width() + 2 * M, st["photo"].height() + 2 * M + self.BOTTOM_ROOM))
                 c.xview_moveto(fx)
                 c.yview_moveto(fy)
                 zlbl.config(text=f"{round(z * 100)}%")
@@ -4751,6 +4753,15 @@ class ScheduleEditor:
                 time_font = "custom_korean_bold"
             except Exception:
                 time_font = font_name
+
+        # 프로그램 이름도 기본 창처럼 굵게: 굵은 글꼴 파일이 있으면 그것으로, 없으면 글자 테두리를 살짝 칠해 굵게
+        title_font, title_measure, title_fake_bold = font_name, measure_font, True
+        if time_font != font_name:
+            try:
+                title_measure = fitz.Font(fontfile=_bp)
+                title_font, title_fake_bold = time_font, False
+            except Exception:
+                pass
 
         mod_ids = {b["id"] for b in blocks if self._is_modified(b)}
 
@@ -4987,12 +4998,19 @@ class ScheduleEditor:
                 for idx, line in enumerate(lines):
                     line_y = start_y + idx * (f_size * 1.15)
                     try:
-                        line_w = measure_font.text_length(line, fontsize=f_size)
+                        line_w = title_measure.text_length(line, fontsize=f_size)
                     except Exception:
                         line_w = sum(f_size if ord(ch) > 127 else f_size * 0.5 for ch in line)
                         
                     line_x = r.x0 + (bw - line_w) / 2 + b.get("text_dx", 0)
-                    page.insert_text(fitz.Point(line_x, line_y), line, fontsize=f_size, fontname=font_name, color=txt_rgb)
+                    if title_fake_bold:
+                        try:
+                            page.insert_text(fitz.Point(line_x, line_y), line, fontsize=f_size, fontname=title_font, color=txt_rgb,
+                                             fill=txt_rgb, render_mode=2, border_width=0.03)
+                            continue
+                        except TypeError:
+                            pass
+                    page.insert_text(fitz.Point(line_x, line_y), line, fontsize=f_size, fontname=title_font, color=txt_rgb)
 
         for b in blocks:
             rb = b.get("rel_box")
