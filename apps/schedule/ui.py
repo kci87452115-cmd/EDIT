@@ -45,7 +45,7 @@ def schedule_badge_dir():
         return os.path.join(home, "데이터", "편성표", "badges")
     return os.path.abspath("badges")
 
-APP_VERSION = "3.22.0"
+APP_VERSION = "3.22.1"
 
 
 def _detect_profile():
@@ -1051,6 +1051,43 @@ def get_tk_font_family(font_path):
     
     return "맑은 고딕"
 
+
+
+def _multiply_soft_fills(doc, page):
+    """반투명 음영(PyMuPDF가 만든 /ca<1 그래픽 상태)을 '곱하기'로 섞는다.
+    음영이 원본 글자 위에 칠해져도 글자는 원래 진하기 그대로 보인다 (형광펜처럼).
+    어떤 이유로든 실패하면 아무것도 바꾸지 않는다 (지금처럼 보임)."""
+    try:
+        t, v = doc.xref_get_key(page.xref, "Resources")
+        if t == "xref":
+            host, base = int(v.split()[0]), ""
+        else:
+            host, base = page.xref, "Resources/"
+        t2, v2 = doc.xref_get_key(host, base + "ExtGState")
+        if t2 == "xref":
+            gx = int(v2.split()[0])
+            for name in doc.xref_get_keys(gx):
+                if not name.startswith("fitz"):
+                    continue
+                tn, vn = doc.xref_get_key(gx, name)
+                if tn == "xref":
+                    nx = int(vn.split()[0])
+                    if float(doc.xref_get_key(nx, "ca")[1] or 1) < 1:
+                        doc.xref_set_key(nx, "BM", "/Multiply")
+                elif float(doc.xref_get_key(gx, name + "/ca")[1] or 1) < 1:
+                    doc.xref_set_key(gx, name + "/BM", "/Multiply")
+        elif t2 == "dict":
+            for name, kind in re.findall(r"/(fitz[^\s/<>\[\]()]*)\s*(<<|\d+\s+0\s+R)", v2):
+                if kind == "<<":
+                    path = base + "ExtGState/" + name
+                    if float(doc.xref_get_key(host, path + "/ca")[1] or 1) < 1:
+                        doc.xref_set_key(host, path + "/BM", "/Multiply")
+                else:
+                    nx = int(kind.split()[0])
+                    if float(doc.xref_get_key(nx, "ca")[1] or 1) < 1:
+                        doc.xref_set_key(nx, "BM", "/Multiply")
+    except Exception:
+        pass
 
 class ScheduleEditor:
     def __init__(self, root):
@@ -4676,6 +4713,7 @@ class ScheduleEditor:
                 sh = sc.lstrip("#")
                 sh_rgb = tuple(int(sh[i:i + 2], 16) / 255.0 for i in (0, 2, 4))
                 page.draw_rect(fitz.Rect(b["rect"]), color=None, fill=sh_rgb, fill_opacity=self.mod_shade_alpha)
+        _multiply_soft_fills(doc, page)      # 음영 아래 원본 글자도 선명하게 (글자가 앞에 있는 것처럼)
 
         orig_rects = [tuple(ob["rect"]) for ob in self.initial_blocks.get(self.current_page, [])]
         for b in blocks:
