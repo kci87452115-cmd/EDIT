@@ -25,7 +25,7 @@ except ImportError:
     except ImportError:
         fitz = None
 
-APP_VERSION = "2.14.0"
+APP_VERSION = "2.14.1"
 APP_TITLE = f"운행표 데이터 편집기 v{APP_VERSION}"
 APP_MUTEX = "RunSheetEditor_Running"      # 설치 프로그램이 '실행 중'을 알아보는 이름 (setup.iss 의 AppMutex 와 같아야 함)
 RUN_BY_LAUNCHER = bool(os.environ.get("RADIO_LAUNCHER"))   # 편집 프로그램 런처로 실행됨 -> 업데이트는 런처가 한다
@@ -6112,7 +6112,7 @@ def _already_running():
 
 if __name__ == "__main__":
     if _already_running():                          # 두 번 눌러도 하나만: 이미 켜진 창을 앞으로 가져오고 끝낸다
-        sys.exit(0)
+        raise SystemExit(0)
     root = tk.Tk()
     app = DataEditor(root)
     root.mainloop()
