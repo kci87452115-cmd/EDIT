@@ -78,6 +78,7 @@ const bar = document.getElementById('bar'), fill = document.getElementById('fill
       head = document.getElementById('head'), tip = document.getElementById('tip');
 const $ = id => document.getElementById(id);
 const AUDIO = /\.(mp3|m4a|aac|wav|ogg|opus|flac)$/i;
+const HIDE = /^(lost\+found|recording_logs|\.)/i;   // 목록에 보이지 않을 폴더
 let startClock = null;   // 파일 이름에서 읽은 녹음 시작 시각(초)
 
 function fmt(s){ s=Math.max(0,Math.floor(s||0)); const h=Math.floor(s/3600), m=Math.floor(s%3600/60), x=s%60;
@@ -114,6 +115,7 @@ async function loadList(){
       if(!u.href.startsWith(base.href) || u.href===base.href || seen.has(u.href)) return;
       seen.add(u.href);
       const name = decodeURIComponent(u.pathname.slice(base.pathname.length));
+      if(HIDE.test(name)) return;                                            // 녹음 기록·시스템 폴더는 숨김
       if(name.endsWith('/') && !name.slice(0,-1).includes('/')) dirs.push({name,u});
       else if(AUDIO.test(name) && !name.includes('/')) files.push({name,u});
     });

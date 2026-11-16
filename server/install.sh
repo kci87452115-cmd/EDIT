@@ -14,9 +14,7 @@ sudo apt-get install -y python3 python3-tk git nginx >/dev/null
 
 echo "== 2. 녹음 플레이어 위치 확인"
 mkdir -p /home/rec/Recordings
-if [ ! -f /home/rec/Recordings/player.html ] && [ -f "$HERE/player.html" ]; then
-    cp "$HERE/player.html" /home/rec/Recordings/
-fi
+cp "$HERE/player.html" /home/rec/Recordings/player.html      # 늘 저장소의 최신 플레이어로
 chmod o+x /home/rec
 
 echo "== 3. 자료 모으기 서비스 (edit-mirror)"
