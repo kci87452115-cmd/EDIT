@@ -364,7 +364,12 @@ class RadioView:
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
         mod.PREVIEW_DIR = RADIO_PREVIEW
-        mod.computer_name = lambda: f"녹음 PC 서버 (사본 · 원본 {self.mirror.state['radio'].get('source_name') or '-'}, {self.mirror.state['radio'].get('synced', '')[5:16]} 기준)"
+        def name():
+            r = self.mirror.state["radio"]
+            if r.get("synced"):
+                return f"녹음 PC 서버 (사본 · 원본 {r.get('source_name') or '편집기'}, {r['synced'][5:16]} 기준)"
+            return "녹음 PC 서버 (사본)"
+        mod.computer_name = name
         self.mod = mod
 
         def get_store():

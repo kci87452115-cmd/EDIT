@@ -25,7 +25,7 @@ except ImportError:
     except ImportError:
         fitz = None
 
-APP_VERSION = "2.12.1"
+APP_VERSION = "2.12.2"
 APP_TITLE = f"운행표 데이터 편집기 v{APP_VERSION}"
 APP_MUTEX = "RunSheetEditor_Running"      # 설치 프로그램이 '실행 중'을 알아보는 이름 (setup.iss 의 AppMutex 와 같아야 함)
 RUN_BY_LAUNCHER = bool(os.environ.get("RADIO_LAUNCHER"))   # 편집 프로그램 런처로 실행됨 -> 업데이트는 런처가 한다
@@ -1263,7 +1263,7 @@ td.n,th.n{text-align:right}
    <a class="right" id="qcsv" href="#">⬇ CSV 저장</a></div>
  </div>
  <div class="msg" id="msg"></div>
- <div class="scroll"><table id="tbl"></table></div>
+ <div class="scroll" id="mainScroll"><table id="tbl"></table></div>
  <div class="total" id="total"></div>
 </div>
 </main>
@@ -1277,7 +1277,7 @@ const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&g
 function drawTabs(){$('tabs').innerHTML=TABS.map(([k,t])=>'<button class="'+(k===cur?'on':'')+'" onclick="tab(\''+k+'\')">'+esc(t)+'</button>').join('')}
 function keep(){if('일월년'.includes(cur)){refs[cur]=$('kref').value;bys[cur]=$('sby').value;meds[cur]=$('smedia').value}}
 function tab(k){keep();cur=k;drawTabs();const s='일월년'.includes(k);$('fS').style.display=s?'':'none';$('fQ').style.display=k==='Q'?'':'none';
- $('fC').style.display=k==='C'?'':'none';$('msg').textContent='';document.querySelector('.scroll').style.display=k==='C'?'none':'';
+ $('fC').style.display=k==='C'?'':'none';$('msg').textContent='';$('mainScroll').style.display=k==='C'?'none':'';
  $('total').textContent='';
  if(s){$('kLbl').textContent={'일':'기준일:','월':'기준월:','년':'기준연도:'}[k];$('kHint').textContent={'일':'📅 달력에서 고르기','월':'📅 달력에서 고르기','년':'(2026)'}[k];
   const kr=$('kref');kr.type={'일':'date','월':'month','년':'number'}[k];if(k==='년'){kr.min=2000;kr.max=2100;kr.style.width='6em'}else{kr.removeAttribute('min');kr.removeAttribute('max');kr.style.width=''}
