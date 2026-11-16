@@ -436,7 +436,7 @@ a{color:inherit}
 #home{flex:1;overflow-y:auto;padding:22px 26px}
 /* ---- 오늘 한눈에 */
 .hd{display:flex;align-items:baseline;gap:12px;margin-bottom:16px}.hd b{font-size:22px}.hd span{color:var(--muted)}
-.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px;margin-bottom:18px}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:14px;margin-bottom:18px}
 .kpi{background:#fff;border:1px solid var(--line);border-radius:12px;padding:16px 18px;cursor:pointer}
 .kpi:hover{border-color:#93c5fd}
 .kpi .l{font-size:12px;color:var(--muted)}.kpi .v{font-size:28px;font-weight:bold;margin:4px 0 2px;letter-spacing:-.5px}.kpi .s{font-size:12px;color:var(--muted)}
@@ -566,19 +566,28 @@ setInterval(()=>{if(!document.hidden){side();if(cur==='home')home()}},60000);
 
 TV_HTML = r"""<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>TV 주간 편성표 (조회 전용)</title><style>
-body{font-family:"Malgun Gothic","맑은 고딕","Noto Sans KR",sans-serif;margin:0;background:#f5f6f8;color:#1f2937;font-size:14px}
-header{background:#7c2d12;color:#fff;padding:10px 18px}header b{font-size:17px}header a{color:#fed7aa;font-size:13px;margin-right:12px;text-decoration:none}
-main{padding:14px 18px;max-width:1100px}table{border-collapse:collapse;width:100%;background:#fff}
-th,td{border:1px solid #e5e7eb;padding:6px 8px;text-align:left}th{background:#fff7ed}.msg{color:#6b7280;font-size:12px;margin:6px 0}
-</style></head><body><header><a href="../" id="back">← 처음</a><b>📺 TV 주간 편성표</b> <span id="who" style="font-size:12px;opacity:.85"></span></header>
-<main><div class="msg" id="msg">불러오는 중…</div><table id="tbl"></table></main><script>
+*{box-sizing:border-box}
+body{font-family:"Malgun Gothic","맑은 고딕","Noto Sans KR",sans-serif;margin:0;background:#f1f5f9;color:#0f172a;font-size:14px}
+header{background:#0f172a;color:#fff;padding:12px 22px;display:flex;gap:12px;align-items:baseline}
+header b{font-size:17px}header a{color:#93c5fd;font-size:13px;text-decoration:none}#who{color:#94a3b8;font-size:12px}
+main{padding:16px 22px;max-width:1400px}
+.card{background:#fff;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden}
+table{border-collapse:separate;border-spacing:0;width:100%}
+th,td{border-bottom:1px solid #f1f5f9;padding:9px 12px;text-align:left;white-space:nowrap}
+th{background:#f8fafc;color:#64748b;font-size:12px;border-bottom:1px solid #e2e8f0}
+tr:hover td{background:#f8fbff}
+td a{color:#2563eb;text-decoration:none;font-weight:bold}td a:hover{text-decoration:underline}
+.msg{color:#64748b;font-size:12px;margin:0 0 10px}
+.empty{padding:40px;text-align:center;color:#94a3b8}
+.embed header{display:none}.embed main{max-width:none}
+</style><script>if(window.top!==window.self)document.documentElement.classList.add('embed')</script></head><body><header><a href="../" id="back">← 처음</a><b>📺 TV 주간 편성표</b> <span id="who" style="font-size:12px;opacity:.85"></span></header>
+<main><div class="msg" id="msg">불러오는 중…</div><div class="card"><table id="tbl"></table></div></main><script>
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-if(window.top!==window.self)document.getElementById('back').style.display='none';
 async function load(){try{const d=await (await fetch('api/tv')).json();document.getElementById('who').textContent=' — '+d.name;
  let h='<tr><th>편성표</th><th>종류</th><th>상태</th><th>마지막 저장</th><th>편집기 PC</th><th>미리보기 · 인쇄</th></tr>';
  for(const x of d.rows){const st=x.dirty?'<b style="color:#c2410c">✏ 편집중</b> <span style="font-size:12px;color:#9a3412">(마지막 저장 상태)</span>':(x.state==='수정완료'?'<b style="color:#15803d">✔ 수정완료</b>':'<b style="color:#c2410c">✏ 편집중</b>');
   h+='<tr><td>'+esc(x.title||x.src)+'</td><td>'+esc(x.kind)+'</td><td>'+st+'</td><td>'+esc((x.saved_at||'').slice(5,16))+'</td><td>'+esc(x.from)+'</td><td>'+(x.has_pdf?'<a target="_blank" href="tv/'+encodeURIComponent(x.key)+'.pdf">📄 보기 · 인쇄</a>':'<span style="color:#9ca3af">아직 저장 전</span>')+'</td></tr>'}
- document.getElementById('tbl').innerHTML=h;document.getElementById('msg').textContent=d.rows.length?('TV 편집기에서 저장한 편성표를 1분마다 모읍니다. 마지막으로 모은 시각: '+(d.synced||'-').slice(5,16)):'아직 모은 편성표가 없습니다.'}
+ document.getElementById('tbl').innerHTML=d.rows.length?h:'<tr><td class="empty">아직 모은 편성표가 없습니다</td></tr>';document.getElementById('msg').textContent=d.rows.length?('TV 편집기에서 저장한 편성표를 1분마다 모읍니다. 마지막으로 모은 시각: '+(d.synced||'-').slice(5,16)):'아직 모은 편성표가 없습니다.'}
  catch(e){document.getElementById('msg').textContent='⚠ 연결하지 못했습니다.'}}
 load();setInterval(()=>{if(!document.hidden)load()},30000);
 </script></body></html>"""
