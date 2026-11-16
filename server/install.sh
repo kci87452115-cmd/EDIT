@@ -24,6 +24,7 @@ sudo systemctl enable edit-mirror >/dev/null 2>&1
 sudo systemctl restart edit-mirror
 
 echo "== 4. 웹 서버 (nginx)"
+sudo mkdir -p /etc/nginx/edit-extra
 sudo cp "$HERE/nginx-edit.conf" /etc/nginx/sites-available/edit
 if [ -e /etc/nginx/sites-enabled/recordings ]; then
     sudo mkdir -p /etc/nginx/disabled-sites
