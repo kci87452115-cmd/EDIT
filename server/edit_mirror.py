@@ -472,7 +472,8 @@ th{background:#f8fafc;font-size:12px;color:var(--muted);position:sticky;top:0}td
   <a class="nav" data-p="home"><span class="i">🏠</span><span class="n">오늘 한눈에</span></a>
   <a class="nav" data-p="radio"><span class="i">💰</span><span class="n">라디오 운행표</span></a>
   <a class="nav" data-p="tv"><span class="i">📺</span><span class="n">TV 편성표</span><span class="c" id="ctv"></span></a>
-  <a class="nav" data-p="rec"><span class="i">🎧</span><span class="n">녹음 듣기</span></a>
+  <a class="nav" data-p="rec"><span class="i">🎧</span><span class="n">AM 녹음 듣기</span></a>
+  <a class="nav" data-p="recfm" id="navfm" style="display:none"><span class="i">📻</span><span class="n">FM 녹음 듣기</span></a>
   <div id="lk"></div>
   <div class="grp">운행표 PDF</div><div id="lrs"><div class="empty">불러오는 중…</div></div>
   <div class="grp">TV 편성표 PDF</div><div id="ltv"><div class="empty">불러오는 중…</div></div>
@@ -497,7 +498,7 @@ const pad=n=>String(n).padStart(2,'0');const num=v=>Number(v||0).toLocaleString(
 const WK='일월화수목금토';
 function today(){const d=new Date();return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())}
 function secs(s){s=+s||0;const m=Math.floor(s/60);return m?m+'분 '+(s%60?s%60+'초':''):s+'초'}
-const PAGES={home:['🏠 오늘 한눈에',''],radio:['💰 라디오 운행표 — 달력 · 정산 · 검색','radio/'],tv:['📺 TV 주간 편성표','tv/'],rec:['🎧 녹음 듣기','rec/player.html']};
+const PAGES={home:['🏠 오늘 한눈에',''],radio:['💰 라디오 운행표 — 달력 · 정산 · 검색','radio/'],tv:['📺 TV 주간 편성표','tv/'],rec:['🎧 AM 녹음 듣기','rec/player.html'],recfm:['📻 FM 녹음 듣기','rec-fm/player.html']};
 let cur='';
 function go(p,src,title){
  if(!PAGES[p]&&!src)p='home';cur=p;
@@ -539,8 +540,9 @@ async function side(){
    return {u:'tv/tv/'+encodeURIComponent(x.key)+'.pdf',t:'📺 '+(x.title||x.key)+' ('+l+')',dot:c,h:esc(x.title||x.src||x.key)}}),'편성표가 없습니다')}
  catch(e){$('ltv').innerHTML='<div class="empty">편성표를 읽지 못했습니다</div>'}
 }
-async function recToday(){
- try{const r=await fetch('rec/'+today()+'/',{cache:'no-store'});if(!r.ok)return [];
+let hasFM=false;
+async function recToday(base){
+ try{const r=await fetch(base+today()+'/',{cache:'no-store'});if(!r.ok)return [];
   const doc=new DOMParser().parseFromString(await r.text(),'text/html');
   return [...doc.querySelectorAll('a[href]')].map(a=>decodeURIComponent(a.getAttribute('href'))).filter(h=>/\.(mp3|m4a|wav|ogg)$/i.test(h)).sort()}catch(e){return []}
 }
@@ -552,7 +554,9 @@ async function home(){
  try{cal=(await J('radio/api/calendar?ym='+t.slice(0,7))).days||{}}catch(e){}
  try{day=await J('radio/api/day?date='+t)}catch(e){}
  try{tvn=(await J('tv/api/tv')).rows.length}catch(e){}
- recs=await recToday();
+ recs=await recToday('rec/');
+ let fm=null;try{const r=await fetch('rec-fm/',{cache:'no-store'});hasFM=r.ok}catch(e){hasFM=false}
+ $('navfm').style.display=hasFM?'':'none';if(hasFM)fm=await recToday('rec-fm/');
  const td=cal[t]||[0,0,0,0];let mc=0,ms=0;for(const k in cal){mc+=cal[k][0];ms+=cal[k][1]}
  const pv=m=>{const x=(day.previews||[]).find(v=>v.media===m);return x?'<span class="badge '+(x.state==='수정완료'?'b-ok':'b-warn')+'">'+m+' '+esc(x.state)+'</span>':'<span class="badge b-none">'+m+' 없음</span>'};
  $('kp').innerHTML=
@@ -560,12 +564,13 @@ async function home(){
   +'<div class="kpi" onclick="go(\'radio\')"><div class="l">이번 달 누적</div><div class="v">'+num(mc)+'<small style="font-size:14px"> 건</small></div><div class="s">총 '+secs(ms)+' · '+Object.keys(cal).length+'일</div></div>'
   +'<div class="kpi" onclick="go(\'radio\')"><div class="l">오늘 운행표</div><div class="v" style="font-size:16px;margin:12px 0 8px">'+pv('AM')+pv('FM')+'</div><div class="s">편집기에서 저장하면 바뀝니다</div></div>'
   +'<div class="kpi" onclick="go(\'tv\')"><div class="l">TV 편성표</div><div class="v">'+tvn+'<small style="font-size:14px"> 개</small></div><div class="s">주·판별 PDF</div></div>'
-  +'<div class="kpi" onclick="go(\'rec\')"><div class="l">오늘 녹음</div><div class="v">'+recs.length+'<small style="font-size:14px"> 개</small></div><div class="s">'+(recs.length?'최근 '+esc(recs[recs.length-1]).replace(/^.*_(\d\d)(\d\d)\.\w+$/,'$1:$2')+' 시작':'아직 없음')+'</div></div>';
+  +recCard('AM 녹음','rec',recs)+(fm?recCard('FM 녹음','recfm',fm):'');
  const names=day.names||[],mx=Math.max(1,...names.map(n=>n[2]));
  $('cn').innerHTML=names.length?'<table><tr><th>광고주</th><th>그룹</th><th class="n">횟수</th><th class="n">총 초수</th><th></th></tr>'+names.map(n=>'<tr><td><b>'+esc(n[0])+'</b></td><td>'+esc(n[1])+'</td><td class="n">'+n[2]+'</td><td class="n">'+num(n[3])+'</td><td style="width:30%"><div class="bar"><i style="width:'+(n[2]/mx*100)+'%"></i></div></td></tr>').join('')+'</table>':'<div class="none">오늘 추가한 광고가 없습니다</div>';
  const rows=day.rows||[];
  $('cr').innerHTML=rows.length?'<table><tr><th>시각</th><th>매체</th><th>프로그램</th><th>광고주</th><th class="n">초</th></tr>'+rows.map(r=>'<tr><td>'+esc(r[0])+'</td><td class="'+(r[1]==='FM'?'fm':'am')+'">'+esc(r[1]||'AM')+'</td><td>'+esc(r[2])+'</td><td>'+esc(r[3])+'</td><td class="n">'+r[4]+'</td></tr>').join('')+'</table>':'<div class="none">운행 내역이 없습니다</div>';
 }
+function recCard(t,pg,list){return '<div class="kpi" onclick="go(\''+pg+'\')"><div class="l">오늘 '+t+'</div><div class="v">'+list.length+'<small style="font-size:14px"> 개</small></div><div class="s">'+(list.length?'최근 '+esc(list[list.length-1]).replace(/^.*_(\d\d)(\d\d)\.\w+$/,'$1:$2')+' 시작':'아직 없음')+'</div></div>'}
 function tick(){const d=new Date();$('clock').textContent=pad(d.getHours())+':'+pad(d.getMinutes())+':'+pad(d.getSeconds())}
 setInterval(tick,1000);tick();
 let first=(location.hash||'').slice(1);if(!PAGES[first]){try{first=localStorage.getItem('hub_page')||'home'}catch(e){first='home'}}

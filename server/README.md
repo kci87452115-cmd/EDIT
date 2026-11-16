@@ -40,3 +40,8 @@ bash ~/edit/server/install.sh
 ```json
 {"links": [{"name": "송출 달력", "url": "http://218.237.3.199:8000/calendar", "icon": "📅"}]}
 ```
+
+## FM 녹음 PC 연결 (AM 녹음 PC 웹에서 FM 녹음도 듣기)
+1. FM 녹음 PC: `git clone https://github.com/kci87452115-cmd/EDIT.git ~/edit && bash ~/edit/server/install-fm-pc.sh`
+2. AM 녹음 PC(웹 서버): `cd ~/edit && git pull && bash server/install.sh && bash server/add-fm.sh FM_PC_IP`
+3. 첫 화면 왼쪽에 **📻 FM 녹음 듣기**가 생깁니다 (FM PC가 꺼져 있으면 메뉴가 숨겨짐).
