@@ -25,7 +25,7 @@ except ImportError:
     except ImportError:
         fitz = None
 
-APP_VERSION = "2.12.2"
+APP_VERSION = "2.12.3"
 APP_TITLE = f"운행표 데이터 편집기 v{APP_VERSION}"
 APP_MUTEX = "RunSheetEditor_Running"      # 설치 프로그램이 '실행 중'을 알아보는 이름 (setup.iss 의 AppMutex 와 같아야 함)
 RUN_BY_LAUNCHER = bool(os.environ.get("RADIO_LAUNCHER"))   # 편집 프로그램 런처로 실행됨 -> 업데이트는 런처가 한다
@@ -1285,6 +1285,8 @@ function tab(k){keep();cur=k;drawTabs();const s='일월년'.includes(k);$('fS').
  run()}
 function sq(){return new URLSearchParams({kind:cur,ref:$('kref').value.trim(),by:$('sby').value,media:$('smedia').value}).toString()}
 function qq(){return new URLSearchParams({kw:$('kw').value.trim(),target:$('target').value,media:$('qmedia').value,grp:$('grp').value.trim(),from:$('from').value,to:$('to').value,by:$('qby').value}).toString()}
+function detailTable(rows){let h='<tr><th>방송일</th><th>매체</th><th>시분초</th><th>프로그램</th><th>칸</th><th>광고주</th><th class=n>초수</th><th>그룹</th></tr>';
+ for(const x of rows)h+='<tr><td>'+esc(x[0])+'</td><td>'+esc(x[1])+'</td><td>'+esc(x[2])+'</td><td>'+esc(x[3])+'</td><td>'+esc(x[4])+'</td><td>'+esc(x[5])+'</td><td class=n>'+num(x[6])+'</td><td>'+esc(x[7])+'</td></tr>';return h}
 function aggTable(by,rows){let h='<tr><th>'+esc(by.replace('별',''))+'</th><th class=n>건수</th><th class=n>총 초수</th></tr>';
  for(const x of rows)h+='<tr><td>'+esc(x[0]||'(없음)')+'</td><td class=n>'+num(x[1])+'</td><td class=n>'+num(x[2])+'</td></tr>';return h}
 async function get(u){const r=await fetch(u);const d=await r.json();if(d.error)throw new Error(d.error);return d}
@@ -1330,13 +1332,13 @@ async function day(iso,keepCal){selDay=iso;
 async function run(){if(cur==='C')return cal();if(cur==='P')return previews();if(cur==='T')return tvsheets();
  $('msg').textContent='불러오는 중…';
  try{if(cur==='Q'){$('qcsv').href='api/search.csv?'+qq();const d=await get('api/search?'+qq());
-   if(d.mode==='detail'){let h='<tr><th>방송일</th><th>매체</th><th>시분초</th><th>프로그램</th><th>칸</th><th>광고주</th><th class=n>초수</th><th>그룹</th></tr>';
-    for(const x of d.rows)h+='<tr><td>'+esc(x[0])+'</td><td>'+esc(x[1])+'</td><td>'+esc(x[2])+'</td><td>'+esc(x[3])+'</td><td>'+esc(x[4])+'</td><td>'+esc(x[5])+'</td><td class=n>'+num(x[6])+'</td><td>'+esc(x[7])+'</td></tr>';
-    $('tbl').innerHTML=h;$('total').textContent=num(d.total)+'건   총 초수 '+num(d.sec);
+   if(d.mode==='detail'){$('tbl').innerHTML=detailTable(d.rows);$('total').textContent=num(d.total)+'건   총 초수 '+num(d.sec);
     $('msg').textContent=d.total>d.rows.length?'화면에는 앞의 '+num(d.rows.length)+'건만 보입니다 (전체는 CSV 저장으로 받으세요)':(d.total?'':'조건에 맞는 기록이 없습니다.')}
    else{$('tbl').innerHTML=aggTable($('qby').value,d.rows);$('total').textContent=d.rows.length+'개 묶음   건수 '+num(d.rows.reduce((a,x)=>a+x[1],0));
     $('msg').textContent=d.rows.length?'':'조건에 맞는 기록이 없습니다.'}}
   else{$('scsv').href='api/settle.csv?'+sq();const d=await get('api/settle?'+sq());
+   if(d.mode==='detail'){$('tbl').innerHTML=detailTable(d.rows);$('total').textContent='합계  건수 '+num(d.total)+'   총 초수 '+num(d.sec);
+    $('msg').textContent=(d.from===d.to?d.from:d.from+' ~ '+d.to)+(d.total>d.rows.length?' — 화면에는 앞의 '+num(d.rows.length)+'건만 보입니다 (전체는 CSV 저장)':(d.total?'':' — 기록이 없습니다.'));return}
    $('tbl').innerHTML=aggTable($('sby').value,d.rows);
    $('total').textContent='합계  건수 '+num(d.rows.reduce((a,x)=>a+x[1],0))+'   총 초수 '+num(d.rows.reduce((a,x)=>a+x[2],0));
    $('msg').textContent=(d.from===d.to?d.from:d.from+' ~ '+d.to)+(d.rows.length?'':' — 기록이 없습니다.')}}
@@ -1376,10 +1378,11 @@ const opt=(sel,list)=>{for(const t of list){const o=document.createElement('opti
  try{info=await (await fetch('api/info')).json();
   $('who').textContent='편집기: '+info.name+' · v'+info.version;document.title+=' — '+info.name;
   for(const g of info.groups){const o=document.createElement('option');o.value=g;$('grps').appendChild(o)}
-  opt($('target'),info.targets);opt($('sby'),info.by);opt($('qby'),['묶지 않음'].concat(info.by));
+  opt($('target'),info.targets);opt($('sby'),['묶지 않음'].concat(info.by));$('sby').options[0].value='묶지 않음';$('sby').options[0].textContent='전체 내역 (묶지 않음)';opt($('qby'),['묶지 않음'].concat(info.by));
   $('target').value='광고주만';$('sby').value='광고주별';}catch(e){}
  $('kw').addEventListener('keydown',e=>{if(e.key==='Enter')run()});
  $('kref').addEventListener('keydown',e=>{if(e.key==='Enter')run()});
+ $('sby').addEventListener('change',()=>run());$('smedia').addEventListener('change',()=>run());   // 고르면 바로 조회
  $('kref').addEventListener('change',()=>{if(/^\d{4}(-\d{2}){0,2}$/.test($('kref').value))run()});   // 달력에서 고르면 바로 조회
  $('ckw').addEventListener('keydown',e=>{if(e.key==='Enter')cal()});$('cgrp').addEventListener('keydown',e=>{if(e.key==='Enter')cal()});
  const Y=+today.slice(0,4);for(let y=Y-3;y<=Y+1;y++){const o=document.createElement('option');o.value=o.textContent=y;$('cy').appendChild(o)}
@@ -1556,8 +1559,16 @@ class ViewServer:
                             d0, d1 = period_range(kind, p.get("ref", ""))
                         except ValueError as exc:
                             return self._json({"error": str(exc)}, 400)
-                        by_lbl = p.get("by", "") if p.get("by", "") in BY_OPTIONS else "광고주별"
                         media = p.get("media", "") if p.get("media", "") in ("", "AM", "FM") else ""
+                        if p.get("by", "") == "묶지 않음":            # 묶음 없이 그 기간의 전체 내역
+                            data = store.detail(d0, d1, media=media)
+                            rows = [(a, m, t, pg, cell_label(c_), n, s, g) for a, m, t, pg, c_, n, s, pr, g in data]
+                            if route == "/api/settle":
+                                return self._json({"mode": "detail", "from": d0, "to": d1, "total": len(rows),
+                                                   "sec": sum(r[6] or 0 for r in rows), "rows": rows[:VIEW_DETAIL_LIMIT]})
+                            return self._csv(["방송일", "매체", "시분초", "프로그램", "칸", "광고주", "초수", "그룹"], rows,
+                                             f"{kind}정산_{p.get('ref', '').strip()}_전체내역.csv")
+                        by_lbl = p.get("by", "") if p.get("by", "") in BY_OPTIONS else "광고주별"
                         data = store.aggregate(d0, d1, by=BY_OPTIONS[by_lbl], media=media)
                         rows = [(k or "(없음)", cnt, sec) for k, cnt, sec, amt in data]
                         if route == "/api/settle":
