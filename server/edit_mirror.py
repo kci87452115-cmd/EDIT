@@ -162,6 +162,19 @@ def sources(discovery, kind, config):
     return out
 
 
+def config_links():
+    """config.json 의 "links": [{"name": "송출 달력", "url": "http://..."}] — 왼쪽 패널 '바로가기' (새 창으로 열림)."""
+    out = []
+    for x in load_json(CONFIG_FILE, {}).get("links", []) or []:
+        if not isinstance(x, dict):
+            continue
+        url = str(x.get("url", "")).strip()
+        name = str(x.get("name", "")).strip()[:30] or url
+        if re.match(r"^https?://[^\s\"'<>]+$", url):
+            out.append({"name": name, "url": url, "icon": str(x.get("icon", "🔗"))[:2]})
+    return out[:20]
+
+
 # ---------------------------------------------------------------- 가져오기
 def http_get(url, timeout=15, headers=None):
     req = urllib.request.Request(url, headers=headers or {})
@@ -198,6 +211,7 @@ class Mirror:
             names = x.get("sources") or [x.get("source_name") or x.get("source") or "편집기"]
             x["online"] = names if fresh else []
         st["server"] = {"name": socket.gethostname(), "ip": lan_ip(), "now": now_str()}
+        st["links"] = config_links()
         return st
 
     # ---- 라디오
@@ -445,6 +459,7 @@ th{background:#f8fafc;font-size:12px;color:var(--muted);position:sticky;top:0}td
   <a class="nav" data-p="radio"><span class="i">💰</span><span class="n">라디오 운행표</span></a>
   <a class="nav" data-p="tv"><span class="i">📺</span><span class="n">TV 편성표</span><span class="c" id="ctv"></span></a>
   <a class="nav" data-p="rec"><span class="i">🎧</span><span class="n">녹음 듣기</span></a>
+  <div id="lk"></div>
   <div class="grp">운행표 PDF</div><div id="lrs"><div class="empty">불러오는 중…</div></div>
   <div class="grp">TV 편성표 PDF</div><div id="ltv"><div class="empty">불러오는 중…</div></div>
  </div>
@@ -497,6 +512,7 @@ async function side(){
   const f=(x,dot,lab)=>{const on=(x.online||[]).length;$(dot).className='dot '+(on?'ok':(x.synced?'warn':''));
    $(lab).textContent=on?'연결됨':(x.synced?'꺼짐':'없음');$(lab).title=x.synced?'마지막으로 모은 시각 '+x.synced:''};
   f(d.radio,'dr','sr');f(d.tv,'dt','st');
+  const L=d.links||[];$('lk').innerHTML=L.length?'<div class="grp">바로가기</div>'+L.map(x=>'<a class="nav" target="_blank" rel="noopener" href="'+esc(x.url)+'" title="'+esc(x.url)+' (새 창)"><span class="i">'+esc(x.icon)+'</span><span class="n">'+esc(x.name)+'</span><span style="font-size:12px;opacity:.6">↗</span></a>').join(''):'';
   const last=[d.radio.synced,d.tv.synced].filter(Boolean).sort().pop();$('sm').textContent=last?'마지막으로 모은 시각 '+last.slice(5,16):'아직 모은 자료가 없습니다';
  }catch(e){$('sm').textContent='⚠ 서버 상태를 읽지 못했습니다'}
  try{const d=await J('radio/api/runsheets');
