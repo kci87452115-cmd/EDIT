@@ -45,7 +45,7 @@ def schedule_badge_dir():
         return os.path.join(home, "데이터", "편성표", "badges")
     return os.path.abspath("badges")
 
-APP_VERSION = "3.23.1"
+APP_VERSION = "3.23.2"
 
 
 def _detect_profile():
@@ -3279,6 +3279,10 @@ class ScheduleEditor:
 
         right_x = x1 - 4
         badge_y = y0 + 3
+        _bh = int(y1 - y0)
+        if badge_sz_render > _bh - 6:                    # 칸이 낮으면 뱃지를 칸 높이에 맞춰 줄이고 가운데로 (칸 밖으로 안 나가게)
+            badge_sz_render = max(2, _bh - 6)
+            badge_y = y0 + (_bh - badge_sz_render) / 2
         active_badge_keys = self._badge_draw_keys(opts)
 
         for bk in active_badge_keys:
@@ -4837,6 +4841,9 @@ class ScheduleEditor:
 
             right_x = r.x1 - 2
             badge_y = r.y0 + 2
+            if badge_sz > r.height - 3:                  # 칸이 낮으면 뱃지를 칸 높이에 맞춰 줄이고 가운데로 (칸 밖으로 안 나가게)
+                badge_sz = max(4.0, r.height - 3)
+                badge_y = r.y0 + (r.height - badge_sz) / 2
             active_badge_keys = self._badge_draw_keys(opts)
 
             for bk in active_badge_keys:
