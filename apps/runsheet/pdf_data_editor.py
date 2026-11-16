@@ -25,7 +25,7 @@ except ImportError:
     except ImportError:
         fitz = None
 
-APP_VERSION = "2.12.3"
+APP_VERSION = "2.12.4"
 APP_TITLE = f"운행표 데이터 편집기 v{APP_VERSION}"
 APP_MUTEX = "RunSheetEditor_Running"      # 설치 프로그램이 '실행 중'을 알아보는 이름 (setup.iss 의 AppMutex 와 같아야 함)
 RUN_BY_LAUNCHER = bool(os.environ.get("RADIO_LAUNCHER"))   # 편집 프로그램 런처로 실행됨 -> 업데이트는 런처가 한다
@@ -1285,8 +1285,8 @@ function tab(k){keep();cur=k;drawTabs();const s='일월년'.includes(k);$('fS').
  run()}
 function sq(){return new URLSearchParams({kind:cur,ref:$('kref').value.trim(),by:$('sby').value,media:$('smedia').value}).toString()}
 function qq(){return new URLSearchParams({kw:$('kw').value.trim(),target:$('target').value,media:$('qmedia').value,grp:$('grp').value.trim(),from:$('from').value,to:$('to').value,by:$('qby').value}).toString()}
-function detailTable(rows){let h='<tr><th>방송일</th><th>매체</th><th>시분초</th><th>프로그램</th><th>칸</th><th>광고주</th><th class=n>초수</th><th>그룹</th></tr>';
- for(const x of rows)h+='<tr><td>'+esc(x[0])+'</td><td>'+esc(x[1])+'</td><td>'+esc(x[2])+'</td><td>'+esc(x[3])+'</td><td>'+esc(x[4])+'</td><td>'+esc(x[5])+'</td><td class=n>'+num(x[6])+'</td><td>'+esc(x[7])+'</td></tr>';return h}
+function detailTable(rows){let h='<tr><th>방송일</th><th>매체</th><th>시분초</th><th>프로그램</th><th>광고주</th><th class=n>초수</th><th>그룹</th></tr>';
+ for(const x of rows)h+='<tr><td>'+esc(x[0])+'</td><td>'+esc(x[1])+'</td><td>'+esc(x[2])+'</td><td>'+esc(x[3])+'</td><td>'+esc(x[5])+'</td><td class=n>'+num(x[6])+'</td><td>'+esc(x[7])+'</td></tr>';return h}
 function aggTable(by,rows){let h='<tr><th>'+esc(by.replace('별',''))+'</th><th class=n>건수</th><th class=n>총 초수</th></tr>';
  for(const x of rows)h+='<tr><td>'+esc(x[0]||'(없음)')+'</td><td class=n>'+num(x[1])+'</td><td class=n>'+num(x[2])+'</td></tr>';return h}
 async function get(u){const r=await fetch(u);const d=await r.json();if(d.error)throw new Error(d.error);return d}
@@ -1566,8 +1566,8 @@ class ViewServer:
                             if route == "/api/settle":
                                 return self._json({"mode": "detail", "from": d0, "to": d1, "total": len(rows),
                                                    "sec": sum(r[6] or 0 for r in rows), "rows": rows[:VIEW_DETAIL_LIMIT]})
-                            return self._csv(["방송일", "매체", "시분초", "프로그램", "칸", "광고주", "초수", "그룹"], rows,
-                                             f"{kind}정산_{p.get('ref', '').strip()}_전체내역.csv")
+                            return self._csv(["방송일", "매체", "시분초", "프로그램", "광고주", "초수", "그룹"],
+                                             [r[:4] + r[5:] for r in rows], f"{kind}정산_{p.get('ref', '').strip()}_전체내역.csv")
                         by_lbl = p.get("by", "") if p.get("by", "") in BY_OPTIONS else "광고주별"
                         data = store.aggregate(d0, d1, by=BY_OPTIONS[by_lbl], media=media)
                         rows = [(k or "(없음)", cnt, sec) for k, cnt, sec, amt in data]
