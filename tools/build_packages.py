@@ -28,8 +28,11 @@ APPS = {   # id: (폴더, 실행 파일, 이름, 설명, 필요한 런처 실행
     "dmb": ("apps/schedule", "dmb.py", "DMB 편성 편집기", "편성표 PDF로 DMB 편성표 만들기 (요일·지역 칸, 제목)", 1, "tv"),
     "excel_tv": ("apps/excel_tv", "tv_schedule_maker.py", "엑셀 TV 편성표 편집기",
                  "편성시스템 주간편성표 엑셀로 편성표 PDF 만들기 (시험판 · 서버 전송 없음)", 1, "tv"),
+    "excel_dmb": ("apps/excel_tv", "excel_dmb.py", "엑셀 DMB 편성표 편집기",
+                  "엑셀 TV 편성표 프로젝트로 DMB 편성표 만들기 (시험판 · 서버 전송 없음)", 1, "tv"),
 }
-VERSION_FROM = {"dmb": "ui.py"}   # DMB 는 편성표 편집기와 같은 프로그램 -> 번호도 ui.py 것
+# 같은 프로그램을 다른 설정으로 실행하는 것 -> 번호도 원래 프로그램 것
+VERSION_FROM = {"dmb": "ui.py", "excel_dmb": "tv_schedule_maker.py"}
 
 
 def const(path, name):

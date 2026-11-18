@@ -29,9 +29,21 @@ try:
 except Exception:
     pass
 
-APP_VERSION = "1.1.8"
+APP_VERSION = "1.2.0"
 VERSION = f"v{APP_VERSION} (시험판)"
-APP_NAME = "엑셀 TV 편성표 편집기"
+
+
+def _detect_profile():
+    """같은 프로그램을 두 가지로 쓴다: 엑셀 TV 편성표 편집기 / 엑셀 DMB 편성표 편집기.
+    런처에서 'excel_dmb' 로 실행하거나, excel_dmb.py 로 실행하거나, --dmb 를 붙이면 DMB"""
+    if os.environ.get("RADIO_APP_ID") == "excel_dmb" or os.environ.get("EXCEL_TV_PROFILE") == "dmb" \
+            or "--dmb" in sys.argv:
+        return "dmb"
+    return "tv"
+
+
+IS_DMB = _detect_profile() == "dmb"
+APP_NAME = "엑셀 DMB 편성표 편집기" if IS_DMB else "엑셀 TV 편성표 편집기"
 # 프로그램 파일이 있는 곳 (런처로 실행해도 이 파일 위치 - 런처 exe 위치가 아님)
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -49,7 +61,9 @@ def _data_dir():
 
 
 DATA_DIR = _data_dir()
-CONFIG_PATH = os.path.join(DATA_DIR, "tv_schedule_config.json")
+TV_CONFIG_PATH = os.path.join(DATA_DIR, "tv_schedule_config.json")
+# DMB 편집기는 설정을 따로 (처음에는 TV 설정을 복사해서 시작: 글꼴·급 등은 같고 제목·빼기 체크는 따로)
+CONFIG_PATH = os.path.join(DATA_DIR, "dmb_schedule_config.json") if IS_DMB else TV_CONFIG_PATH
 
 DAY_START_MIN = 5 * 60          # 편성표는 05:00 부터
 DAY_LEN_MIN = 24 * 60           # 다음날 05:00 까지
@@ -115,6 +129,15 @@ DEFAULT_CONFIG = {
 
 
 def load_config():
+    if IS_DMB and not os.path.exists(CONFIG_PATH) and os.path.exists(TV_CONFIG_PATH):
+        try:
+            with open(TV_CONFIG_PATH, "r", encoding="utf-8") as f:
+                tv = json.load(f)
+            tv["title_text"] = dmb_title_auto(tv.get("title_text", ""))
+            with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+                json.dump(tv, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
     cfg = json.loads(json.dumps(DEFAULT_CONFIG))
     if os.path.exists(CONFIG_PATH):
         try:
@@ -1629,14 +1652,18 @@ def add_local_rule(rule):
 
 
 # ---------------------------------------------------------------- 프로젝트 파일 (.tvproj)
-PROJ_EXT = ".tvproj"
-RECENT_PATH = os.path.join(DATA_DIR, "recent_projects.json")
+TV_PROJ_EXT = ".tvproj"
+DMB_PROJ_EXT = ".dmbproj"
+PROJ_EXT = DMB_PROJ_EXT if IS_DMB else TV_PROJ_EXT
+RECENT_PATH = os.path.join(DATA_DIR, "recent_dmb_projects.json" if IS_DMB else "recent_projects.json")
+PROJ_FORMATS = ("tv_schedule_project", "dmb_schedule_project")
 PROJ_CFG_KEYS = ("title_text", "title_size", "title_bold", "stamp_mode", "stamp_text")
 
 
 def save_project(path, data):
     """편성 줄(고친 내용 포함)·엑셀 원래 내용·제목/날짜 설정을 한 파일에 저장 -> 엑셀 없이도 다시 열어 편집"""
-    data = dict(data, format="tv_schedule_project", version=VERSION,
+    data = dict(data, format="dmb_schedule_project" if path.lower().endswith(DMB_PROJ_EXT) else "tv_schedule_project",
+                version=VERSION, app=APP_NAME,
                 saved=datetime.datetime.now().isoformat(timespec="seconds"))
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
@@ -1646,13 +1673,90 @@ def save_project(path, data):
     return path
 
 
-def load_project(path):
+def load_project(path, recent=True):
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
-    if data.get("format") != "tv_schedule_project" or not isinstance(data.get("rows"), list):
+    if data.get("format") not in PROJ_FORMATS or not isinstance(data.get("rows"), list):
         raise ValueError("편성표 프로젝트 파일이 아닙니다.")
-    add_recent(path)
+    if recent:
+        add_recent(path)
     return data
+
+
+# ---------------------------------------------------------------- DMB 편집기: TV 프로젝트 가져오기
+MARK_KEYS = ("_ver", "_check", "_note", "_was", "_ovl")
+
+
+def tv_key(r):
+    """TV 편성 줄을 알아보는 열쇠 (DMB 줄이 어느 TV 줄에서 왔는지)"""
+    return f"{r['date']}|{r['plan']}|{r.get('code', '')}|{r['s']}|{r['e']}|{norm_key(r['name'])}"
+
+
+def import_tv_rows(tv_rows):
+    """TV 프로젝트 줄 -> DMB 작업 줄 (표시는 지우고, 어느 TV 줄에서 왔는지 _tvk 로 기억)"""
+    import copy
+    out = []
+    for r in tv_rows:
+        x = {k: v for k, v in copy.deepcopy(r).items() if k not in MARK_KEYS}
+        x["_tvk"] = tv_key(r)
+        out.append(x)
+    return out
+
+
+def refresh_from_tv(dmb_rows, old_tv, new_tv):
+    """DMB 작업에 바뀐 TV 프로젝트를 다시 반영.
+      TV 에서 그대로인 줄  -> DMB 에서 고친 그대로 (지운 줄은 계속 지움)
+      TV 에서 바뀌거나 새로 생긴 줄 -> 새 TV 내용 (DMB 에서 넣은 음영·이름 등 꾸밈은 옮김), 주황 표시
+      DMB만 칸 -> 그대로 (그 밑의 TV 편성이 바뀌었으면 빨간 표시)
+    반환: (합친 줄, 보고서)"""
+    import copy
+    old_keys = {tv_key(o): o for o in old_tv}
+    by_k = {}
+    for r in dmb_rows:
+        if r.get("_tvk"):
+            by_k.setdefault(r["_tvk"], []).append(r)
+    old_codes = {(o["date"], o.get("code")) for o in old_tv}
+    merged, rep = [], {"changed": [], "new": [], "removed": [], "checks": [], "kept": 0}
+    new_keys = set()
+    for n in new_tv:
+        k = tv_key(n)
+        new_keys.add(k)
+        if k in old_keys:
+            for r in by_k.get(k, []):       # 그대로 (DMB 에서 지웠으면 없음)
+                x = {kk: v for kk, v in copy.deepcopy(r).items() if kk not in MARK_KEYS}
+                merged.append(x)
+                rep["kept"] += 1
+            continue
+        x = {kk: v for kk, v in copy.deepcopy(n).items() if kk not in MARK_KEYS}
+        x["_tvk"] = k
+        # 같은 날·같은 코드의 예전 DMB 줄에서 꾸밈 옮기기
+        olds = [r for kk, rs in by_k.items() for r in rs if kk.split("|")[0] == n["date"]
+                and kk.split("|")[2] == (n.get("code") or "")]
+        if olds:
+            r = min(olds, key=lambda r: abs(r["s"] - n["s"]))
+            o = old_keys.get(r["_tvk"], {})
+            for kk in STYLE_KEYS:
+                if (r.get(kk) or None) != (o.get(kk) or None):
+                    x[kk] = r.get(kk)
+        x["_ver"] = "changed" if (n["date"], n.get("code")) in old_codes else "new"
+        rep[x["_ver"]].append(x)
+        merged.append(x)
+    new_codes = {(n["date"], n.get("code")) for n in new_tv}
+    rep["removed"] = [o for k, o in old_keys.items() if k not in new_keys and (o["date"], o.get("code")) not in new_codes]
+    # DMB 에서 직접 넣은 줄 (DMB만 칸 등)
+    spans = {}
+    for x in rep["changed"] + rep["new"] + rep["removed"]:
+        spans.setdefault(x["date"], []).append((x["s"], x["e"]))
+    for r in dmb_rows:
+        if r.get("_tvk"):
+            continue
+        x = {kk: v for kk, v in copy.deepcopy(r).items() if kk not in MARK_KEYS}
+        if any(a < x["e"] and b > x["s"] for a, b in spans.get(x["date"], [])):
+            x["_check"] = True
+            x["_note"] = "밑에 있는 TV 편성이 바뀌었습니다 - 시간 확인"
+            rep["checks"].append(x)
+        merged.append(x)
+    return merged, rep
 
 
 def recent_projects():
@@ -1757,15 +1861,21 @@ class App:
         top = tk.Frame(root)
         top.pack(fill=tk.X, padx=8, pady=6)
         self.topbar = top
-        tk.Button(top, text="엑셀 열기", width=10, command=lambda: (self.v_x.set(""), self.open_xlsx())).pack(
-            side=tk.LEFT)
-        tk.Button(top, text="프로젝트 열기", command=lambda: self.open_project()).pack(side=tk.LEFT, padx=(6, 0))
+        if IS_DMB:      # DMB 편집기: TV 프로젝트(.tvproj)로 시작, DMB 작업은 .dmbproj 로 따로
+            tk.Button(top, text="TV 프로젝트 불러오기", bg="#e1bee7", command=lambda: self.import_tv()).pack(side=tk.LEFT)
+            tk.Button(top, text="DMB 프로젝트 열기", command=lambda: self.open_project()).pack(side=tk.LEFT,
+                                                                                         padx=(6, 0))
+        else:
+            tk.Button(top, text="엑셀 열기", width=10, command=lambda: (self.v_x.set(""), self.open_xlsx())).pack(
+                side=tk.LEFT)
+            tk.Button(top, text="프로젝트 열기", command=lambda: self.open_project()).pack(side=tk.LEFT, padx=(6, 0))
         self.recent_mb = tk.Menubutton(top, text="최근 ▼", relief="raised")
         self.recent_mb.pack(side=tk.LEFT, padx=(2, 0))
         self.recent_menu = tk.Menu(self.recent_mb, tearoff=0)
         self.recent_mb.config(menu=self.recent_menu)
         tk.Button(top, text="⚙ 설정 (제목/날짜/아이콘)", command=self.toggle_head).pack(side=tk.LEFT, padx=6)
-        self.status = tk.Label(top, text=f"[{VERSION}] 상단의 '엑셀 열기'를 눌러 시작하세요.")
+        self.status = tk.Label(top, text=f"[{VERSION}] 상단의 '{'TV 프로젝트 불러오기' if IS_DMB else '엑셀 열기'}'를 "
+                                         f"눌러 시작하세요.")
         self.status.pack(side=tk.LEFT, padx=16)
 
         # 위쪽 실행 버튼 줄
@@ -1791,11 +1901,13 @@ class App:
         abtn("다른 이름으로", lambda: self.save(ask=True))
         abtn("설정 파일 열기", self.open_config)
         abtn("큰 창 미리보기", self.preview, "#bbdefb")
-        abtn("새 판 반영", self.new_version, "#ffe0b2")
-        self.dmb_on = False
-        self.btn_dmb = tk.Button(act, text="DMB 변환", command=self.toggle_dmb, bg="#e1bee7")
-        self.btn_dmb.pack(side=tk.LEFT, padx=(10, 2))
-        # DMB 줄 (DMB 변환을 누르면 보임): 뺄 것 체크, DMB 제목, DMB PDF 저장 - 설정은 TV 와 따로 저장
+        if IS_DMB:
+            abtn("TV 다시 가져오기", self.refresh_tv, "#e1bee7")
+        else:
+            abtn("새 판 반영", self.new_version, "#ffe0b2")
+        self.tv_path = ""           # DMB: 불러온 TV 프로젝트
+        self.dmb_on = IS_DMB        # DMB 편집기는 늘 DMB 모양
+        # DMB 줄 (DMB 편집기에만): 뺄 것 체크 - 설정은 DMB 편집기 설정에 저장
         cfgd = load_config()
         self.dmbbar = dbar = tk.Frame(root, bg="#f3e5f5")
         tk.Label(dbar, text="DMB에서 빼기:", bg="#f3e5f5", font=("", 9, "bold")).pack(side=tk.LEFT, padx=(4, 2))
@@ -1816,11 +1928,7 @@ class App:
         self.v_dmb_keep.trace_add("write", lambda *a: self.dmb_changed())
         tk.Checkbutton(dbar, text="| DMB만 칸은 음영·굵기 그대로", variable=self.v_dmb_keep, bg="#f3e5f5",
                        fg="#6a1b9a").pack(side=tk.LEFT, padx=(6, 0))
-        tk.Label(dbar, text="  DMB 제목", bg="#f3e5f5").pack(side=tk.LEFT)
-        self.v_dmb_title = tk.StringVar(value=cfgd.get("dmb_title", ""))
-        self.v_dmb_title.trace_add("write", lambda *a: self.dmb_changed())
-        tk.Entry(dbar, textvariable=self.v_dmb_title, width=30).pack(side=tk.LEFT, padx=2)
-        tk.Button(dbar, text="DMB PDF 저장", command=self.make_dmb, bg="#ce93d8").pack(side=tk.LEFT, padx=6)
+        tk.Label(dbar, text="   (제목은 ⚙ 설정에서)", bg="#f3e5f5", fg="#777").pack(side=tk.LEFT)
 
         # 제목 · 날짜 (바꾸면 바로 편성표에 반영, 설정에 저장되어 다음 주에도 그대로)
         cfg0 = load_config()
@@ -1927,7 +2035,7 @@ class App:
         btn("분홍 켜기 / 끄기", self.toggle_pink, "#ffd6d6")
         btn("음영 넣기 / 빼기", self.shade_dialog, "#d9d9d9")
         btn("끝 시각 표시 켜기 / 끄기", self.toggle_end, "#ffcdd2")
-        btn("이 줄 엑셀 원래대로", self.revert_row)
+        btn("이 줄 TV 원래대로" if IS_DMB else "이 줄 엑셀 원래대로", self.revert_row)
         btn("로컬 끼워 넣기", self.local_dialog, "#cfd8dc")
 
         # 탭 3: 기록 (아래에 따로 두지 않고 탭으로)
@@ -1947,10 +2055,11 @@ class App:
         tk.Frame(ph, bg="#f0f3f8", width=380).pack(side=tk.RIGHT, fill=tk.Y)
         inner = tk.Frame(left_ph, bg="#e4e6ea")
         inner.place(relx=0.5, rely=0.42, anchor="center")
-        tk.Label(inner, text="엑셀 파일이 열리지 않았습니다.", bg="#e4e6ea", fg="#7a7a7a",
-                 font=("", 15, "bold")).pack()
-        tk.Label(inner, text="상단의 [엑셀 열기]를 눌러 시작하세요.", bg="#e4e6ea", fg="#9a9a9a",
-                 font=("", 10)).pack(pady=(14, 0))
+        tk.Label(inner, text=("TV 프로젝트가 열리지 않았습니다." if IS_DMB else "엑셀 파일이 열리지 않았습니다."),
+                 bg="#e4e6ea", fg="#7a7a7a", font=("", 15, "bold")).pack()
+        tk.Label(inner, text=("상단의 [TV 프로젝트 불러오기]로 엑셀 TV 편성표 편집기에서 저장한 프로젝트(.tvproj)를 "
+                              "여세요." if IS_DMB else "상단의 [엑셀 열기]를 눌러 시작하세요."),
+                 bg="#e4e6ea", fg="#9a9a9a", font=("", 10)).pack(pady=(14, 0))
         self.recent_box = tk.Frame(inner, bg="#e4e6ea")
         self.recent_box.pack(pady=(26, 0))
         self.build_recent()
@@ -2531,7 +2640,7 @@ class App:
             return
         base = self.rows[i]
         top = tk.Toplevel(self.root)
-        top.title("DMB만 칸 넣기 (TV 편성은 그대로)" if self.dmb_on else "로컬 끼워 넣기")
+        top.title("DMB 칸 넣기 (TV 편성 위에 덮기)" if self.dmb_on else "로컬 끼워 넣기")
         top.transient(self.root)
         f = tk.Frame(top, padx=14, pady=10)
         f.pack()
@@ -2731,8 +2840,6 @@ class App:
         from tkinter import filedialog, messagebox
         if not self.ready():
             return
-        if self.dmb_on:         # DMB 로 보는 중이면 DMB PDF
-            return self.make_dmb()
         base = os.path.splitext(self.default_proj_path())[0]          # 저장하는 지금 시분
         out = filedialog.asksaveasfilename(defaultextension=".pdf", filetypes=[("PDF", "*.pdf")],
                                            initialfile=os.path.basename(base) + ".pdf",
@@ -2801,13 +2908,15 @@ class App:
         return {"source": self.xlsx or "", "query_date": getattr(self, "query_date", ""),
                 "rows": self.rows, "orig": self.orig, "deleted": self.deleted,
                 "settings": {k: cfg.get(k) for k in PROJ_CFG_KEYS}, "last_pdf": getattr(self, "last_pdf", ""),
-                "history": self.history}
+                "history": self.history, **({"tv_project": self.tv_path} if IS_DMB else {})}
 
     def default_proj_path(self):
         """저장 이름: 엑셀이름_편성표 + 저장하는 지금 시분  (예: MBC_11월_3주(2)_편성표1605.tvproj)
         폴더는 지금 프로젝트가 있는 곳(없으면 엑셀이 있는 곳)"""
         name = os.path.splitext(os.path.basename(self.proj_path or self.xlsx or "편성표"))[0]
         name = re.sub(r"_편성표\d{0,4}$", "", name)       # 예전 시분은 떼고 지금 시분으로
+        if IS_DMB:          # DMB: DMB_MBC_11월_3주(3)_편성표1830.dmbproj
+            name = "DMB_" + re.sub(r"^DMB_", "", name)
         folder = os.path.dirname(self.proj_path or "") or self.proj_dir or os.path.dirname(self.xlsx or "")
         if folder and not os.path.isdir(folder):
             folder = ""
@@ -2850,9 +2959,16 @@ class App:
             if ans is None or (ans and not self.save()):
                 return
         if not path:
-            path = filedialog.askopenfilename(filetypes=[("편성표 프로젝트", "*" + PROJ_EXT)])
+            path = filedialog.askopenfilename(filetypes=[("편성표 프로젝트", "*" + PROJ_EXT)] +
+                                              ([("TV 프로젝트", "*" + TV_PROJ_EXT)] if IS_DMB else []))
             if not path:
                 return
+        if IS_DMB and path.lower().endswith(TV_PROJ_EXT):
+            return self.import_tv(path, ask_save=False)
+        if not IS_DMB and path.lower().endswith(DMB_PROJ_EXT):
+            from tkinter import messagebox
+            messagebox.showinfo("프로젝트 열기", "DMB 프로젝트입니다. 엑셀 DMB 편성표 편집기에서 여세요.")
+            return
         try:
             d = load_project(path)
         except Exception as e:
@@ -2878,6 +2994,7 @@ class App:
         self.proj_path = path
         self.proj_dir = ""
         self.history = d.get("history") or []
+        self.tv_path = d.get("tv_project", "")
         self.sel, self.multi, self.diff_keys = None, [], set()
         self.undo_stack.clear()
         self.redo_stack.clear()
@@ -2892,6 +3009,110 @@ class App:
         self.build_recent()
         self.log(f"[프로젝트 열기] {os.path.basename(path)}  편성 {len(self.rows)}줄 · 고친 줄 {self.edits}개 "
                  f"(저장 {d.get('saved', '')[:16].replace('T', ' ')})")
+
+    # ---------- DMB 편집기: TV 프로젝트 불러오기 / 다시 가져오기
+    def import_tv(self, path=None, ask_save=True):
+        """엑셀 TV 편성표 편집기에서 저장한 프로젝트(.tvproj)로 DMB 작업 시작 (TV 프로젝트는 건드리지 않음)"""
+        from tkinter import filedialog, messagebox
+        if ask_save and self.rows and not self.saved:
+            ans = messagebox.askyesnocancel("TV 프로젝트 불러오기", "지금 고친 DMB 작업을 저장하지 않았습니다.\n저장하고 불러올까요?")
+            if ans is None or (ans and not self.save()):
+                return
+        if not path:
+            path = filedialog.askopenfilename(title="TV 프로젝트 (엑셀 TV 편성표 편집기에서 저장한 .tvproj)",
+                                              filetypes=[("TV 프로젝트", "*" + TV_PROJ_EXT)],
+                                              initialdir=os.path.dirname(self.tv_path or "") or None)
+            if not path:
+                return
+        try:
+            d = load_project(path, recent=False)
+        except Exception as e:
+            self.error("TV 프로젝트 열기 오류", e)
+            return
+        st = {k: v for k, v in (d.get("settings") or {}).items() if v is not None}
+        if st.get("title_text"):
+            st["title_text"] = dmb_title_auto(st["title_text"])     # 광주MBC... -> 광주 MYMBC...
+        if st:
+            save_config_keys(st)
+            self._loading = True
+            for var, k in ((self.v_title, "title_text"), (self.v_tsize, "title_size"), (self.v_smode, "stamp_mode"),
+                           (self.v_stext, "stamp_text")):
+                if k in st:
+                    var.set(str(st[k]))
+            if "title_bold" in st:
+                self.v_tbold.set(bool(st["title_bold"]))
+            self._loading = False
+        self.rows = import_tv_rows(d["rows"])
+        self.orig = import_tv_rows(d["rows"])
+        self.tv_path = path
+        self.xlsx = path
+        self.query_date = d.get("query_date", "")
+        self.last_pdf = ""
+        self.deleted = 0
+        self.proj_path = None
+        self.proj_dir = os.path.dirname(path)
+        self.history = [{"tv": os.path.basename(path), "at": datetime.datetime.now().isoformat(timespec="seconds"),
+                         "what": "TV 프로젝트 불러오기"}]
+        self.sel, self.multi, self.diff_keys = None, [], set()
+        self.undo_stack.clear()
+        self.redo_stack.clear()
+        self.update_undo_buttons()
+        self.t0 = datetime.datetime.now().timestamp()
+        self.saved = False
+        self.show_main()
+        self.build_day_buttons()
+        self.refresh()
+        self.root.after(300, self.zoom_fit)
+        self.root.title(f"{APP_NAME} {VERSION} - {os.path.basename(path)} (DMB 작업, 저장 전)")
+        self.log(f"[TV 프로젝트 불러오기] {os.path.basename(path)}  편성 {len(self.rows)}줄 - "
+                 f"TV 프로젝트는 그대로 두고, DMB 작업은 [프로젝트 저장] 때 {DMB_PROJ_EXT} 로 따로 저장합니다.")
+
+    def refresh_tv(self):
+        """TV 프로젝트가 바뀐 뒤(새 판 반영 등): DMB 에서 고친 것은 두고 바뀐 TV 편성만 다시 가져오기"""
+        from tkinter import filedialog, messagebox
+        if not self.ready():
+            return
+        path = filedialog.askopenfilename(title="다시 가져올 TV 프로젝트 (.tvproj)",
+                                          filetypes=[("TV 프로젝트", "*" + TV_PROJ_EXT)],
+                                          initialdir=os.path.dirname(self.tv_path or "") or None)
+        if not path:
+            return
+        try:
+            d = load_project(path, recent=False)
+        except Exception as e:
+            self.error("TV 프로젝트 열기 오류", e)
+            return
+        od, nd = sorted({r["date"] for r in self.orig}), sorted({r["date"] for r in d["rows"]})
+        if od != nd and not messagebox.askyesno("TV 다시 가져오기", "날짜가 다릅니다. 같은 주의 TV 프로젝트가 아닌 것 같습니다.\n"
+                                                              "그래도 가져올까요?"):
+            return
+        old_tv = [{k: v for k, v in r.items() if k != "_tvk"} for r in self.orig]
+        new_tv = [{k: v for k, v in r.items() if k not in MARK_KEYS} for r in d["rows"]]
+        merged, rep = refresh_from_tv(self.rows, old_tv, new_tv)
+        msg = (f"바뀜 {len(rep['changed'])} · 새로 {len(rep['new'])} · 없어짐 {len(rep['removed'])} · "
+               f"DMB 고친 것 그대로 {rep['kept']}줄 · 확인 필요 {len(rep['checks'])}")
+        if not rep["changed"] and not rep["new"] and not rep["removed"]:
+            messagebox.showinfo("TV 다시 가져오기", "TV 편성에서 바뀐 것이 없습니다.")
+            self.tv_path = path
+            return
+        if not messagebox.askyesno("TV 다시 가져오기", msg + "\n\n반영할까요? (바뀐 칸은 주황, 확인할 칸은 빨간 테두리)"):
+            return
+        self.push_undo()
+        self.rows = merged
+        self.orig = import_tv_rows(new_tv)
+        self.tv_path = self.xlsx = path
+        self.query_date = d.get("query_date", self.query_date)
+        self.history = list(self.history) + [{"tv": os.path.basename(path), "what": "TV 다시 가져오기", "summary": msg,
+                                              "at": datetime.datetime.now().isoformat(timespec="seconds")}]
+        self.sel, self.multi = None, []
+        self.saved = False
+        self.build_day_buttons()
+        self.refresh()
+        self.log(f"[TV 다시 가져오기] {os.path.basename(path)}  {msg}")
+        for x in rep["removed"]:
+            self.log(f"   - 없어짐: {day_label(x['date'])} {fmt_t(x['s'])}~{fmt_t(x['e'])} {x['name']}")
+        for x in rep["checks"]:
+            self.log(f"   ⚠ {day_label(x['date'])} {fmt_t(x['s'])}~{fmt_t(x['e'])} {x['name']} - {x.get('_note', '')}")
 
     def build_recent(self):
         """첫 화면의 최근 프로젝트 목록 + 위쪽 [최근 ▼] 메뉴"""
@@ -2984,12 +3205,6 @@ class App:
         self.v_name_all = tk.BooleanVar(value=False)
         tk.Checkbutton(f, text="여러 칸 선택 시 이름도 모두 똑같이", variable=self.v_name_all,
                        font=("", 8)).grid(row=11, column=0, columnspan=4, sticky="w")
-        sf = tk.Frame(f)
-        sf.grid(row=12, column=0, columnspan=4, sticky="w", pady=(2, 0))
-        tk.Label(sf, text="보이는 곳").pack(side=tk.LEFT)
-        ttk.Combobox(sf, textvariable=self.fv["show"], values=tuple(SHOW_LABELS.values()), width=7,
-                     state="readonly").pack(side=tk.LEFT, padx=4)
-        tk.Label(sf, text="(DMB만: TV에는 안 보이고 DMB에서 그 시간을 덮음)", fg="#777", font=("", 8)).pack(side=tk.LEFT)
         tk.Label(f, text="시작").grid(row=1, column=0, sticky="w")
         self.ent_s = tk.Entry(f, textvariable=self.fv["s"], width=7)
         self.ent_s.grid(row=1, column=1, sticky="w")
@@ -3042,7 +3257,8 @@ class App:
         bf.pack(fill=tk.X, pady=4)
         tk.Button(bf, text="같은 프로그램 모두에 적용", command=self.apply_same, bg="#e3f2fd").pack(side=tk.LEFT)
         tk.Button(bf, text="앞뒤 글자 ...", command=self.affix_dialog).pack(side=tk.LEFT, padx=4)
-        tk.Button(bf, text="엑셀 원래대로", command=self.revert_row).pack(side=tk.LEFT, padx=4)
+        tk.Button(bf, text=("TV 원래대로" if IS_DMB else "엑셀 원래대로"), command=self.revert_row).pack(
+            side=tk.LEFT, padx=4)
         bf2 = tk.Frame(parent)
         bf2.pack(fill=tk.X)
         tk.Button(bf2, text="뒤에 줄 추가", command=self.add_row).pack(side=tk.LEFT)
@@ -3643,7 +3859,7 @@ class App:
         self._tip_row = -1
         self.cv.create_image(0, 0, image=self.img, anchor="nw", tags=("page",))
         self.cv.configure(scrollregion=(0, 0, self.img.width(), self.img.height()))
-        self.draw_lbl.config(text=("[DMB 보기] " if self.dmb_on else "") +
+        self.draw_lbl.config(text=("[DMB] " if self.dmb_on else "") +
                              f"{datetime.datetime.now():%H:%M:%S} 다시 그림 · 칸 {len(geom)}개",
                              fg="#8e24aa" if self.dmb_on else "#555")
         self.draw_marks()
@@ -3760,12 +3976,8 @@ class App:
             m.add_cascade(label="즐겨찾기 적용", menu=fm)
         m.add_command(label="즐겨찾기에 추가 ...", command=self.fav_add_dialog)
         m.add_command(label="이름 앞뒤에 글자 붙이기 ...", command=self.affix_dialog)
-        m.add_command(label=("DMB만 칸 넣기 ..." if self.dmb_on else "로컬 끼워 넣기 ..."), command=self.local_dialog)
-        sm = self.tk.Menu(m, tearoff=0)
-        for k, t in SHOW_LABELS.items():
-            sm.add_command(label=("● " if (r.get("show") or "") == k else "   ") + t,
-                           command=lambda k=k: self.set_show(k))
-        m.add_cascade(label="보이는 곳 (모두 / TV만 / DMB만)", menu=sm)
+        m.add_command(label=("DMB 칸 넣기 (TV 편성 위에 덮기) ..." if self.dmb_on else "로컬 끼워 넣기 ..."),
+                      command=self.local_dialog)
         m.add_command(label="자세히 고치기 ...", command=lambda: self.edit_row())
         m.add_command(label="이 칸 뒤에 줄 추가 ...", command=self.add_row)
         if r.get("_check") or r.get("_ver") in ("changed", "new"):
@@ -3776,7 +3988,7 @@ class App:
         if any(x.get("_check") or x.get("_ver") in ("changed", "new") for x in self.rows):
             m.add_command(label="새 판 표시 모두 지우기", command=self.clear_version_marks)
         m.add_command(label="줄 삭제", command=self.del_row)
-        m.add_command(label="엑셀 원래대로", command=self.revert_row)
+        m.add_command(label=("TV 원래대로" if IS_DMB else "엑셀 원래대로"), command=self.revert_row)
         try:
             m.tk_popup(e.x_root, e.y_root)
         finally:
@@ -4065,7 +4277,8 @@ class App:
     def snapshot(self):
         return (json.dumps(self.rows, ensure_ascii=False), self.deleted, self.sel,
                 json.dumps({"orig": self.orig, "xlsx": self.xlsx, "query_date": getattr(self, "query_date", ""),
-                            "proj_path": self.proj_path, "proj_dir": self.proj_dir, "history": self.history},
+                            "proj_path": self.proj_path, "proj_dir": self.proj_dir, "history": self.history,
+                            "tv_path": self.tv_path},
                            ensure_ascii=False))
 
     def push_undo(self, tag=None):
@@ -4088,6 +4301,7 @@ class App:
             if st["xlsx"] != self.xlsx:
                 self.orig, self.xlsx, self.query_date = st["orig"], st["xlsx"], st["query_date"]
                 self.proj_path, self.proj_dir, self.history = st["proj_path"], st["proj_dir"], st["history"]
+                self.tv_path = st.get("tv_path", "")
                 self.root.title(f"{APP_NAME} {VERSION} - {os.path.basename(self.proj_path or self.xlsx or '')}")
         self.rows = json.loads(rows)
         self.deleted = deleted
@@ -4142,7 +4356,7 @@ class App:
     # ---------- 첫 화면 / 작업 화면
     def show_start(self):
         """엑셀을 열기 전: 맨 위 줄과 안내 화면만"""
-        for w_ in (self.act, self.head, self.nb):
+        for w_ in (self.act, self.head, self.nb, self.dmbbar):
             w_.pack_forget()
         self.placeholder.pack(fill=self.tk.BOTH, expand=True)
         self.main_shown = False
@@ -4155,6 +4369,9 @@ class App:
         self.placeholder.pack_forget()
         self.act.pack(fill=tk.X, padx=8, pady=(0, 4), after=self.topbar)
         last = self.act
+        if IS_DMB:
+            self.dmbbar.pack(fill=tk.X, padx=8, pady=(0, 4), after=self.act)
+            last = self.dmbbar
         if self.head_visible:
             self.head.pack(fill=tk.X, padx=8, pady=(0, 4), after=self.act)
             last = self.head
@@ -4166,72 +4383,25 @@ class App:
         tk = self.tk
         self.head_visible = not self.head_visible
         if self.head_visible:
-            anchor = self.act if self.main_shown else self.topbar
+            anchor = (self.dmbbar if IS_DMB else self.act) if self.main_shown else self.topbar
             self.head.pack(fill=tk.X, padx=8, pady=(0, 4), after=anchor)
         else:
             self.head.pack_forget()
 
     def cfg_over(self):
         o = {"_query_date": getattr(self, "query_date", "")}
-        if getattr(self, "dmb_on", False):
-            o["_dmb"] = {"hide": [k for k, v in self.v_dmb_hide.items() if v.get()],
-                         "keep_own": bool(self.v_dmb_keep.get()),
-                         "title": self.v_dmb_title.get().strip() or dmb_title_auto(self.v_title.get())}
-        return o
-
-    # ---------- DMB 변환 (같은 작업을 DMB 모양으로 보기·저장. 나중에 DMB 편집기로 따로 만들 예정)
-    def toggle_dmb(self):
-        self.dmb_on = not self.dmb_on
         if self.dmb_on:
-            cur = self.v_dmb_title.get().strip()
-            if not cur or cur == getattr(self, "_dmb_auto", None):     # 직접 쓴 제목이 아니면 TV 제목을 따라감
-                self._dmb_auto = dmb_title_auto(self.v_title.get())
-                self._loading = True
-                self.v_dmb_title.set(self._dmb_auto)
-                self._loading = False
-            self.dmbbar.pack(fill=self.tk.X, padx=8, pady=(0, 4), after=self.act)
-            self.btn_dmb.config(text="TV로 돌아가기", bg="#ab47bc", fg="white")
-            self.log("[DMB 변환] DMB 모양으로 봅니다. 고치는 것은 TV와 같은 작업에 그대로 들어갑니다.")
-        else:
-            self.dmbbar.pack_forget()
-            self.btn_dmb.config(text="DMB 변환", bg="#e1bee7", fg="black")
-            self.log("[DMB 변환] TV 모양으로 돌아왔습니다.")
-        self.schedule_redraw(50)
+            o["_dmb"] = {"hide": [k for k, v in self.v_dmb_hide.items() if v.get()],
+                         "keep_own": bool(self.v_dmb_keep.get()), "title": self.v_title.get().strip()}
+        return o
 
     def dmb_changed(self):
         if self._loading:
             return
         save_config_keys({"dmb_hide": [k for k, v in self.v_dmb_hide.items() if v.get()],
-                          "dmb_title": self.v_dmb_title.get(), "dmb_keep_own": bool(self.v_dmb_keep.get())})
+                          "dmb_keep_own": bool(self.v_dmb_keep.get())})
         if self.dmb_on:
             self.schedule_redraw(300)
-
-    def make_dmb(self):
-        """DMB PDF 저장: DMB_엑셀이름_편성표시분.pdf (프로젝트는 TV 와 같은 것을 씀)"""
-        from tkinter import filedialog, messagebox
-        if not self.ready():
-            return
-        was = self.dmb_on
-        self.dmb_on = True
-        try:
-            base = os.path.splitext(self.default_proj_path())[0]
-            name = "DMB_" + re.sub(r"^DMB_", "", os.path.basename(base)) + ".pdf"
-            out = filedialog.asksaveasfilename(title="DMB PDF 저장", defaultextension=".pdf",
-                                               filetypes=[("PDF", "*.pdf")], initialfile=name,
-                                               initialdir=os.path.dirname(base) or None)
-            if not out:
-                return
-            if not out.lower().endswith(".pdf"):
-                out = os.path.splitext(out)[0] + ".pdf"
-            generate(self.rows, out, self.prev_rows_cached(), self.log, cfg_over=self.cfg_over())
-        except Exception as e:
-            self.error("DMB PDF 만들기 오류", e)
-            return
-        finally:
-            self.dmb_on = was
-        self.log(f"[DMB 저장] {out}" + ("" if self.saved else "  (고친 내용은 [프로젝트 저장]으로 따로 저장하세요)"))
-        if messagebox.askyesno("완료", "DMB PDF를 만들었습니다. 열어 볼까요?"):
-            open_file(out)
 
     def head_changed(self):
         """제목·날짜 입력이 바뀌면 0.6초 뒤 설정에 저장하고 다시 그림"""
@@ -4433,7 +4603,7 @@ def run_gui():
 
 
 if __name__ == "__main__":
-    args = sys.argv[1:]
+    args = [a for a in sys.argv[1:] if a != "--dmb"]
     if not args:
         run_gui()
     else:

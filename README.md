@@ -6,7 +6,7 @@
 |---|---|
 | `apps/runsheet/` | 운행표 데이터 편집기 (`pdf_data_editor.py`, `APP_VERSION`) — RADIO |
 | `apps/schedule/` | TV 편성표 편집기 (`ui.py`, `APP_VERSION`) — TV |
-| `apps/excel_tv/` | 엑셀 TV 편성표 편집기 (`tv_schedule_maker.py`, `APP_VERSION`) — TV · 시험판, 서버 전송 없음 |
+| `apps/excel_tv/` | 엑셀 TV 편성표 편집기 (`tv_schedule_maker.py`, `APP_VERSION`) · 엑셀 DMB 편성표 편집기 (`excel_dmb.py`, 같은 프로그램을 DMB 설정으로) — TV · 시험판, 서버 전송 없음 |
 | `launcher/` | 편집 프로그램 런처 (`LAUNCHER_VERSION`, 공용 실행 환경 `RUNTIME`) |
 | `installer/` | Inno Setup 설치 스크립트 |
 | `server/` | 녹음 PC 서버 — 편집기 자료를 모아 웹으로 항상 조회 (Debian, [설명](server/README.md)) |
