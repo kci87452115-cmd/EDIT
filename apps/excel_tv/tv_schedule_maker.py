@@ -29,7 +29,7 @@ try:
 except Exception:
     pass
 
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.2.1"
 VERSION = f"v{APP_VERSION} (시험판)"
 
 
@@ -846,6 +846,7 @@ def icon_list(b):
 DMB_HIDE_ITEMS = (("uhd", "UHD"), ("cc", "자막"), ("sign", "수어"), ("ad", "화면해설"), ("rl", "R/L"),
                   ("age", "연령"), ("hl", "글자 바탕색"), ("fg", "글자색"), ("bold", "글자 굵기"), ("shade", "음영"),
                   ("pink", "분홍"))
+OWN_STYLE_KEYS = ("shade", "bold", "fg", "hl")
 DMB_HIDE_DEFAULT = ("uhd", "cc", "sign", "ad", "rl", "hl", "fg", "bold", "shade")
 ICON_KEY_OF = {"U": "uhd", "자": "cc", "수": "sign", "해": "ad", "R": "rl", "L": "rl", "AGE": "age"}
 
@@ -1076,8 +1077,13 @@ def draw_schedule(dates, blocks, cfg, out_path=None, printed_at=None):
     for b in sorted(blocks, key=lambda b: (b["day0"], b["s"])):
         if b["day0"] > 6:
             continue
-        # DMB: 'DMB만' 칸은 직접 넣은 꾸밈(음영·굵기·글자색·글자 바탕)을 그대로
-        hide = hide_all - {"shade", "bold", "fg", "hl"} if own_keep and b.get("show") == "dmb" else hide_all
+        # DMB: DMB 편집기에서 직접 넣은 꾸밈(음영·굵기·글자색·글자 바탕)은 그대로 (TV 에서 온 꾸밈만 뺌)
+        if own_keep and b.get("show") == "dmb":
+            hide = hide_all - set(OWN_STYLE_KEYS)
+        elif own_keep and b.get("_own"):
+            hide = hide_all - set(b["_own"])
+        else:
+            hide = hide_all
         x0 = X_COLS["days"][b["day0"]][0]
         x1 = X_COLS["days"][min(b["day1"], 6)][1]
         if b["half"] == "L":
@@ -1926,7 +1932,7 @@ class App:
             tk.Checkbutton(dbar, text=t, variable=v, bg="#f3e5f5").pack(side=tk.LEFT)
         self.v_dmb_keep = tk.BooleanVar(value=bool(cfgd.get("dmb_keep_own", True)))
         self.v_dmb_keep.trace_add("write", lambda *a: self.dmb_changed())
-        tk.Checkbutton(dbar, text="| DMB만 칸은 음영·굵기 그대로", variable=self.v_dmb_keep, bg="#f3e5f5",
+        tk.Checkbutton(dbar, text="| DMB에서 넣은 음영·굵기·글자색은 그대로", variable=self.v_dmb_keep, bg="#f3e5f5",
                        fg="#6a1b9a").pack(side=tk.LEFT, padx=(6, 0))
         tk.Label(dbar, text="   (제목은 ⚙ 설정에서)", bg="#f3e5f5", fg="#777").pack(side=tk.LEFT)
 
@@ -2826,7 +2832,7 @@ class App:
     def build_temp(self):
         import tempfile
         out = os.path.join(tempfile.gettempdir(), "tv_schedule_preview.pdf")
-        generate(self.rows, out, self.prev_rows_cached(), log=lambda s: None, cfg_over=self.cfg_over())
+        generate(self.out_rows(), out, self.prev_rows_cached(), log=lambda s: None, cfg_over=self.cfg_over())
         return out
 
     def ready(self):
@@ -2847,7 +2853,7 @@ class App:
         if not out:
             return
         try:
-            generate(self.rows, out, self.prev_rows_cached(), self.log, cfg_over=self.cfg_over())
+            generate(self.out_rows(), out, self.prev_rows_cached(), self.log, cfg_over=self.cfg_over())
         except Exception as e:
             self.error("PDF 만들기 오류", e)
             return
@@ -3847,7 +3853,7 @@ class App:
         try:
             cfg = load_config()
             cfg.update(self.cfg_over())
-            png, geom, dates = render_live(self.rows, self.prev_rows_cached(), self.zoom, cfg)
+            png, geom, dates = render_live(self.out_rows(), self.prev_rows_cached(), self.zoom, cfg)
         except Exception as e:
             self.draw_lbl.config(text=f"그리기 오류: {e}", fg="#c62828")
             self.log(f"[그리기 오류] {type(e).__name__}: {e}")
@@ -4394,6 +4400,18 @@ class App:
             o["_dmb"] = {"hide": [k for k, v in self.v_dmb_hide.items() if v.get()],
                          "keep_own": bool(self.v_dmb_keep.get()), "title": self.v_title.get().strip()}
         return o
+
+    def out_rows(self):
+        """그리기용 줄. DMB 편집기: 줄마다 DMB에서 직접 넣은 꾸밈(_own)을 표시 -> 'DMB에서 넣은 꾸밈은 그대로'"""
+        if not IS_DMB:
+            return self.rows
+        tv = {r["_tvk"]: r for r in self.orig if r.get("_tvk")}
+        out = []
+        for r in self.rows:
+            o = tv.get(r.get("_tvk")) if r.get("_tvk") else None
+            own = [k for k in OWN_STYLE_KEYS if r.get(k) and (o is None or (r.get(k) or None) != (o.get(k) or None))]
+            out.append(dict(r, _own=own) if own else r)
+        return out
 
     def dmb_changed(self):
         if self._loading:
