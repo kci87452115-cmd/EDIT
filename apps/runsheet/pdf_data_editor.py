@@ -25,7 +25,7 @@ except ImportError:
     except ImportError:
         fitz = None
 
-APP_VERSION = "2.14.3"
+APP_VERSION = "2.14.4"
 APP_TITLE = f"운행표 데이터 편집기 v{APP_VERSION}"
 APP_MUTEX = "RunSheetEditor_Running"      # 설치 프로그램이 '실행 중'을 알아보는 이름 (setup.iss 의 AppMutex 와 같아야 함)
 RUN_BY_LAUNCHER = bool(os.environ.get("RADIO_LAUNCHER"))   # 편집 프로그램 런처로 실행됨 -> 업데이트는 런처가 한다
@@ -1450,6 +1450,33 @@ def load_view_settings(data_dir):
     return bool(d.get("view_on", False)), port, d.get("db_path") or os.path.join(data_dir, "pdf_data_editor.db")
 
 
+SETTINGS_BACKUP_EXT = (".json", ".png", ".jpg", ".txt", ".ini", ".csv", ".tvproj", ".dmbproj")
+SETTINGS_BACKUP_SKIP = ("미리보기", "백업", "업데이트", "__pycache__")
+
+
+def settings_backup_zip(root, max_file=10 * 1024 * 1024):
+    """녹음 PC 서버가 매일 가져가는 '편집기 설정 백업' (즐겨찾기·설정·뱃지 등). 데이터 DB·미리보기 PDF는 빼고 zip 바이트로."""
+    import io
+    import zipfile
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for base, dirs, files in os.walk(root):
+            dirs[:] = [d for d in dirs if d not in SETTINGS_BACKUP_SKIP and not d.startswith(".")]
+            for fn in files:
+                full = os.path.join(base, fn)
+                if not fn.lower().endswith(SETTINGS_BACKUP_EXT) or fn.endswith(".tmp"):
+                    continue
+                try:
+                    if os.path.getsize(full) > max_file:
+                        continue
+                    z.write(full, os.path.relpath(full, root))
+                except OSError:
+                    pass
+        z.writestr("_백업정보.txt", f"PC: {computer_name()}\n폴더: {root}\n시각: {datetime.datetime.now():%Y-%m-%d %H:%M:%S}\n"
+                                    f"운행표 편집기 v{APP_VERSION}\n")
+    return buf.getvalue()
+
+
 class ViewServer:
     """읽기 전용 조회 서버. start() 로 켜고 stop() 으로 끈다.
     같은 포트를 런처(또는 편집기)가 이미 열어 두었으면 그것을 쓴다 (external)."""
@@ -1546,6 +1573,9 @@ class ViewServer:
                         return self._send(200, data, "application/pdf", {"Content-Disposition": f'inline; filename="{key}.pdf"'})
                     if route == "/api/snapshot":                       # 녹음 PC 서버(사본)가 가져가는 데이터 사본 (읽기 전용)
                         return self._snapshot(store, p.get("since", ""))
+                    if route == "/api/settings-backup":                # 녹음 PC 서버가 매일 가져가는 설정 백업 (즐겨찾기·설정)
+                        return self._send(200, settings_backup_zip(DATA_DIR), "application/zip",
+                                          {"Content-Disposition": 'attachment; filename="radio-settings.zip"'})
                     if route == "/api/info":
                         return self._json({"app": "runsheet-view", "host": owner.host_kind,
                                            "name": computer_name(), "version": APP_VERSION, "groups": store.distinct_groups(),

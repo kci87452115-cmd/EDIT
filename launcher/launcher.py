@@ -28,7 +28,7 @@ import tempfile
 import time
 import zipfile
 
-LAUNCHER_VERSION = "1.2.3"
+LAUNCHER_VERSION = "1.2.4"
 RUNTIME = 1                         # 공용 실행 환경 세대. 필요한 부품이 바뀌면 올린다 (앱의 runtime 값과 비교)
 EXE_NAME = "EditLauncher.exe"
 MUTEX = "EditLauncher_Running"      # 설치 프로그램(setup)이 '실행 중'을 알아보는 이름
@@ -603,6 +603,33 @@ load();setInterval(()=>{if(!document.hidden)load()},30000);
 </script></body></html>"""
 
 
+_SETTINGS_EXT = (".json", ".png", ".jpg", ".txt", ".ini", ".csv", ".tvproj", ".dmbproj")
+_SETTINGS_SKIP = ("미리보기", "백업", "업데이트", "__pycache__")
+
+
+def _settings_backup_zip(root, max_file=10 * 1024 * 1024):
+    """녹음 PC 서버가 매일 가져가는 TV 쪽 설정 백업 (편성표·DMB·엑셀 편성표 설정, 즐겨찾기, 뱃지, 프로젝트). zip 바이트"""
+    import io
+    import zipfile
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for base, dirs, files in os.walk(root):
+            dirs[:] = [d for d in dirs if d not in _SETTINGS_SKIP and not d.startswith(".")]
+            for fn in files:
+                full = os.path.join(base, fn)
+                if not fn.lower().endswith(_SETTINGS_EXT) or fn.endswith(".tmp"):
+                    continue
+                try:
+                    if os.path.getsize(full) > max_file:
+                        continue
+                    z.write(full, os.path.relpath(full, root))
+                except OSError:
+                    pass
+        z.writestr("_백업정보.txt", f"PC: {_pc_name()}\n폴더: {root}\n시각: {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                                    f"런처 v{LAUNCHER_VERSION}\n")
+    return buf.getvalue()
+
+
 class TvViewHost:
     """TV PC: 런처가 TV/DMB 편집기가 저장한 주간 편성표 미리보기를 사내망에 보여 주고, 다른 런처에 알린다."""
 
@@ -676,6 +703,9 @@ class TvViewHost:
                     if path == "/api/tv":
                         body = json.dumps({"app": "edit-tv-view", "name": _pc_name(), "rows": host.rows()}, ensure_ascii=False)
                         return self._send(200, body, "application/json; charset=utf-8")
+                    if path == "/api/settings-backup":     # 녹음 PC 서버가 매일 가져가는 설정 백업 (즐겨찾기·설정)
+                        return self._send(200, _settings_backup_zip(data_dir("tv")), "application/zip",
+                                          {"Content-Disposition": 'attachment; filename="tv-settings.zip"'})
                     if path.startswith("/tv/") and path.endswith(".pdf"):
                         from urllib.parse import unquote
                         key = unquote(path[4:-4])

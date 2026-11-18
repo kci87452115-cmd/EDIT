@@ -16,6 +16,7 @@
 
 편집 기능은 없다 (모두 읽기 전용). 원본은 언제나 편집기 PC에 있다.
 """
+import glob
 import hashlib
 import json
 import os
@@ -32,6 +33,9 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import admin                                    # noqa: E402  관리자 모드 (접속 기록)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
@@ -54,6 +58,8 @@ RADIO_DB = os.path.join(RADIO_DATA, "pdf_data_editor.db")
 RADIO_PREVIEW = os.path.join(RADIO_DATA, "미리보기")
 TV_DIR = os.path.join(HOME, "tv")
 STATE_FILE = os.path.join(HOME, "state.json")
+BACKUP_DIR = os.path.join(HOME, "backup")
+EDITORS_STATUS = os.path.join(BACKUP_DIR, "status-editors.json")
 
 
 def log(*a):
@@ -218,6 +224,9 @@ class Mirror:
             x["online"] = names if fresh else []
         st["server"] = {"name": socket.gethostname(), "ip": lan_ip(), "now": now_str()}
         st["links"] = config_links()
+        c = load_json(CONFIG_FILE, {})
+        st["role"] = c.get("role", "main")              # backup = 예비 서버 (FM PC)
+        st["am_keep_days"] = c.get("am_keep_days", 2)
         st["ui_ver"] = UI_VER        # 화면 버전: 바뀌면 열려 있는 브라우저가 스스로 새로 고침
         return st
 
@@ -349,9 +358,69 @@ class Mirror:
             except OSError:
                 pass
 
+    # ---- 편집기 설정 백업 (즐겨찾기·설정·뱃지·프로젝트) - 하루 한 번 (새벽 3시 이후) 또는 관리자 화면 [지금 가져오기]
+    def backup_editors(self, config):
+        now_ = time.time()
+        flag = os.path.join(BACKUP_DIR, ".editors-now")
+        st = load_json(EDITORS_STATUS, {})
+        due = os.path.exists(flag) or (time.localtime().tm_hour >= 3 and
+                                       now_ - st.get("_last_try", 0) > 20 * 3600)
+        if not due:
+            return
+        try:
+            os.remove(flag)
+        except OSError:
+            pass
+        st["_last_try"] = now_
+        keep = int(config.get("editors_keep", 14) or 14)
+        for kind in ("radio", "tv"):
+            ent = {"at": now_str(), "ok": False, "err": "", "file": "", "size": 0, "from": ""}
+            srcs = [s for s in sources(self.discovery, kind, config) if s["url"]]
+            if not srcs:
+                ent["err"] = "편집기 PC를 찾지 못함"
+            for s in srcs:
+                try:
+                    _, _, data = http_get(s["url"] + "/api/settings-backup", timeout=120)
+                    if data[:2] != b"PK":
+                        raise RuntimeError("편집기를 업데이트해야 합니다 (설정 백업을 지원하지 않음)")
+                    d = os.path.join(BACKUP_DIR, "editors", kind)
+                    os.makedirs(d, exist_ok=True)
+                    import zipfile
+                    import io
+                    with zipfile.ZipFile(io.BytesIO(data)) as z:   # 내용(백업정보 빼고)이 같으면 새로 저장하지 않음
+                        h = hashlib.sha1()
+                        for n in sorted(z.namelist()):
+                            if not n.startswith("_백업정보"):
+                                h.update(n.encode())
+                                h.update(z.read(n))
+                        sig = h.hexdigest()
+                    prev = st.get(kind, {})
+                    if prev.get("sig") == sig and prev.get("file") and os.path.exists(os.path.join(d, prev["file"])):
+                        ent.update(ok=True, file=prev["file"], size=prev.get("size", 0), sig=sig,
+                                   msg="바뀐 것 없음", from_=s["name"])
+                    else:
+                        fn = f"{kind}-settings_{time.strftime('%Y%m%d-%H%M')}.zip"
+                        write_atomic(os.path.join(d, fn), data)
+                        ent.update(ok=True, file=fn, size=len(data), sig=sig, msg="새로 저장", from_=s["name"])
+                        fs = sorted(glob.glob(os.path.join(d, "*.zip")), key=os.path.getmtime, reverse=True)
+                        for f in fs[keep:]:
+                            os.remove(f)
+                    ent["from"] = ent.pop("from_", s["name"])
+                    ent["err"] = ""
+                    break
+                except Exception as exc:
+                    ent["err"] = f"{s['name'] or s['url']}: {exc}"
+            st[kind] = ent
+            log(f"편집기 설정 백업 ({kind}): {'OK ' + ent.get('msg', '') if ent['ok'] else ent['err']}")
+        save_json(EDITORS_STATUS, st)
+
     def loop(self):
         while True:
             config = load_json(CONFIG_FILE, {})
+            try:
+                self.backup_editors(config)
+            except Exception as exc:
+                log("편집기 설정 백업 오류:", exc)
             for fn in (self.sync_radio, self.sync_tv):
                 try:
                     fn(config)
@@ -495,9 +564,10 @@ html.dark .am{color:#93c5fd}html.dark .fm{color:#fdba74}
   <a class="nav" data-p="home"><span class="i">🏠</span><span class="n">오늘 한눈에</span></a>
   <a class="nav" data-p="radio"><span class="i">💰</span><span class="n">라디오 운행표</span></a>
   <a class="nav" data-p="tv"><span class="i">📺</span><span class="n">TV 주간편성표</span><span class="c" id="ctv"></span></a>
-  <a class="nav" data-p="rec"><span class="i">🎧</span><span class="n">AM 녹음 듣기</span></a>
+  <a class="nav" data-p="rec"><span class="i">🎧</span><span class="n" id="navam">AM 녹음 듣기</span></a>
   <a class="nav" data-p="recfm" id="navfm" style="display:none"><span class="i">📻</span><span class="n">FM 녹음 듣기</span></a>
   <div id="lk"></div>
+  <a class="nav" data-p="admin" style="opacity:.75"><span class="i">🔐</span><span class="n">관리자 · 접속 기록</span></a>
   <div class="grp">운행표 PDF</div><div id="lrs"><div class="empty">불러오는 중…</div></div>
   <div class="grp">TV 주간편성표 PDF</div><div id="ltv"><div class="empty">불러오는 중…</div></div>
  </div>
@@ -510,6 +580,7 @@ html.dark .am{color:#93c5fd}html.dark .fm{color:#fdba74}
  </div>
 </aside>
 <div id="main">
+ <div id="bkban" style="display:none;background:#fef3c7;color:#92400e;padding:6px 14px;font-weight:bold;border-bottom:1px solid #fde68a"></div>
  <div id="top"><button class="tb" id="menu">☰</button><h1 id="ttl">오늘 한눈에</h1>
   <button class="tb" id="reload">⟳ 새로고침</button><a class="tb" id="newwin" target="_blank" style="display:none">↗ 새 창</a></div>
  <iframe id="frame" title="내용"></iframe>
@@ -522,7 +593,7 @@ const pad=n=>String(n).padStart(2,'0');const num=v=>Number(v||0).toLocaleString(
 const WK='일월화수목금토';
 function today(){const d=new Date();return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())}
 function secs(s){s=+s||0;const m=Math.floor(s/60);return m?m+'분 '+(s%60?s%60+'초':''):s+'초'}
-const PAGES={home:['🏠 오늘 한눈에',''],radio:['💰 라디오 운행표 — 달력 · 정산 · 검색','radio/'],tv:['📺 TV 주간편성표','tv/'],rec:['🎧 AM 녹음 듣기','rec/player.html'],recfm:['📻 FM 녹음 듣기','rec-fm/player.html']};
+const PAGES={home:['🏠 오늘 한눈에',''],radio:['💰 라디오 운행표 — 달력 · 정산 · 검색','radio/'],tv:['📺 TV 주간편성표','tv/'],rec:['🎧 AM 녹음 듣기','rec/player.html'],recfm:['📻 FM 녹음 듣기','rec-fm/player.html'],admin:['🔐 관리자 · 접속 기록','admin/']};
 let cur='',hasFM=false,UIV='';
 // 화면 밝기: 밝게 / 어둡게 / 자동(윈도우·휴대폰 설정 따라). 안의 화면(운행표·TV)도 같이 바뀜
 function themeNow(){try{return localStorage.getItem('edit_theme')||'light'}catch(e){return 'light'}}
@@ -566,6 +637,7 @@ async function side(){
    $(lab).textContent=on?'연결됨':(x.synced?'꺼짐':'없음');$(lab).title=x.synced?'마지막으로 모은 시각 '+x.synced:''};
   f(d.radio,'dr','sr');f(d.tv,'dt','st');
   if(d.ui_ver){if(!UIV)UIV=d.ui_ver;else if(d.ui_ver!==UIV)newVersion()}
+  if(d.role==='backup'){$('bkban').style.display='';$('bkban').textContent='🛟 예비 서버입니다 — 운행표·TV는 같고, AM 녹음은 최근 '+(d.am_keep_days||2)+'일만 있습니다';$('navam').textContent='AM 녹음 듣기 (예비 · 최근 '+(d.am_keep_days||2)+'일)'}
   const L=d.links||[];$('lk').innerHTML=L.length?'<div class="grp">바로가기</div>'+L.map(x=>'<a class="nav" target="_blank" rel="noopener" href="'+esc(x.url)+'" title="'+esc(x.url)+' (새 창)"><span class="i">'+esc(x.icon)+'</span><span class="n">'+esc(x.name)+'</span><span style="font-size:12px;opacity:.6">↗</span></a>').join(''):'';
   const last=[d.radio.synced,d.tv.synced].filter(Boolean).sort().pop();$('sm').textContent=last?'마지막으로 모은 시각 '+last.slice(5,16):'아직 모은 자료가 없습니다';
  }catch(e){$('sm').textContent='⚠ 서버 상태를 읽지 못했습니다'}
@@ -706,9 +778,9 @@ def _fm_base():
     """FM 녹음 PC 주소 (add-fm.sh 가 만든 nginx 설정에서 읽음)"""
     try:
         with open(FM_CONF, encoding="utf-8") as f:
-            m = re.search(r"proxy_pass\s+(http://[0-9.]+(?::\d+)?)/rec/;", f.read())
+            m = re.search(r"proxy_pass\s+(http://[0-9.]+(?::\d+)?)/(rec|rec-fm)/;", f.read())
         if m:
-            return m.group(1) + "/rec/"
+            return m.group(1) + "/" + m.group(2) + "/"
     except Exception:
         pass
     return "http://127.0.0.1/rec-fm/"
@@ -853,7 +925,7 @@ def sync_player():
 
 def ui_version():
     h = hashlib.sha1()
-    for part in (HUB_HTML, TV_HTML):
+    for part in (HUB_HTML, TV_HTML, admin.ADMIN_HTML):
         h.update(part.encode("utf-8"))
     for fp in (PLAYER_SRC, os.path.join(REPO, "apps", "runsheet", "pdf_data_editor.py")):
         try:
@@ -925,6 +997,8 @@ def make_hub_handler(mirror):
 
         def do_GET(self):
             try:
+                if admin.handle(self, self.command):
+                    return
                 path = urllib.parse.unquote(urllib.parse.urlparse(self.path).path)
                 if path in ("/", "/index.html"):
                     return self._send(200, HUB_HTML, "text/html; charset=utf-8")
@@ -957,7 +1031,17 @@ def make_hub_handler(mirror):
         def _deny(self):
             self._json({"error": "조회 전용입니다."}, 405)
 
-        do_POST = do_PUT = do_DELETE = do_PATCH = _deny
+        def do_POST(self):
+            try:
+                if admin.handle(self, "POST"):      # 관리자 로그인 등만 받음
+                    return
+            except (BrokenPipeError, ConnectionResetError):
+                return
+            except Exception as exc:
+                return self._json({"error": str(exc)}, 500)
+            self._deny()
+
+        do_PUT = do_DELETE = do_PATCH = _deny
     return H
 
 
