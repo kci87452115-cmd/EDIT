@@ -29,7 +29,7 @@ try:
 except Exception:
     pass
 
-APP_VERSION = "1.0.7"
+APP_VERSION = "1.0.8"
 VERSION = f"v{APP_VERSION} (시험판)"
 APP_NAME = "엑셀 TV 편성표 편집기"
 # 프로그램 파일이 있는 곳 (런처로 실행해도 이 파일 위치 - 런처 exe 위치가 아님)
@@ -2499,6 +2499,7 @@ class App:
         tk.Label(fh, text="☆ 누르면 고른 칸에 넣기", fg="#777", font=("", 8)).pack(side=tk.LEFT)
         tk.Button(fh, text="+ 추가", command=self.fav_add_dialog).pack(side=tk.RIGHT)
         tk.Button(fh, text="고른 칸 추가", command=self.fav_add_from_cell).pack(side=tk.RIGHT, padx=2)
+        tk.Button(fh, text="창으로 ⧉", command=self.open_fav_window).pack(side=tk.RIGHT, padx=2)
         favf = tk.Frame(tab_fav, relief="sunken", bd=1)
         favf.pack(fill=tk.BOTH, expand=True)
         self.fav_cv = tk.Canvas(favf, height=180, highlightthickness=0, bg="#f7f7f7")
@@ -2723,16 +2724,69 @@ class App:
                 ("show_end", "끝 시각 표시"), ("force_pink", "분홍"))
 
     def build_fav_buttons(self):
-        """즐겨찾기 목록: [☆ 프로그램명] [X] [배경색] - 미리 만들어 둔 프로그램 이름을 한 번에 넣기"""
+        """즐겨찾기 목록: [☆ 프로그램명] [X] [배경색] - 오른쪽 탭과 즐겨찾기 창(열려 있으면) 둘 다"""
+        targets = [(self.fav_frame, 9)]
+        if getattr(self, "fav_win", None) is not None:
+            targets.append((self.fav_win_frame, 11))
+        for frame, fsize in targets:
+            try:
+                self._fill_fav_list(frame, fsize)
+            except Exception:
+                if frame is not self.fav_frame:
+                    self.fav_win = None
+
+    def open_fav_window(self):
+        """즐겨찾기를 따로 창으로: 크게 보고, 옆에 띄워 두고 편성표에서 칸을 고르며 ☆ 누르기"""
         tk = self.tk
-        for w_ in self.fav_frame.winfo_children():
+        if getattr(self, "fav_win", None) is not None:
+            try:
+                self.fav_win.deiconify()
+                self.fav_win.lift()
+                return
+            except Exception:
+                self.fav_win = None
+        w = tk.Toplevel(self.root)
+        w.title("즐겨찾기")
+        w.geometry("460x760")
+        self.fav_win = w
+        bar = tk.Frame(w)
+        bar.pack(fill=tk.X, padx=6, pady=4)
+        tk.Label(bar, text="편성표에서 칸을 고르고 ☆ 누르기", fg="#555").pack(side=tk.LEFT)
+        tk.Button(bar, text="+ 추가", command=self.fav_add_dialog).pack(side=tk.RIGHT)
+        tk.Button(bar, text="고른 칸 추가", command=self.fav_add_from_cell).pack(side=tk.RIGHT, padx=2)
+        v_top = tk.BooleanVar(value=True)
+        w.attributes("-topmost", True)
+        tk.Checkbutton(bar, text="항상 위", variable=v_top,
+                       command=lambda: w.attributes("-topmost", bool(v_top.get()))).pack(side=tk.RIGHT, padx=4)
+        box = tk.Frame(w, relief="sunken", bd=1)
+        box.pack(fill=tk.BOTH, expand=True, padx=6, pady=(0, 6))
+        cv = tk.Canvas(box, highlightthickness=0, bg="#f7f7f7")
+        sb = tk.Scrollbar(box, orient=tk.VERTICAL, command=cv.yview)
+        cv.configure(yscrollcommand=sb.set)
+        sb.pack(side=tk.RIGHT, fill=tk.Y)
+        cv.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.fav_win_frame = tk.Frame(cv, bg="#f7f7f7")
+        win = cv.create_window(0, 0, window=self.fav_win_frame, anchor="nw")
+        self.fav_win_frame.bind("<Configure>", lambda e: cv.configure(scrollregion=cv.bbox("all")))
+        cv.bind("<Configure>", lambda e: cv.itemconfigure(win, width=e.width))
+        w.bind("<MouseWheel>", lambda e: cv.yview_scroll(int(-e.delta / 120), "units"))
+
+        def close():
+            self.fav_win = None
+            w.destroy()
+        w.protocol("WM_DELETE_WINDOW", close)
+        self.build_fav_buttons()
+
+    def _fill_fav_list(self, frame, fsize=9):
+        tk = self.tk
+        for w_ in frame.winfo_children():
             w_.destroy()
         favs = load_config().get("favorites", [])
         if not favs:
-            tk.Label(self.fav_frame, text="(없음)  [+ 추가] 로 프로그램 이름을 미리 넣어 두세요.", fg="#999",
+            tk.Label(frame, text="(없음)  [+ 추가] 로 프로그램 이름을 미리 넣어 두세요.", fg="#999",
                      bg="#f7f7f7").pack(anchor="w", padx=4, pady=4)
         for n, fv in enumerate(favs):
-            row = tk.Frame(self.fav_frame, bg="#f7f7f7", bd=1, relief="groove")
+            row = tk.Frame(frame, bg="#f7f7f7", bd=1, relief="groove")
             row.pack(fill=tk.X, padx=2, pady=1)
             text = fav_display(fv)
             summ = fav_opt_summary(fv)
@@ -2740,7 +2794,7 @@ class App:
                 text += "\n    ⚙ " + summ
             bg = fv.get("shade") or fv.get("hl") or "#ffffff"
             b = tk.Button(row, text="☆ " + text, anchor="w", justify="left", relief="flat", bg=bg,
-                          fg=fv.get("fg") or "black", font=("", 9, "bold"), command=lambda fv=fv: self.fav_apply(fv))
+                          fg=fv.get("fg") or "black", font=("", fsize, "bold"), command=lambda fv=fv: self.fav_apply(fv))
             b.pack(side=tk.LEFT, fill=tk.X, expand=True)
             b.bind("<Button-3>", lambda e, n=n: self.fav_menu(e, n))
             tk.Button(row, text="배경색", font=("", 8), command=lambda n=n: self.fav_color(n)).pack(side=tk.RIGHT, padx=1)
