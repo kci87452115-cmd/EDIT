@@ -567,7 +567,6 @@ html.dark .am{color:#93c5fd}html.dark .fm{color:#fdba74}
   <a class="nav" data-p="rec"><span class="i">🎧</span><span class="n" id="navam">AM 녹음 듣기</span></a>
   <a class="nav" data-p="recfm" id="navfm" style="display:none"><span class="i">📻</span><span class="n">FM 녹음 듣기</span></a>
   <div id="lk"></div>
-  <a class="nav" data-p="admin" style="opacity:.75"><span class="i">🔐</span><span class="n">관리자 · 접속 기록</span></a>
   <div class="grp">운행표 PDF</div><div id="lrs"><div class="empty">불러오는 중…</div></div>
   <div class="grp">TV 주간편성표 PDF</div><div id="ltv"><div class="empty">불러오는 중…</div></div>
  </div>
@@ -582,6 +581,7 @@ html.dark .am{color:#93c5fd}html.dark .fm{color:#fdba74}
 <div id="main">
  <div id="bkban" style="display:none;background:#fef3c7;color:#92400e;padding:6px 14px;font-weight:bold;border-bottom:1px solid #fde68a"></div>
  <div id="top"><button class="tb" id="menu">☰</button><h1 id="ttl">오늘 한눈에</h1>
+  <span id="adm" aria-hidden="true" style="display:inline-block;width:30px;height:30px;opacity:0;cursor:default;user-select:none"></span>
   <button class="tb" id="reload">⟳ 새로고침</button><a class="tb" id="newwin" target="_blank" style="display:none">↗ 새 창</a></div>
  <iframe id="frame" title="내용"></iframe>
  <div id="home"></div>
@@ -606,6 +606,8 @@ document.querySelectorAll('#theme button').forEach(b=>b.classList.toggle('on',b.
 function playing(){try{const w=$('frame').contentWindow;return !!(w&&w.playerBusy&&w.playerBusy())}catch(e){return false}}
 let reloading=false;
 function newVersion(){if(reloading)return;reloading=true;(function w(){if(playing())setTimeout(w,5000);else location.reload()})()}
+// 관리자: 새로고침 버튼 왼쪽의 보이지 않는 자리를 누르면 (관리자 비밀번호를 넣어야 들어감)
+document.getElementById('adm').addEventListener('click',()=>go('admin'));
 function go(p,src,title){
  if(!PAGES[p]&&!src)p='home';cur=p;
  const [t,u]=PAGES[p]||[title,src];const url=src||u;
@@ -615,7 +617,7 @@ function go(p,src,title){
  if(p==='home'){$('frame').style.display='none';$('home').style.display='';$('newwin').style.display='none';home()}
  else{$('home').style.display='none';const f=$('frame');f.style.display='block';if(f.getAttribute('src')!==url)f.src=url;
   $('newwin').href=url;$('newwin').style.display=''}
- if(!src){try{localStorage.setItem('hub_page',p)}catch(e){}}
+ if(!src&&p!=='admin'){try{localStorage.setItem('hub_page',p)}catch(e){}}
  if(location.hash||location.search)history.replaceState(null,'',location.pathname);   // 주소창에는 기본 주소만
  $('side').classList.remove('open');
 }
@@ -683,6 +685,7 @@ function recCard(t,pg,list){return '<div class="kpi" onclick="go(\''+pg+'\')"><d
 function tick(){const d=new Date();$('clock').textContent=pad(d.getHours())+':'+pad(d.getMinutes())+':'+pad(d.getSeconds())}
 setInterval(tick,1000);tick();
 let first=(location.hash||'').slice(1);if(!PAGES[first]){try{first=localStorage.getItem('hub_page')||'home'}catch(e){first='home'}}
+if(first==='admin'&&location.hash!=='#admin')first='home';
 side();go(PAGES[first]?first:'home');
 setInterval(()=>{if(!document.hidden){side();if(cur==='home')home()}},60000);
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)side()});   // 다른 탭에 있다가 돌아오면 바로 확인
