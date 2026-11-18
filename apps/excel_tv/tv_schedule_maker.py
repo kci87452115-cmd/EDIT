@@ -29,7 +29,7 @@ try:
 except Exception:
     pass
 
-APP_VERSION = "1.0.10"
+APP_VERSION = "1.1.2"
 VERSION = f"v{APP_VERSION} (시험판)"
 APP_NAME = "엑셀 TV 편성표 편집기"
 # 프로그램 파일이 있는 곳 (런처로 실행해도 이 파일 위치 - 런처 exe 위치가 아님)
@@ -374,8 +374,9 @@ def clean_name(name, cfg):
             name = re.sub(pat, rep, name)
         except re.error:
             pass
+    name = re.sub(r"^(특집|스페셜)(?=\d)", r"\1 ", name.strip())     # 특집2시 뉴스 -> 특집 2시 뉴스
     # 직접 넣은 줄바꿈: 프로그램명에 '|' 를 쓰면 그 자리에서 다음 줄로
-    return re.sub(r"\s*\|\s*", "\n", name.strip()).strip()
+    return re.sub(r"\s*\|\s*", "\n", name).strip()
 
 
 PINK_KEYS = ((1.0, 1.0, 1.0), (1.0, 0.88, 0.88))
@@ -1228,6 +1229,212 @@ def insert_local(rows, dates, name, s, e, shade="#d9d9d9", bold=True, code=None,
     return added
 
 
+def find_overlaps(rows, i):
+    """rows[i] 와 같은 날·같은 안에서 시간이 겹치는 줄 번호들"""
+    r = rows[i]
+    return [k for k, x in enumerate(rows) if k != i and x["date"] == r["date"] and x["plan"] == r["plan"]
+            and x["s"] < r["e"] and x["e"] > r["s"]]
+
+
+def overlap_plan(rows, i):
+    """rows[i] 시간에 맞춰 겹치는 칸을 어떻게 할지: [(줄 번호, 할 일, 설명)]
+      할 일: del(다 덮여서 지움) / cut_end(뒤를 잘라 앞만 남김) / cut_start(앞을 잘라 뒤만 남김) / split(앞뒤 둘로)"""
+    r = rows[i]
+    out = []
+    for k in find_overlaps(rows, i):
+        x = rows[k]
+        nm = f"{fmt_t(x['s'])}~{fmt_t(x['e'])} {x['name']}".replace("\n", " ")
+        if x["s"] >= r["s"] and x["e"] <= r["e"]:
+            out.append((k, "del", f"{nm} → 지움"))
+        elif x["s"] < r["s"] and x["e"] > r["e"]:
+            out.append((k, "split", f"{nm} → {fmt_t(x['s'])}~{fmt_t(r['s'])}, {fmt_t(r['e'])}~{fmt_t(x['e'])} 둘로"))
+        elif x["s"] < r["s"]:
+            out.append((k, "cut_end", f"{nm} → {fmt_t(x['s'])}~{fmt_t(r['s'])} 로 줄임"))
+        else:
+            out.append((k, "cut_start", f"{nm} → {fmt_t(r['e'])}~{fmt_t(x['e'])} 로 줄임"))
+    return out
+
+
+def resolve_overlaps(rows, i, plan=None):
+    """overlap_plan 대로 겹치는 칸 정리. 반환: 정리 뒤 rows[i] 의 새 줄 번호, 지운 줄 수"""
+    r = rows[i]
+    plan = overlap_plan(rows, i) if plan is None else plan
+    gone = set()
+    for k, act, _ in plan:
+        x = rows[k]
+        if act == "del":
+            gone.add(k)
+        elif act == "cut_end":
+            x.update(e=r["s"], edited=True)
+        elif act == "cut_start":
+            x.update(s=r["e"], edited=True)
+        else:
+            rows.append(dict(x, s=r["e"], edited=True, cut=True))
+            x.update(e=r["s"], edited=True, cut=True)
+    for k in sorted(gone, reverse=True):
+        rows.pop(k)
+    return rows.index(r), len(gone)
+
+
+# ---------------------------------------------------------------- 새 판 반영 (같은 주 엑셀 수정판)
+STYLE_KEYS = ("shade", "hl", "fg", "bold", "show_end", "force_pink", "top_dash", "bottom_dash")
+ICON_KEYS = ("uhd", "cc", "sign", "ad", "age", "rl")
+
+
+def _exact_key(r):
+    return (r["date"], r["plan"], r["s"], r["e"], r.get("code", ""), norm_key(r["name"]))
+
+
+def _overlap(a0, a1, b0, b1):
+    return max(0, min(a1, b1) - max(a0, b0))
+
+
+def merge_new_version(cur_rows, old_orig, new_rows):
+    """같은 주의 새 판 엑셀(new_rows)에, 지금 작업(cur_rows: 예전 판 + 고친 것)을 옮겨 얹는다.
+      old_orig: 예전 판 엑셀 그대로의 줄 (프로젝트의 orig)
+    반환: (합친 줄, 보고서)
+      줄마다 _ver = same(그대로) / changed(시간·이름이 바뀜) / new(새로 생김), _check = 확인 필요
+      보고서: same/changed/new/removed/kept_edits/locals/checks 목록"""
+    import copy
+    new_rows = copy.deepcopy(new_rows)
+    old_exact = {_exact_key(r) for r in old_orig}
+    new_exact = {_exact_key(r) for r in new_rows}
+    # 1) 새 판 줄마다: 예전 판의 어느 줄과 같은지 (똑같은 줄이 있는 예전 줄은 짝 후보에서 뺌)
+    used_old = {i for i, o in enumerate(old_orig) if _exact_key(o) in new_exact}
+    status = []
+    for n in new_rows:
+        if _exact_key(n) in old_exact:
+            status.append("same")
+            continue
+        cands = [i for i, o in enumerate(old_orig) if i not in used_old and o["date"] == n["date"]
+                 and o.get("code") and o.get("code") == n.get("code")]
+        if not cands:
+            cands = [i for i, o in enumerate(old_orig) if i not in used_old and o["date"] == n["date"]
+                     and norm_key(split_suffix(o["name"])[0]) == norm_key(split_suffix(n["name"])[0])]
+        if cands:
+            i = min(cands, key=lambda i: (old_orig[i]["plan"] != n["plan"], abs(old_orig[i]["s"] - n["s"])))
+            used_old.add(i)
+            o = old_orig[i]
+            n["_was"] = f"{fmt_t(o['s'])}~{fmt_t(o['e'])} {o['name']}" + (" (2안)" if o["plan"] == "2안" else "")
+            status.append("changed")
+        else:
+            status.append("new")
+    matched_exact = {_exact_key(n) for n, st in zip(new_rows, status) if st == "same"}
+    paired = {i for i in used_old if _exact_key(old_orig[i]) not in new_exact}
+    removed = [o for i, o in enumerate(old_orig) if _exact_key(o) not in matched_exact and i not in paired]
+
+    # 2) 지금 작업의 줄을 나눔: 로컬 / 직접 추가 / 엑셀에서 온 줄(잘린 조각 포함)
+    old_codes = {(o["date"], o.get("code")) for o in old_orig if o.get("code")}
+    locals_ = [c for c in cur_rows if c.get("local")]
+    added = [c for c in cur_rows if not c.get("local") and (c["date"], c.get("code")) not in old_codes]
+    based = [c for c in cur_rows if not c.get("local") and (c["date"], c.get("code")) in old_codes]
+
+    def orig_of(c):
+        cs = [o for o in old_orig if o["date"] == c["date"] and o.get("code") == c.get("code")]
+        return max(cs, key=lambda o: _overlap(o["s"], o["e"], c["s"], c["e"]) - abs(o["s"] - c["s"]) / 1000,
+                   default=None)
+
+    # 3) 고친 것 옮기기: 예전 판 엑셀(o)과 지금 작업(c)이 다른 것만 = 사용자가 고친 것
+    kept, dropped, time_checks = [], [], []
+    for n, st in zip(new_rows, status):
+        n["_ver"] = st
+        if st == "new":
+            continue
+        cs = [c for c in based if c["date"] == n["date"] and c.get("code") == n.get("code")]
+        if not cs:
+            # 예전 판에서 지운 줄이면 (로컬로 덮인 것 말고) 새 판에서도 지움
+            covered = any(l["date"] == n["date"] and _overlap(l["s"], l["e"], n["s"], n["e"]) > 0 for l in locals_)
+            if st == "same" and not covered:
+                n["_drop"] = True
+                dropped.append(n)
+            continue
+        c = max(cs, key=lambda c: (c["plan"] == n["plan"], c["s"] == n["s"],
+                                   _overlap(c["s"], c["e"], n["s"], n["e"]), -abs(c["s"] - n["s"])))
+        o = orig_of(c) or {}
+        moved = []
+        for k in STYLE_KEYS + ICON_KEYS:
+            if k == "force_pink" and c["plan"] != n["plan"]:      # 2안 분홍 끄기는 1안으로 옮기지 않음
+                continue
+            nz = (lambda v: v) if k == "force_pink" else (lambda v: v or None)   # ""·False·없음은 같은 것
+            if k in c and nz(c.get(k)) != nz(o.get(k)) and nz(n.get(k)) != nz(c.get(k)):
+                n[k] = c.get(k)
+                moved.append(k)
+        if norm_key(c["name"]) != norm_key(o.get("name", c["name"])):
+            n["name"] = c["name"]
+            n["name_edited"] = True
+            moved.append("이름")
+        if o and not c.get("cut") and (c["s"], c["e"]) != (o["s"], o["e"]):     # 직접 바꾼 시간
+            if st == "same":
+                n["s"], n["e"] = c["s"], c["e"]
+                moved.append(f"시간 {fmt_t(c['s'])}~{fmt_t(c['e'])}")
+            else:
+                n["_check"] = True
+                n["_note"] = (f"예전 판에서 시간을 {fmt_t(c['s'])}~{fmt_t(c['e'])}(으)로 바꿨던 칸인데 "
+                              f"새 판에서 편성이 바뀜 - 시간 확인")
+                time_checks.append(n)
+        if moved:
+            n["edited"] = True
+            kept.append((n, moved))
+    new_rows = [n for n in new_rows if not n.get("_drop")]
+
+    # 4) 바뀐 시간대 (로컬·직접 추가 줄이 여기에 걸리면 확인 필요)
+    spans = {}
+    for n in new_rows:
+        if n["_ver"] != "same":
+            spans.setdefault(n["date"], []).append((n["s"], n["e"]))
+    for o in removed:
+        spans.setdefault(o["date"], []).append((o["s"], o["e"]))
+    hits = lambda d, a, b: any(_overlap(a, b, x, y) > 0 for x, y in spans.get(d, []))
+
+    moved_rows = [(n["date"], n["s"], n["e"], n["name"]) for n in new_rows if n["_ver"] in ("changed", "new")]
+
+    def note(d, a, b):
+        ns = [f"{fmt_t(x)}~{fmt_t(y)} {nm}" for dd, x, y, nm in moved_rows if dd == d and _overlap(a, b, x, y) > 0]
+        gone = [f"{fmt_t(o['s'])}~{fmt_t(o['e'])} {o['name']}" for o in removed
+                if o["date"] == d and o["plan"] != "2안" and _overlap(a, b, o["s"], o["e"]) > 0]
+        t = "새 판에서 바뀐 편성과 겹침: " + ", ".join(ns) if ns else "겹치던 편성이 없어짐"
+        return t + (" / 없어진 것: " + ", ".join(gone) if gone else "")
+
+    merged = new_rows
+    checks = []
+    for c in sorted(locals_, key=lambda c: (c["date"], c["s"])):
+        extra = {k: c.get(k) for k in STYLE_KEYS + ICON_KEYS + ("name_edited",) if k in c}
+        rows_added = insert_local(merged, [c["date"]], c["name"], c["s"], c["e"], c.get("shade", ""),
+                                  c.get("bold", False), c.get("code"), extra=extra, log=lambda s: None)
+        for r in rows_added:
+            r["_ver"] = "local"
+            if hits(c["date"], c["s"], c["e"]):
+                r["_check"], r["_note"] = True, note(c["date"], c["s"], c["e"])
+                checks.append(r)
+    for c in added:
+        r = copy.deepcopy(c)
+        r["_ver"] = "added"
+        if hits(c["date"], c["s"], c["e"]):
+            r["_check"], r["_note"] = True, note(c["date"], c["s"], c["e"])
+            checks.append(r)
+        merged.append(r)
+    for r in merged:        # 잘린 조각은 원래 줄의 표시를 따라감
+        r.setdefault("_ver", "same")
+    checks = time_checks + checks
+    # 마지막 점검: 같은 날·같은 안에서 시간이 겹치는 칸 (직접 추가한 줄과 새 판 줄 등)
+    for d in sorted({r["date"] for r in merged}):
+        for plan in ("1안", "2안"):
+            day = sorted([r for r in merged if r["date"] == d and r["plan"] == plan], key=lambda r: (r["s"], r["e"]))
+            for a, b in zip(day, day[1:]):
+                if b["s"] < a["e"]:
+                    for x, y in ((a, b), (b, a)):
+                        if not x.get("_check"):
+                            x["_check"], x["_ovl"] = True, True
+                            x["_note"] = f"다른 칸과 시간이 겹침: {fmt_t(y['s'])}~{fmt_t(y['e'])} {y['name']}"
+                            checks.append(x)
+    report = {"same": [n for n in new_rows if n.get("_ver") == "same" and not n.get("local")],
+              "changed": [n for n in merged if n.get("_ver") == "changed"],
+              "new": [n for n in merged if n.get("_ver") == "new"],
+              "removed": removed, "kept": kept, "locals": [r for r in merged if r.get("_ver") == "local"],
+              "added": [r for r in merged if r.get("_ver") == "added"], "checks": checks, "dropped": dropped}
+    return merged, report
+
+
 def apply_local_rules(rows, cfg, log=print):
     """설정의 local_rules 를 이번 주 편성에 적용 (엑셀 불러올 때)"""
     dates = sorted({r["date"] for r in rows})
@@ -1375,6 +1582,9 @@ class App:
         self.pink_state = {}        # 줄 번호 -> 지금 편성표에서 분홍인지
         self.undo_stack, self.redo_stack = [], []
         self.proj_path = None       # 지금 프로젝트 파일
+        self.proj_dir = ""          # 새 판 반영 뒤 저장할 폴더 (예전 프로젝트가 있던 곳)
+        self.history = []           # 새 판 반영 기록
+        self.ver_win = None
         self.multi = []             # 여러 칸 선택 (Ctrl+클릭 / Shift+클릭)
         self._multi_warned = False
         self._last_tag, self._last_t = None, 0.0
@@ -1421,6 +1631,7 @@ class App:
         abtn("다른 이름으로", lambda: self.save(ask=True))
         abtn("설정 파일 열기", self.open_config)
         abtn("큰 창 미리보기", self.preview, "#bbdefb")
+        abtn("새 판 반영", self.new_version, "#ffe0b2")
 
         # 제목 · 날짜 (바꾸면 바로 편성표에 반영, 설정에 저장되어 다음 주에도 그대로)
         cfg0 = load_config()
@@ -1590,6 +1801,8 @@ class App:
 
     def mark_edit(self, r):
         r["edited"] = True
+        for k in ("_check", "_note", "_ovl"):     # 확인할 칸(빨강)을 고치면 표시를 내림
+            r.pop(k, None)
         self.saved = False
 
     # ---------- 불러오기
@@ -1612,6 +1825,8 @@ class App:
         self.xlsx = f
         self.v_x.set(f)
         self.proj_path = None
+        self.proj_dir = ""
+        self.history = []
         self.last_pdf = ""
         self.root.title(f"{APP_NAME} {VERSION} - {os.path.basename(f)}")
         self.show_main()
@@ -1813,7 +2028,7 @@ class App:
             self.log(f"[고침] {day_label(r['date'])} {fmt_t(s_)}~{fmt_t(e_)} {r['name']} ({r['plan']})")
             top.destroy()
             self.refresh(keep=i)
-            self.check_overlap(r["date"])
+            self.ask_overlap(i)
 
         def cancel():
             if new:
@@ -1827,6 +2042,47 @@ class App:
         top.protocol("WM_DELETE_WINDOW", cancel)
         top.bind("<Return>", lambda e: ok())
         top.after(150, lambda: top.grab_set())
+
+    def ask_overlap(self, i=None):
+        """시간을 바꾼 칸이 다른 칸과 겹치면: 겹치는 칸을 지우거나 줄일지 물음 (아니오면 그대로 두고 기록에 주의)"""
+        from tkinter import messagebox
+        if getattr(self, "_ovl_id", None):
+            try:
+                self.root.after_cancel(self._ovl_id)
+            except Exception:
+                pass
+            self._ovl_id = None
+        if getattr(self, "_ovl_busy", False):
+            return
+        if i is None:       # 수정란에서 시간을 바꾼 그 칸 (바꾼 게 없으면 묻지 않음)
+            r0, self._ovl_row = getattr(self, "_ovl_row", None), None
+            i = next((k for k, x in enumerate(self.rows) if x is r0), None)
+        if i is None or not (0 <= i < len(self.rows)):
+            return
+        r = self.rows[i]
+        plan = overlap_plan(self.rows, i)
+        key = (r["date"], r["plan"], r["s"], r["e"], r["name"])
+        if not plan or key == getattr(self, "_ovl_no", None):
+            return
+        self._ovl_busy = True
+        try:
+            msg = (f"{day_label(r['date'])} '{r['name']}' {fmt_t(r['s'])}~{fmt_t(r['e'])} 이(가) 다른 칸과 겹칩니다.\n\n"
+                   + "\n".join("· " + t for _, _, t in plan) + "\n\n이렇게 정리할까요?  (아니오: 그대로 둠)")
+            ok = messagebox.askyesno("겹치는 칸 정리", msg)
+        finally:
+            self._ovl_busy = False
+        if not ok:
+            self._ovl_no = key
+            self.check_overlap(r["date"])
+            return
+        self.push_undo("overlap")
+        ni, n_del = resolve_overlaps(self.rows, i, plan)
+        self.deleted += n_del
+        self.saved = False
+        for _, _, t in plan:
+            self.log(f"[겹침 정리] {day_label(r['date'])} {t}")
+        self.multi = []
+        self.refresh(keep=ni)
 
     def check_overlap(self, date):
         for plan in ("1안", "2안"):
@@ -2257,14 +2513,15 @@ class App:
         cfg = load_config()
         return {"source": self.xlsx or "", "query_date": getattr(self, "query_date", ""),
                 "rows": self.rows, "orig": self.orig, "deleted": self.deleted,
-                "settings": {k: cfg.get(k) for k in PROJ_CFG_KEYS}, "last_pdf": getattr(self, "last_pdf", "")}
+                "settings": {k: cfg.get(k) for k in PROJ_CFG_KEYS}, "last_pdf": getattr(self, "last_pdf", ""),
+                "history": self.history}
 
     def default_proj_path(self):
         """저장 이름: 엑셀이름_편성표 + 저장하는 지금 시분  (예: MBC_11월_3주(2)_편성표1605.tvproj)
         폴더는 지금 프로젝트가 있는 곳(없으면 엑셀이 있는 곳)"""
         name = os.path.splitext(os.path.basename(self.proj_path or self.xlsx or "편성표"))[0]
         name = re.sub(r"_편성표\d{0,4}$", "", name)       # 예전 시분은 떼고 지금 시분으로
-        folder = os.path.dirname(self.proj_path or "") or os.path.dirname(self.xlsx or "")
+        folder = os.path.dirname(self.proj_path or "") or self.proj_dir or os.path.dirname(self.xlsx or "")
         if folder and not os.path.isdir(folder):
             folder = ""
         return os.path.join(folder, name + "_편성표" + datetime.datetime.now().strftime("%H%M") + PROJ_EXT)
@@ -2284,6 +2541,8 @@ class App:
                                              initialfile=os.path.basename(d), initialdir=os.path.dirname(d) or None)
             if not p:
                 return False
+        if not p.lower().endswith(PROJ_EXT):        # 엑셀·PDF 위에 덮어쓰지 않도록
+            p = os.path.splitext(p)[0] + PROJ_EXT
         try:
             save_project(p, self.project_data())
         except Exception as e:
@@ -2330,6 +2589,8 @@ class App:
         self.query_date = d.get("query_date", "")
         self.last_pdf = d.get("last_pdf", "")
         self.proj_path = path
+        self.proj_dir = ""
+        self.history = d.get("history") or []
         self.sel, self.multi, self.diff_keys = None, [], set()
         self.undo_stack.clear()
         self.redo_stack.clear()
@@ -2435,6 +2696,9 @@ class App:
         tk.Label(f, text="끝").grid(row=1, column=2, sticky="e")
         self.ent_e = tk.Entry(f, textvariable=self.fv["e"], width=7)
         self.ent_e.grid(row=1, column=3, sticky="w")
+        for ent in (self.ent_s, self.ent_e):
+            ent.bind("<Return>", lambda e: self.ask_overlap())
+            ent.bind("<FocusOut>", lambda e: self.ask_overlap())
         tk.Label(f, text="편성안").grid(row=2, column=0, sticky="w")
         ttk.Combobox(f, textvariable=self.fv["plan"], values=("1안", "2안"), width=6,
                      state="readonly").grid(row=2, column=1, sticky="w", pady=2)
@@ -2650,8 +2914,11 @@ class App:
             r["name_edited"] = True
         time_changed = (s_, e_) != (r["s"], r["e"])
         r.update(new)
-        if time_changed:
-            self.check_overlap(r["date"])
+        if time_changed:        # 입력이 끝나면(잠깐 멈추거나 Enter) 겹치는 칸 정리를 물음
+            if getattr(self, "_ovl_id", None):
+                self.root.after_cancel(self._ovl_id)
+            self._ovl_row = r
+            self._ovl_id = self.root.after(1500, self.ask_overlap)
         self.mark_edit(r)
         self.load_form_title()
         self.refresh_tree()
@@ -3086,6 +3353,23 @@ class App:
                 x0, y0, x1, y1 = g["rect"]
                 self.cv.create_rectangle(x0 * z, y0 * z, x1 * z, y1 * z, outline="#ff9800", width=3, dash=(6, 3),
                                          tags=("mark",))
+        ris = {}
+        for g in self.geom:
+            for ri in g["block"]["_ris"]:
+                ris.setdefault(ri, g)
+        for k, r in enumerate(self.rows):      # 새 판 반영: 바뀐·새 칸(주황), 확인할 칸(빨강)
+            ovl = r.get("_ovl") or str(r.get("_note", "")).startswith("다른 칸과 시간이 겹침")
+            if ovl and not find_overlaps(self.rows, k):     # 겹침이 풀렸으면 빨강도 내림
+                for x in ("_check", "_note", "_ovl"):
+                    r.pop(x, None)
+            if not (r.get("_check") or r.get("_ver") in ("changed", "new")) or k not in ris:
+                continue
+            x0, y0, x1, y1 = ris[k]["rect"]
+            dx = self.day_x(r["date"])
+            if dx:
+                x0, x1 = max(x0, dx[0]), min(x1, dx[1])
+            self.cv.create_rectangle(x0 * z + 2, y0 * z + 2, x1 * z - 2, y1 * z - 2,
+                                     outline="#e53935" if r.get("_check") else "#fb8c00", width=3, tags=("mark",))
         for k in self.selected_rows():
             r = self.rows[k]
             dx = self.day_x(r["date"])
@@ -3102,7 +3386,8 @@ class App:
     def hit(self, e):
         z = self.zoom
         px, py = self.cv.canvasx(e.x) / z, self.cv.canvasy(e.y) / z
-        for g in self.geom:
+        area = lambda g: (g["rect"][2] - g["rect"][0]) * (g["rect"][3] - g["rect"][1])
+        for g in sorted(self.geom, key=area):      # 칸이 겹쳐 있으면 작은 칸(위에 그려진 칸)부터
             x0, y0, x1, y1 = g["rect"]
             if x0 <= px <= x1 and y0 <= py <= y1:
                 b = g["block"]
@@ -3164,6 +3449,13 @@ class App:
         m.add_command(label="로컬 끼워 넣기 ...", command=self.local_dialog)
         m.add_command(label="자세히 고치기 ...", command=lambda: self.edit_row())
         m.add_command(label="이 칸 뒤에 줄 추가 ...", command=self.add_row)
+        if r.get("_check") or r.get("_ver") in ("changed", "new"):
+            m.add_separator()
+            if r.get("_note"):
+                m.add_command(label="⚠ " + r["_note"][:60], state="disabled")
+            m.add_command(label="이 칸 새 판 표시(주황·빨강) 지우기", command=lambda: self.clear_row_mark(i))
+        if any(x.get("_check") or x.get("_ver") in ("changed", "new") for x in self.rows):
+            m.add_command(label="새 판 표시 모두 지우기", command=self.clear_version_marks)
         m.add_command(label="줄 삭제", command=self.del_row)
         m.add_command(label="엑셀 원래대로", command=self.revert_row)
         try:
@@ -3246,8 +3538,174 @@ class App:
         tk.Button(f, text="닫기", command=top.destroy, width=10).grid(row=11, column=0, columnspan=6, pady=6)
 
     # ---------- 되돌리기 / 다시 하기
+    # ---------- 새 판 반영 (같은 주 엑셀 (2)판 -> (3)판)
+    def new_version(self):
+        """같은 주의 새 판 엑셀을 열어, 지금 고친 것(로컬·음영·이름 등)을 그대로 옮겨 얹기"""
+        from tkinter import filedialog, messagebox
+        if not self.ready():
+            return
+        f = filedialog.askopenfilename(title="같은 주의 새 판 엑셀 (예: (3)판)", filetypes=[("엑셀", "*.xlsx")],
+                                       initialdir=os.path.dirname(self.xlsx or "") or None)
+        if not f:
+            return
+        try:
+            new = read_schedule_xlsx(f)
+        except Exception as e:
+            self.error("엑셀 읽기 오류", e)
+            return
+        od, nd = sorted({r["date"] for r in self.orig}), sorted({r["date"] for r in new})
+        if od != nd:
+            span = lambda ds: f"{day_label(ds[0])} ~ {day_label(ds[-1])}" if ds else "-"
+            if not messagebox.askyesno("새 판 반영", f"날짜가 다릅니다.\n지금: {span(od)}\n새 엑셀: {span(nd)}\n\n"
+                                       "같은 주의 다른 판이 아닌 것 같습니다. 그래도 반영할까요?"):
+                return
+        cur = [{k: v for k, v in r.items() if k not in ("_ver", "_check", "_note", "_was", "_ovl")} for r in self.rows]
+        try:
+            merged, rep = merge_new_version(cur, self.orig, new)
+        except Exception as e:
+            self.error("새 판 반영 오류", e)
+            return
+        self.show_version_report(f, new, merged, rep)
+
+    def version_entries(self, rep):
+        """보고 창 목록: (구분, 줄, 비고, 편성표에 있는 줄인지)"""
+        ent = [("+ 새로 생김", r, "", True) for r in rep["new"]]
+        ent += [("~ 바뀜", r, "예전: " + r.get("_was", ""), True) for r in rep["changed"]]
+        ent += [("- 없어짐", r, "새 판에 없음", False) for r in rep["removed"]]
+        ent += [("⚠ 확인", r, r.get("_note", ""), True) for r in rep["checks"]]
+        ent += [("× 지운 줄", r, "예전 판에서 지운 줄이라 새 판에서도 뺌", False) for r in rep["dropped"]]
+        ent += [("● 옮김", n, "고친 것 그대로: " + ", ".join(mv), True) for n, mv in rep["kept"]]
+        return sorted(ent, key=lambda e: (e[1]["date"], e[1]["s"], e[0]))
+
+    def show_version_report(self, path, new, merged, rep):
+        tk, ttk = self.tk, self.ttk
+        self.close_version_window()
+        w = tk.Toplevel(self.root)
+        self.ver_win = w
+        w.title(f"새 판 반영 - {os.path.basename(path)}")
+        w.geometry("920x560")
+        summ = (f"그대로 {len(rep['same'])}줄 · 바뀜 {len(rep['changed'])} · 새로 {len(rep['new'])} · "
+                f"없어짐 {len(rep['removed'])} · 고친 것 옮김 {len(rep['kept'])}줄 · 로컬 {len(rep['locals'])}칸 · "
+                f"직접 추가 {len(rep['added'])}줄 · 확인 필요 {len(rep['checks'])}")
+        tk.Label(w, text=summ, anchor="w", font=("맑은 고딕", 10, "bold")).pack(fill=tk.X, padx=8, pady=(8, 2))
+        self.ver_hint = tk.Label(w, anchor="w", fg="#555", justify="left",
+                                 text="[반영]을 누르면 편성표가 새 판으로 바뀝니다. 바뀐 칸은 주황, 확인할 칸은 빨간 테두리"
+                                      "(화면에만 보이고 PDF에는 안 나옴). 마음에 안 들면 [되돌리기].")
+        self.ver_hint.pack(fill=tk.X, padx=8)
+        box = tk.Frame(w)
+        box.pack(fill=tk.BOTH, expand=True, padx=8, pady=4)
+        cols = (("kind", "구분", 90), ("day", "요일", 80), ("time", "시간", 95), ("name", "프로그램", 260),
+                ("note", "비고", 380))
+        tv = ttk.Treeview(box, columns=[c[0] for c in cols], show="headings", selectmode="browse")
+        for c, t, wd in cols:
+            tv.heading(c, text=t)
+            tv.column(c, width=wd, anchor="w", stretch=c == "note")
+        sb = ttk.Scrollbar(box, orient=tk.VERTICAL, command=tv.yview)
+        tv.configure(yscrollcommand=sb.set)
+        sb.pack(side=tk.RIGHT, fill=tk.Y)
+        tv.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        for tag, color in (("new", "#ef6c00"), ("del", "#757575"), ("chk", "#c62828"), ("keep", "#2e7d32")):
+            tv.tag_configure(tag, foreground=color)
+        tagof = {"+": "new", "~": "new", "-": "del", "⚠": "chk", "×": "del", "●": "keep"}
+        self.ver_entries = ent = self.version_entries(rep)
+        for i, (kind, r, note, _live) in enumerate(ent):
+            tv.insert("", "end", iid=str(i), tags=(tagof[kind[0]],),
+                      values=(kind, day_label(r["date"]), f"{fmt_t(r['s'])}~{fmt_t(r['e'])}",
+                              r["name"].replace("\n", " ") + (" (2안)" if r["plan"] == "2안" else ""), note))
+        self.ver_tree = tv
+        tv.bind("<<TreeviewSelect>>", lambda e: self.on_version_pick())
+        self.ver_bar = bar = tk.Frame(w)
+        bar.pack(fill=tk.X, padx=8, pady=(0, 8))
+        tk.Button(bar, text="반영", width=12, bg="#ffb74d",
+                  command=lambda: self.apply_new_version(path, new, merged, rep)).pack(side=tk.RIGHT, padx=2)
+        tk.Button(bar, text="취소", width=10, command=self.close_version_window).pack(side=tk.RIGHT, padx=2)
+        w.protocol("WM_DELETE_WINDOW", self.close_version_window)
+        self.ver_applied = False
+
+    def apply_new_version(self, path, new, merged, rep):
+        tk = self.tk
+        self.push_undo()
+        old_name = os.path.basename(self.proj_path or self.xlsx or "")
+        self.proj_dir = os.path.dirname(self.proj_path or "") or self.proj_dir or os.path.dirname(self.xlsx or "")
+        self.rows = merged
+        self.orig = json.loads(json.dumps(new, ensure_ascii=False))
+        self.xlsx = path
+        self.v_x.set(path)
+        self.query_date = read_query_date(path)
+        self.proj_path = None               # 저장하면 새 판 이름으로 (예: ..(3)_편성표1710.tvproj)
+        self.history = list(self.history) + [{
+            "from": old_name, "to": os.path.basename(path), "at": datetime.datetime.now().isoformat(timespec="seconds"),
+            "summary": {k: len(rep[k]) for k in ("changed", "new", "removed", "kept", "locals", "added", "checks")}}]
+        self.sel, self.multi, self.diff_keys = None, [], set()
+        self.pink_state = {}
+        self.saved = False
+        self.build_day_buttons()
+        self.refresh()
+        self.root.title(f"{APP_NAME} {VERSION} - {os.path.basename(path)} (새 판 반영, 저장 전)")
+        self.log(f"[새 판 반영] {old_name} -> {os.path.basename(path)}  바뀜 {len(rep['changed'])} · 새로 "
+                 f"{len(rep['new'])} · 없어짐 {len(rep['removed'])} · 고친 것 옮김 {len(rep['kept'])} · "
+                 f"로컬 {len(rep['locals'])} · 확인 필요 {len(rep['checks'])}")
+        for r in rep["checks"]:
+            self.log(f"   ⚠ {day_label(r['date'])} {fmt_t(r['s'])}~{fmt_t(r['e'])} {r['name']} - {r.get('_note', '')}")
+        self.ver_applied = True
+        if self.ver_win is not None:
+            for wdg in self.ver_bar.winfo_children():
+                wdg.destroy()
+            self.ver_hint.config(text="반영했습니다. 목록을 누르면 그 칸으로 갑니다. 확인이 끝나면 [표시 지우기]. "
+                                      "저장하면 새 판 이름으로 저장됩니다.", fg="#2e7d32")
+            tk.Button(self.ver_bar, text="닫기", width=10, command=self.close_version_window).pack(side=tk.RIGHT, padx=2)
+            tk.Button(self.ver_bar, text="표시 지우기", width=12, command=self.clear_version_marks).pack(
+                side=tk.RIGHT, padx=2)
+
+    def find_row(self, row):
+        """보고 창의 줄 -> 지금 편성표의 줄 번호 (되돌리기 뒤에도 날짜·시각·이름으로 찾음)"""
+        for i, r in enumerate(self.rows):
+            if r is row:
+                return i
+        key = lambda r: (r["date"], r["s"], r["e"], r["plan"], r["name"])
+        return next((i for i, r in enumerate(self.rows) if key(r) == key(row)), None)
+
+    def on_version_pick(self):
+        sel = self.ver_tree.selection()
+        if not sel or not self.ver_applied:
+            return
+        _kind, row, _note, live = self.ver_entries[int(sel[0])]
+        i = self.find_row(row) if live else None
+        if i is None:       # 없어진 줄: 그날 그 시각 근처 칸
+            day = [k for k, r in enumerate(self.rows) if r["date"] == row["date"]]
+            i = min(day, key=lambda k: abs(self.rows[k]["s"] - row["s"]), default=None)
+        if i is not None:
+            self.select(i)
+
+    def clear_row_mark(self, i):
+        if 0 <= i < len(self.rows):
+            for k in ("_ver", "_check", "_note", "_was", "_ovl"):
+                self.rows[i].pop(k, None)
+            self.saved = False
+            self.draw_marks()
+
+    def clear_version_marks(self):
+        for r in self.rows:
+            for k in ("_ver", "_check", "_note", "_was", "_ovl"):
+                r.pop(k, None)
+        self.saved = False
+        self.draw_marks()
+        self.log("[새 판 반영] 주황·빨간 표시를 지웠습니다.")
+        self.close_version_window()
+
+    def close_version_window(self):
+        if self.ver_win is not None:
+            try:
+                self.ver_win.destroy()
+            except Exception:
+                pass
+        self.ver_win = None
+
     def snapshot(self):
-        return (json.dumps(self.rows, ensure_ascii=False), self.deleted, self.sel)
+        return (json.dumps(self.rows, ensure_ascii=False), self.deleted, self.sel,
+                json.dumps({"orig": self.orig, "xlsx": self.xlsx, "query_date": getattr(self, "query_date", ""),
+                            "proj_path": self.proj_path, "proj_dir": self.proj_dir, "history": self.history},
+                           ensure_ascii=False))
 
     def push_undo(self, tag=None):
         """바꾸기 직전 상태를 기록. 같은 칸을 2초 안에 이어서 고치면(글자 입력 등) 한 번으로 묶음"""
@@ -3263,7 +3721,13 @@ class App:
         self.update_undo_buttons()
 
     def restore(self, snap):
-        rows, deleted, sel = snap
+        rows, deleted, sel = snap[:3]
+        if len(snap) > 3:       # 새 판 반영 되돌리기: 엑셀 판도 함께
+            st = json.loads(snap[3])
+            if st["xlsx"] != self.xlsx:
+                self.orig, self.xlsx, self.query_date = st["orig"], st["xlsx"], st["query_date"]
+                self.proj_path, self.proj_dir, self.history = st["proj_path"], st["proj_dir"], st["history"]
+                self.root.title(f"{APP_NAME} {VERSION} - {os.path.basename(self.proj_path or self.xlsx or '')}")
         self.rows = json.loads(rows)
         self.deleted = deleted
         self.saved = False
