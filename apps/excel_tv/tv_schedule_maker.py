@@ -29,7 +29,7 @@ try:
 except Exception:
     pass
 
-APP_VERSION = "1.2.1"
+APP_VERSION = "1.2.2"
 VERSION = f"v{APP_VERSION} (시험판)"
 
 
@@ -2305,6 +2305,59 @@ class App:
         tk.Label(f, text="(같은 코드·같은 시각이면 옆 날짜와 한 칸으로 묶임)", fg="#777").grid(
             row=6, column=2, columnspan=2, sticky="w")
 
+        # ★ 즐겨찾기: 고르면 이름 + 저장해 둔 옵션(음영·굵게·아이콘 등)을 한 번에. 이름 칸에 치면 목록이 좁혀짐
+        favs = [fv for fv in load_config().get("favorites", []) if isinstance(fv, dict)]
+        fav_items = [(fav_display(fv).replace("\n", " "), fv) for fv in favs]
+        extra = {}          # 이 창에 칸이 없는 옵션(굵게·점선·글자 바탕·글자색)은 확인 때 넣음
+        v_fav = tk.StringVar(value="")
+        fav_cb = ttk.Combobox(f, textvariable=v_fav, values=[t for t, _ in fav_items], width=24, state="readonly")
+        fav_cb.grid(row=1, column=4, sticky="w", padx=(6, 0))
+        tk.Label(f, text="★ 즐겨찾기", fg="#b26a00").grid(row=0, column=4, sticky="sw", padx=(6, 0))
+        shown = list(fav_items)
+
+        def fav_filter(*a):
+            nonlocal shown
+            key = norm_key(v["name"].get().replace("|", ""))
+            if not key or v["name"].get().strip() in ("새 프로그램", r["name"]):
+                shown = list(fav_items)
+            else:
+                shown = [(t, fv) for t, fv in fav_items if key in norm_key(t)] or list(fav_items)
+            fav_cb.configure(values=[t for t, _ in shown])
+        v["name"].trace_add("write", fav_filter)
+
+        def fav_pick(e=None):
+            t = v_fav.get()
+            fv = next((fv for tt, fv in shown if tt == t), None) or next((fv for tt, fv in fav_items if tt == t), None)
+            if not fv:
+                return
+            name = fv.get("name") or v["name"].get()
+            pre, suf = fv.get("prefix", ""), fv.get("suffix", "")
+            if pre and not name.startswith(pre):
+                name = pre + name
+            if suf and not name.endswith(suf):
+                name = name + suf
+            v["name"].set(name)
+            for k in ("uhd", "cc", "sign", "ad", "force_pink", "show_end"):
+                if k in fv:
+                    b[k].set(bool(fv[k]))
+            if "shade" in fv:
+                v["shade"].set(fv["shade"] or "")
+                v_sn.set(next((k for k, c in SHADE_PRESETS.items() if c == (fv["shade"] or "")),
+                              "직접 고른 색" if fv["shade"] else "없음"))
+            extra.clear()
+            extra.update({k: fv[k] for k in ("bold", "top_dash", "bottom_dash", "hl", "fg") if k in fv})
+            e_name.focus_set()
+            e_name.icursor("end")
+        fav_cb.bind("<<ComboboxSelected>>", fav_pick)
+        if new and fav_items:       # 줄 추가로 열렸으면 목록을 펼쳐서 바로 고르게
+            def open_list():
+                try:
+                    fav_cb.focus_set()
+                    fav_cb.event_generate("<Down>")
+                except Exception:
+                    pass
+            top.after(300, open_list)
+
         def ok():
             try:
                 s_ = hhmm_to_min(v["s"].get()) - DAY_START_MIN
@@ -2330,6 +2383,7 @@ class App:
                      **{k: b[k].get() for k in b if k != "force_pink"})
             if b["force_pink"].get() != pink_now:      # 바꿨을 때만 직접 값으로
                 r["force_pink"] = b["force_pink"].get()
+            r.update(extra)                             # 즐겨찾기에서 고른 굵게·점선·글자 바탕·글자색
             self.mark_edit(r)
             self.log(f"[고침] {day_label(r['date'])} {fmt_t(s_)}~{fmt_t(e_)} {r['name']} ({r['plan']})")
             top.destroy()
@@ -2342,7 +2396,7 @@ class App:
                 self.refresh()
             top.destroy()
         bf = tk.Frame(f)
-        bf.grid(row=8, column=0, columnspan=4, pady=8)
+        bf.grid(row=8, column=0, columnspan=5, pady=8)
         tk.Button(bf, text="확인", command=ok, width=10, bg="#4CAF50").pack(side=tk.LEFT, padx=6)
         tk.Button(bf, text="취소", command=cancel, width=10).pack(side=tk.LEFT, padx=6)
         top.protocol("WM_DELETE_WINDOW", cancel)
