@@ -26,6 +26,8 @@ APPS = {   # id: (폴더, 실행 파일, 이름, 설명, 필요한 런처 실행
     "runsheet": ("apps/runsheet", "pdf_data_editor.py", "운행표 데이터 편집기", "운행표 PDF에 광고주 데이터 입력 · 정산 · 일정표", 1, "radio"),
     "schedule": ("apps/schedule", "ui.py", "TV 편성표 편집기", "편성표 PDF 편집 (칸 색 · 글자 · 분할선)", 1, "tv"),
     "dmb": ("apps/schedule", "dmb.py", "DMB 편성 편집기", "편성표 PDF로 DMB 편성표 만들기 (요일·지역 칸, 제목)", 1, "tv"),
+    "excel_tv": ("apps/excel_tv", "tv_schedule_maker.py", "엑셀 TV 편성표 편집기",
+                 "편성시스템 주간편성표 엑셀로 편성표 PDF 만들기 (시험판 · 서버 전송 없음)", 1, "tv"),
 }
 VERSION_FROM = {"dmb": "ui.py"}   # DMB 는 편성표 편집기와 같은 프로그램 -> 번호도 ui.py 것
 

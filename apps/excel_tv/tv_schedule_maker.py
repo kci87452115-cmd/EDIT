@@ -1,0 +1,3383 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+엑셀 TV 편성표 편집기 (시험판) - 편집 프로그램 런처 TV 탭
+MBC 편성시스템에서 내려받은 '주간편성표' 엑셀(.xlsx)로 A4 1페이지 편성표 PDF를 만든다.
+이 프로그램은 아직 다른 PC·서버로 자료를 보내지 않는다 (시험용).
+
+사용법
+  - 그냥 실행하면 창이 뜬다: 엑셀 불러오기 -> 편성표를 보면서 칸을 클릭해 오른쪽에서 고치기
+    (0.5초 뒤 자동으로 다시 그림) -> PDF 저장. 원본 PDF와 칸 단위 비교, 작업 시간·고친 줄 수 기록
+  - 명령줄:  python tv_schedule_maker.py 주간편성표.xlsx [-o 결과.pdf] [--prev 지난주.xlsx]
+             python tv_schedule_maker.py 주간편성표.xlsx --learn 같은주_원본.pdf
+             python tv_schedule_maker.py --compare 기준.pdf 비교.pdf
+
+필요한 모듈:  pip install pymupdf openpyxl  (런처로 실행하면 런처의 공용 실행 환경을 씀)
+설정·이름 사전·최근 프로젝트:  런처로 실행하면 C:\\EDIT\\TV\\데이터\\엑셀편성표, 따로 실행하면 이 파일 폴더
+"""
+import os
+import re
+import sys
+import json
+import datetime
+
+import openpyxl
+import pymupdf
+
+try:
+    pymupdf.TOOLS.mupdf_display_errors(False)
+except Exception:
+    pass
+
+APP_VERSION = "1.0.0"
+VERSION = f"v{APP_VERSION} (시험판)"
+APP_NAME = "엑셀 TV 편성표 편집기"
+# 프로그램 파일이 있는 곳 (런처로 실행해도 이 파일 위치 - 런처 exe 위치가 아님)
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def _data_dir():
+    """설정·이름 사전·최근 목록을 두는 곳.
+    런처로 실행하면 C:\\EDIT\\TV\\데이터\\엑셀편성표 (프로그램을 업데이트해도 남음), 따로 실행하면 프로그램 폴더"""
+    home = os.environ.get("RADIO_HOME")
+    d = os.path.join(home, "데이터", "엑셀편성표") if home else APP_DIR
+    try:
+        os.makedirs(d, exist_ok=True)
+    except Exception:
+        d = APP_DIR
+    return d
+
+
+DATA_DIR = _data_dir()
+CONFIG_PATH = os.path.join(DATA_DIR, "tv_schedule_config.json")
+
+DAY_START_MIN = 5 * 60          # 편성표는 05:00 부터
+DAY_LEN_MIN = 24 * 60           # 다음날 05:00 까지
+
+# ---------------------------------------------------------------- 기본 설정
+DEFAULT_CONFIG = {
+    "_설명": "엑셀 TV 편성표 편집기 설정. 시간은 'HH:MM' (24시 이후는 25:00 처럼).",
+    "font_files": [
+        "C:/Windows/Fonts/MBCNEWL.ttf",
+        "C:/Windows/Fonts/malgun.ttf",
+        "/usr/share/fonts/truetype/nanum/NanumGothic.ttf",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Medium.ttc",
+    ],
+    "logo_file": "logo.png",
+    "title_text": "MBC 주간편성표",
+    "title_size": 22,
+    "title_bold": False,
+    "_날짜_설명": "stamp_mode: 저장 시각 / 엑셀 조회일 / 주간 범위 / 직접 입력 / 표시 안 함",
+    "stamp_mode": "저장 시각",
+    "stamp_text": "",
+    "grade_weekday": [["05:00", "07:00", "C"], ["07:00", "08:30", "B"], ["08:30", "09:30", "A"],
+                      ["09:30", "12:00", "B"], ["12:00", "18:00", "C"], ["18:00", "19:00", "B"],
+                      ["19:00", "19:30", "A"], ["19:30", "23:30", "SA"], ["23:30", "24:00", "A"],
+                      ["24:00", "25:00", "B"], ["25:00", "29:00", "C"]],
+    "grade_weekend": [["05:00", "08:00", "C"], ["08:00", "12:30", "A"], ["12:30", "17:00", "B"],
+                      ["17:00", "18:00", "A"], ["18:00", "23:30", "SA"], ["23:30", "24:30", "A"],
+                      ["24:30", "29:00", "C"]],
+    "pink_plan2": True,
+    "plan_label": False,
+    "pink_changed_from_prev": True,
+    "highlight": [],
+    "_음영_설명": "shade_rules: 매주 자동으로 음영을 넣을 프로그램. match 는 프로그램명에 들어 있는 글자 또는 코드 앞부분",
+    "shade_rules": [],
+    "_끝시각_설명": "끝 시각 표시: 칸 왼쪽 아래에 끝나는 분을 표시. end_label_rules 에 프로그램명(일부)을 넣으면 매주 자동",
+    "end_label_rules": [],
+    "end_label_format": "{mm}",
+    "end_label_color": "#d32f2f",
+    "_아이콘_설명": "icon_colors: 아이콘 배경색 바꾸기 (예: {\"해\": \"#c2185b\"}). icon_dark_text: 글자를 진회색으로 할 아이콘",
+    "icon_colors": {},
+    "icon_dark_text": ["U"],
+    "_로컬_설명": "local_rules: 매주 엑셀을 불러올 때 자동으로 끼워 넣을 로컬. days 예: 월-금, 토-일, 월,수,금, 매일",
+    "local_rules": [],
+    "favorites": [
+        {"name": "광주MBC 뉴스투데이", "shade": "#d9d9d9", "bold": True},
+        {"name": "R/L...MBC 뉴스데스크...R/L"}
+    ],
+    "name_replace": [
+        ["\u00a0", " "],
+        ["엄마를부탁해", "엄마를 부탁해"],
+        ["리포트결혼지옥", "리포트 결혼지옥"],
+        ["스포츠축구", "스포츠 축구"],
+        ["국가대표친선경기", "국가대표 친선경기 "],
+        ["라이어1-6회", "라이어 1-6회"],
+        ["김연경2스페셜", "김연경2 스페셜"]
+    ],
+    "name_regex": [
+        ["^(일일드라마|금토드라마|주말드라마|수목드라마|월화드라마|일일연속극)(?=\\S)", "\\1 "],
+        ["MBC(?=뉴스)", "MBC "],
+        ["(?<=[^\\s])(스페셜)(?=\\(|$)", " \\1"],
+        ["\\s{2,}", " "]
+    ]
+}
+
+
+def load_config():
+    cfg = json.loads(json.dumps(DEFAULT_CONFIG))
+    if os.path.exists(CONFIG_PATH):
+        try:
+            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+                cfg.update(json.load(f))
+        except Exception as e:
+            print(f"[경고] 설정 파일을 읽지 못해 기본값 사용: {e}")
+    else:
+        try:
+            with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+                json.dump(DEFAULT_CONFIG, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+    return cfg
+
+
+# ---------------------------------------------------------------- 엑셀 읽기
+def hhmm_to_min(v):
+    """'05:00', '25:35', 시각/날짜시각/경과시간(timedelta)/엑셀 소수(0.2083=05:00) 모두 받음"""
+    if isinstance(v, datetime.datetime):
+        # 엑셀이 24시 이후를 1900-01-01 01:35 처럼 바꾼 경우 -> 날짜만큼 24시간 더함
+        extra = 0
+        if v.year in (1899, 1900) and v.date() > datetime.date(1899, 12, 31):
+            extra = (v.date() - datetime.date(1899, 12, 31)).days * 1440
+        return extra + v.hour * 60 + v.minute
+    if isinstance(v, datetime.time):
+        return v.hour * 60 + v.minute
+    if isinstance(v, datetime.timedelta):
+        return int(round(v.total_seconds() / 60))
+    if isinstance(v, (int, float)) and not isinstance(v, bool):
+        if 0 <= v < 3:              # 엑셀 시각 소수 (1 = 24시간)
+            return int(round(v * 1440))
+        if 0 <= v <= 3000:          # 0500, 2535 같은 숫자
+            return int(v) // 100 * 60 + int(v) % 100
+    s = str(v).strip()
+    m = re.match(r"^(\d{1,2})\s*[:시]\s*(\d{2})", s)
+    if m:
+        return int(m.group(1)) * 60 + int(m.group(2))
+    m = re.fullmatch(r"(\d{1,2})(\d{2})", s)
+    if m:
+        return int(m.group(1)) * 60 + int(m.group(2))
+    raise ValueError(f"시각 형식 오류: {v!r}")
+
+
+def to_yyyymmdd(v):
+    """20261116, '2026-11-16', '2026.11.16', 날짜형 모두 '20261116' 으로"""
+    if isinstance(v, (datetime.datetime, datetime.date)):
+        return v.strftime("%Y%m%d")
+    if isinstance(v, (int, float)) and not isinstance(v, bool):
+        if 19000101 <= v <= 29991231:
+            return str(int(v))
+        if 30000 < v < 80000:       # 엑셀 날짜 일련번호
+            return (datetime.date(1899, 12, 30) + datetime.timedelta(days=int(v))).strftime("%Y%m%d")
+        return ""
+    d = re.sub(r"[^0-9]", "", str(v).split(" ")[0])
+    return d if len(d) == 8 else ""
+
+
+HEADERS = {
+    "date": "방송일", "code": "프로그램코드", "name": "프로그램명", "start": "편성시각(From)",
+    "end": "편성시각(To)", "cc": "자막", "ad": "화면해설", "uhd": "UHD", "sign": "수화방송",
+    "age": "연령구분", "rl": "R/L", "rerun": "재방여부", "plan": "편성안",
+}
+
+
+def _col_index(ref):
+    n = 0
+    for ch in ref:
+        if ch.isalpha():
+            n = n * 26 + (ord(ch.upper()) - 64)
+        else:
+            break
+    return n - 1
+
+
+def read_xlsx_raw(path):
+    """openpyxl 이 못 여는 엑셀(서식 정보가 깨진 파일)용: 서식은 무시하고 값만 직접 읽음.
+    반환: [시트별 [행(list)]]"""
+    import zipfile
+    import xml.etree.ElementTree as ET
+    ns = {"m": "http://schemas.openxmlformats.org/spreadsheetml/2006/main",
+          "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships"}
+    with zipfile.ZipFile(path) as z:
+        names = z.namelist()
+        shared = []
+        if "xl/sharedStrings.xml" in names:
+            for si in ET.fromstring(z.read("xl/sharedStrings.xml")).findall("m:si", ns):
+                # 글자 일부만 서식이 다른 경우(<r>)도 이어 붙이고, 윗주(<rPh>) 글자는 뺌
+                parts = [t.text or "" for t in si.findall("m:t", ns)]
+                parts += [t.text or "" for r in si.findall("m:r", ns) for t in r.findall("m:t", ns)]
+                shared.append("".join(parts))
+        sheet_files = []
+        try:
+            wbx = ET.fromstring(z.read("xl/workbook.xml"))
+            rels = ET.fromstring(z.read("xl/_rels/workbook.xml.rels"))
+            target = {r.get("Id"): r.get("Target") for r in rels}
+            for sh in wbx.find("m:sheets", ns):
+                t = target.get(sh.get("{%s}id" % ns["r"]), "")
+                t = t.lstrip("/")
+                sheet_files.append(t if t.startswith("xl/") else "xl/" + t)
+        except Exception:
+            pass
+        if not sheet_files:
+            sheet_files = sorted(n for n in names if re.match(r"xl/worksheets/sheet\d+\.xml$", n))
+        sheets = []
+        for sf in sheet_files:
+            if sf not in names:
+                continue
+            rows = []
+            for r in ET.fromstring(z.read(sf)).iter("{%s}row" % ns["m"]):
+                vals = {}
+                for i, c in enumerate(r.findall("m:c", ns)):
+                    idx = _col_index(c.get("r", "")) if c.get("r") else i
+                    t = c.get("t")
+                    v = c.find("m:v", ns)
+                    if t == "inlineStr":
+                        val = "".join(x.text or "" for x in c.iter("{%s}t" % ns["m"]))
+                    elif v is None or v.text is None:
+                        val = None
+                    elif t == "s":
+                        val = shared[int(v.text)] if int(v.text) < len(shared) else ""
+                    elif t in ("str", "e"):
+                        val = v.text
+                    elif t == "b":
+                        val = v.text == "1"
+                    else:
+                        try:
+                            f = float(v.text)
+                            val = int(f) if f.is_integer() else f
+                        except ValueError:
+                            val = v.text
+                    vals[idx] = val
+                rows.append([vals.get(i) for i in range(max(vals) + 1)] if vals else [])
+            sheets.append(rows)
+        return sheets
+
+
+def iter_sheet_rows(path):
+    try:
+        wb = openpyxl.load_workbook(path, data_only=True)
+        return [[list(r) for r in ws.iter_rows(values_only=True)] for ws in wb.worksheets]
+    except Exception as e:
+        print(f"[알림] openpyxl 로 열지 못해 값만 직접 읽습니다: {type(e).__name__}: {e}")
+        return read_xlsx_raw(path)
+
+
+def read_query_date(path):
+    """엑셀 위쪽의 '조회일 : 2026.11.16' -> '20261116' (없으면 '')"""
+    try:
+        for sheet in iter_sheet_rows(path):
+            for row in sheet[:6]:
+                for c in row:
+                    if c and "조회일" in str(c):
+                        m = re.search(r"(\d{4})\D?(\d{1,2})\D?(\d{1,2})", str(c))
+                        if m:
+                            return f"{int(m.group(1)):04d}{int(m.group(2)):02d}{int(m.group(3)):02d}"
+    except Exception:
+        pass
+    return ""
+
+
+def save_config_keys(values):
+    cfg = load_config()
+    cfg.update(values)
+    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, ensure_ascii=False, indent=2)
+
+
+def read_schedule_xlsx(path):
+    data, found, skipped = [], False, []
+    for sheet in iter_sheet_rows(path):     # 머리글이 있는 시트를 찾음
+        col = None
+        for row in sheet:
+            row = list(row)
+            cells = ["" if c is None else str(c).strip() for c in row]
+            if col is None:
+                if "방송일" in cells and "프로그램명" in cells:
+                    col = {k: cells.index(v) for k, v in HEADERS.items() if v in cells}
+                    missing = [HEADERS[k] for k in ("date", "name", "start", "end") if k not in col]
+                    if missing:
+                        raise ValueError(f"엑셀에 필요한 열이 없습니다: {missing}")
+                    found = True
+                continue
+            raw = lambda k: row[col[k]] if k in col and col[k] < len(row) else None
+            g = lambda k: cells[col[k]] if k in col and col[k] < len(cells) else ""
+            date = to_yyyymmdd(raw("date")) if raw("date") is not None else ""
+            if not date:
+                continue
+            try:
+                s, e = hhmm_to_min(raw("start")), hhmm_to_min(raw("end"))
+            except (ValueError, TypeError):
+                skipped.append(f"{date} {g('name')} ({g('start')}~{g('end')})")
+                continue
+            if e <= s:
+                e += 1440 if e < DAY_START_MIN else 0
+            data.append({
+                "date": date, "code": g("code"), "name": g("name"),
+                "s": s - DAY_START_MIN, "e": e - DAY_START_MIN,
+                "uhd": g("uhd") == "Y", "cc": g("cc") == "Y", "ad": g("ad") == "Y", "sign": g("sign") == "Y",
+                "age": g("age"), "rl": g("rl"), "rerun": g("rerun") == "Y", "plan": g("plan") or "1안",
+            })
+        if col is not None and data:
+            break
+    if not found:
+        raise ValueError(f"엑셀에서 '방송일', '프로그램명' 머리글을 찾지 못했습니다.\n({os.path.basename(path)})")
+    if not data:
+        raise ValueError("머리글은 찾았지만 읽을 수 있는 편성 줄이 없습니다. 방송일·편성시각 칸 형식을 확인하세요."
+                         + (f"\n예: {skipped[0]}" if skipped else ""))
+    if skipped:
+        print(f"[주의] 시각을 읽지 못한 줄 {len(skipped)}개: {skipped[:3]}")
+    return data
+
+
+# ---------------------------------------------------------------- 칸(블록) 만들기
+NAME_DICT_PATH = os.path.join(DATA_DIR, "name_dict.json")
+if DATA_DIR != APP_DIR and not os.path.exists(NAME_DICT_PATH) and os.path.exists(os.path.join(APP_DIR, "name_dict.json")):
+    try:        # 처음 실행: 프로그램과 함께 온 기본 이름 사전을 데이터 폴더로 복사
+        import shutil
+        shutil.copyfile(os.path.join(APP_DIR, "name_dict.json"), NAME_DICT_PATH)
+    except Exception:
+        pass
+_name_dict = None
+
+
+def norm_key(s):
+    return re.sub(r"\s+", "", s.replace(" ", " "))
+
+
+def split_suffix(s):
+    m = re.match(r"^(.*?)\s*(\([^()]*\))$", s.strip(), re.S)
+    return (m.group(1), m.group(2)) if m else (s.strip(), "")
+
+
+def name_dict():
+    global _name_dict
+    if _name_dict is None:
+        try:
+            with open(NAME_DICT_PATH, "r", encoding="utf-8") as f:
+                _name_dict = json.load(f)
+        except Exception:
+            _name_dict = {}
+    return _name_dict
+
+
+def clean_name(name, cfg):
+    """엑셀 이름 -> 편성표 표시 이름. 이름 사전(예전 PDF에서 배운 것)이 먼저, 없으면 규칙 적용.
+    줄바꿈 위치는 '\\n' 으로 들어 있음"""
+    name = re.sub("[​‌‍﻿]", "", name)
+    main, suf = split_suffix(name.replace(" ", " "))
+    learned = name_dict().get(norm_key(main))
+    if learned:
+        return re.sub(r"\s*\|\s*", "\n", learned + suf)
+    for a, b in cfg.get("name_replace", []):
+        name = name.replace(a, b)
+    for pat, rep in cfg.get("name_regex", []):
+        try:
+            name = re.sub(pat, rep, name)
+        except re.error:
+            pass
+    # 직접 넣은 줄바꿈: 프로그램명에 '|' 를 쓰면 그 자리에서 다음 줄로
+    return re.sub(r"\s*\|\s*", "\n", name.strip()).strip()
+
+
+PINK_KEYS = ((1.0, 1.0, 1.0), (1.0, 0.88, 0.88))
+
+
+def extract_pdf_cells(pdf_path):
+    """편성표 PDF(원본이든 이 프로그램이 만든 것이든)에서 프로그램 칸을 읽음.
+    반환: [{day0, day1, half, start(05:00 기준 분), pink, lines[(글자,크기)], rect}]"""
+    doc = pymupdf.open(pdf_path)
+    pg = doc[0]
+    dr = pg.get_drawings()
+    fill = lambda d: tuple(round(c, 2) for c in d["fill"]) if d.get("fill") else None
+    cells = [(d["rect"], fill(d)) for d in dr if fill(d) and fill(d) != (0.72, 0.8, 0.89)
+             and fill(d) != (0.0, 0.0, 0.0) and d["rect"].width > 5 and d["rect"].height > 1.5
+             and d["rect"].y0 > 118 and d["rect"].height < 400       # 요일 바탕(세로 전체) 칸은 제외
+             and 55 <= d["rect"].x0 < 541]
+    cells = [(c, f) for c, f in cells
+             if not any(o is not c and o.contains(c) and o.get_area() > c.get_area() * 1.05 for o, _ in cells)]
+    hours = sorted({(round(d["rect"].y0, 1), round(d["rect"].y1, 1)) for d in dr
+                    if fill(d) == (0.72, 0.8, 0.89) and abs(d["rect"].x0 - 42.0) < 1.5 and d["rect"].y0 > 115})
+    # 아이콘 글자(흰 글자, 노란 U 위 진회색 글자)는 프로그램 이름에서 뺌
+    spans = [s for b in pg.get_text("dict")["blocks"] for l in b.get("lines", []) for s in l["spans"]
+             if s["text"].strip() and s.get("color", 0) not in (0xFFFFFF, 0x1A1A1A)]
+    out = []
+    for c, f in cells:
+        days = X_COLS["days"]
+        d0 = next((i for i, (a, b) in enumerate(days) if a - 1 <= c.x0 < b - 1), None)
+        d1 = max((i for i, (a, b) in enumerate(days) if c.x1 > a + 1 and c.x0 < b - 1), default=d0)
+        if d0 is None:
+            continue
+        span_w = days[d1][1] - days[d0][0]
+        half = None
+        if c.width < span_w * 0.7:
+            half = "L" if abs(c.x0 - days[d0][0]) < 1 else "R"
+        inside = [s for s in spans if c.contains(pymupdf.Point((s["bbox"][0] + s["bbox"][2]) / 2,
+                                                              (s["bbox"][1] + s["bbox"][3]) / 2))]
+        minute, lines = None, {}
+        for s in sorted(inside, key=lambda s: (round(s["bbox"][3], 0), s["bbox"][0])):
+            t = s["text"].strip()
+            if minute is None and s["bbox"][0] - c.x0 < 2.5 and s["bbox"][1] - c.y0 < 4.5 and re.match(r"^\d\d(\s|$)", t):
+                minute = int(t[:2])
+                t = t[2:].strip()
+                if not t:
+                    continue
+            if s["bbox"][0] - c.x0 < 2.5 and c.y1 - s["bbox"][3] < 2.5 and re.fullmatch(r"~?(\d\d:)?\d\d", t) \
+                    and c.height > 9:
+                continue        # 왼쪽 아래 '끝 시각' 표시는 이름이 아님
+            lines.setdefault(round(s["bbox"][3], 0), []).append((t, s["size"]))
+        hi = max((i for i, (y0, _) in enumerate(hours) if y0 <= c.y0 + 0.6), default=0)
+        start = hi * 60 + (minute or 0)
+        lines = [(re.sub(r"\s+", " ", " ".join(t for t, _ in v)).strip(), max(sz for _, sz in v))
+                 for _, v in sorted(lines.items())]
+        out.append(dict(day0=d0, day1=d1, half=half, start=start, pink=f == (1.0, 0.88, 0.88), bg=f,
+                        lines=lines, rect=c, text=" ".join(t for t, _ in lines)))
+    doc.close()
+    return out
+
+
+def text_sig(t):
+    """줄바꿈·순서와 무관하게 같은 글자인지 보기 위한 서명"""
+    t = re.sub("[\u2010-\u2015\u2212]", "-", t)
+    t = re.sub("[\u200b-\u200d\ufeff]|\\s", "", t)
+    return "".join(sorted(t))
+
+
+def compare_pdfs(base_pdf, other_pdf, log=print):
+    """두 편성표 PDF를 칸 단위로 비교 (기준 = 완성본/원본). 반환: 요약 dict"""
+    A, B = extract_pdf_cells(base_pdf), extract_pdf_cells(other_pdf)
+    key = lambda c: (c["day0"], c["half"], c["start"])
+    bmap = {}
+    for c in B:
+        bmap.setdefault(key(c), c)
+    wk = "월화수목금토일"
+    where = lambda c: f"{wk[c['day0']]} {fmt_t(c['start'])}" + (f"({'1안' if c['half'] == 'L' else '2안'})" if c["half"] else "")
+    res = {"기준 칸": len(A), "비교 칸": len(B), "일치": 0, "이름 다름": 0, "날짜 묶음 다름": 0,
+           "분홍 다름": 0, "음영 다름": 0, "기준에만 있음": 0, "비교에만 있음": 0}
+    detail = []
+    diff_keys = []
+    used = set()
+    for a in A:
+        b = bmap.get(key(a))
+        if b is None:
+            diff_keys.append(key(a))
+            res["기준에만 있음"] += 1
+            detail.append(f"[없음] {where(a)} {a['text']}")
+            continue
+        used.add(id(b))
+        ok = True
+        if text_sig(a["text"]) != text_sig(b["text"]):
+            res["이름 다름"] += 1; ok = False
+            detail.append(f"[이름] {where(a)} 기준 '{a['text']}' / 비교 '{b['text']}'")
+        if a["day1"] != b["day1"]:
+            res["날짜 묶음 다름"] += 1; ok = False
+            detail.append(f"[묶음] {where(a)} {a['text']}: 기준 {wk[a['day0']]}~{wk[a['day1']]} / 비교 {wk[b['day0']]}~{wk[b['day1']]}")
+        if a["pink"] != b["pink"]:
+            res["분홍 다름"] += 1; ok = False
+            detail.append(f"[분홍] {where(a)} {a['text']}: 기준 {'분홍' if a['pink'] else '흰색'} / 비교 {'분홍' if b['pink'] else '흰색'}")
+        if not a["pink"] and not b["pink"] and max(abs(x - y) for x, y in zip(a["bg"], b["bg"])) > 0.03:
+            res["음영 다름"] += 1; ok = False
+            detail.append(f"[음영] {where(a)} {a['text']}: 기준 {a['bg']} / 비교 {b['bg']}")
+        if ok:
+            res["일치"] += 1
+        else:
+            diff_keys.append(key(a))
+    for b in B:
+        if id(b) not in used:
+            res["비교에만 있음"] += 1
+            detail.append(f"[추가] {where(b)} {b['text']}")
+    log("=" * 60)
+    log(f"[비교] 기준: {os.path.basename(base_pdf)}")
+    log(f"       비교: {os.path.basename(other_pdf)}")
+    log("       " + ", ".join(f"{k} {v}" for k, v in res.items()))
+    rate = res["일치"] / max(1, res["기준 칸"]) * 100
+    log(f"       칸 일치율 {rate:.1f}%  (아이콘은 비교하지 않음)")
+    for line in detail:
+        log("  " + line)
+    res["일치율"] = rate
+    res["다른 칸"] = diff_keys
+    res["상세"] = detail
+    return res
+
+
+def learn_names(xlsx, pdf_path, log=print):
+    """같은 주의 엑셀과 원본 편성표 PDF를 비교해, PDF에 쓰인 띄어쓰기·줄바꿈을 이름 사전에 저장"""
+    rows = read_schedule_xlsx(xlsx)
+    by_norm = {}
+    for r in rows:
+        by_norm.setdefault(norm_key(r["name"]), r["name"])
+    doc = pymupdf.open(pdf_path)
+    pg = doc[0]
+    font = pymupdf.Font("korea")
+    cells = [d["rect"] for d in pg.get_drawings()
+             if d.get("fill") and d["rect"].width > 5 and d["rect"].y0 > 110
+             and tuple(round(c, 2) for c in d["fill"]) in ((1.0, 1.0, 1.0), (1.0, 0.88, 0.88))]
+    spans = [s for b in pg.get_text("dict")["blocks"] for l in b.get("lines", []) for s in l["spans"]
+             if s["text"].strip()]
+    d = name_dict()
+    learned = 0
+    for c in cells:
+        inside = [s for s in spans if c.contains(pymupdf.Point((s["bbox"][0] + s["bbox"][2]) / 2,
+                                                              (s["bbox"][1] + s["bbox"][3]) / 2))]
+        lines = {}
+        for s in sorted(inside, key=lambda s: (round(s["bbox"][3], 0), s["bbox"][0])):
+            t = s["text"]
+            if s["bbox"][0] - c.x0 < 2.5 and s["bbox"][1] - c.y0 < 4.5 and re.match(r"^\d\d(\s|$)", t):
+                t = t[2:].strip()     # 왼쪽 위 '분' 표시 빼기
+                if not t:
+                    continue
+            key = round(s["bbox"][3], 0)
+            lines.setdefault(key, []).append((t, s["size"]))
+        if not lines:
+            continue
+        lines = [(re.sub(r"\s+", " ", " ".join(t for t, _ in v)).strip(), max(sz for _, sz in v))
+                 for _, v in sorted(lines.items())]
+        full = "".join(t for t, _ in lines)
+        raw = by_norm.get(norm_key(full))
+        if not raw:
+            continue
+        main_raw, suf_raw = split_suffix(raw)
+        # PDF 줄에서 뒤의 (…) 빼기
+        txt_lines = [t for t, _ in lines]
+        if suf_raw:
+            last = txt_lines[-1]
+            if norm_key(last) == norm_key(suf_raw):
+                txt_lines.pop()
+            elif norm_key(last).endswith(norm_key(suf_raw)):
+                txt_lines[-1] = last[: last.rfind("(")].rstrip()
+        # 칸이 좁아서 저절로 넘어간 줄은 띄어쓰기로, 일부러 나눈 줄은 줄바꿈으로
+        out = txt_lines[0] if txt_lines else ""
+        for i in range(1, len(txt_lines)):
+            prev, nxt = txt_lines[i - 1], txt_lines[i]
+            size = lines[min(i, len(lines) - 1)][1]
+            first_word = nxt.split(" ")[0]
+            auto = font.text_length(prev + " " + first_word, fontsize=size) > c.width - 3
+            out += (" " if auto else "\n") + nxt
+        out = "\n".join(x.strip() for x in out.split("\n")).strip()
+        if norm_key(out) != norm_key(main_raw):
+            continue
+        k = norm_key(main_raw)
+        if out != main_raw and d.get(k) != out:
+            d[k] = out
+            learned += 1
+    with open(NAME_DICT_PATH, "w", encoding="utf-8") as f:
+        json.dump(d, f, ensure_ascii=False, indent=1, sort_keys=True)
+    log(f"[이름 사전] 새로 배운 표시 이름 {learned}개 (전체 {len(d)}개) -> {NAME_DICT_PATH}")
+    return learned
+
+
+SHADE_PRESETS = {"없음": "", "회색": "#d9d9d9", "연회색": "#eeeeee", "진회색": "#bfbfbf",
+                 "노랑": "#fff2b3", "하늘": "#d6ecff", "연두": "#dff5d6", "보라": "#ece0f7"}
+
+
+HL_PRESETS = {"없음": "", "하늘": "#a6d8f0", "노랑": "#fff176", "연두": "#c5e1a5", "분홍": "#f8bbd0",
+              "주황": "#ffcc80", "회색": "#d9d9d9"}
+FG_PRESETS = {"검정": "", "빨강": "#d32f2f", "파랑": "#1565c0", "초록": "#2e7d32", "보라": "#6a1b9a",
+              "주황": "#e65100", "흰색": "#ffffff"}
+
+
+def hex_to_rgb(h):
+    h = (h or "").strip().lstrip("#")
+    if len(h) != 6:
+        return None
+    try:
+        return tuple(int(h[i:i + 2], 16) / 255 for i in (0, 2, 4))
+    except ValueError:
+        return None
+
+
+def rule_shade(r, cfg):
+    for rule in cfg.get("shade_rules", []):
+        m = str(rule.get("match", "")).strip()
+        if m and (norm_key(m) in norm_key(r.get("name", "")) or (r.get("code") or "").startswith(m)):
+            return rule.get("color", "#d9d9d9")
+    return ""
+
+
+def rule_end(r, cfg):
+    return any(m and norm_key(str(m)) in norm_key(r.get("name", "")) for m in cfg.get("end_label_rules", []))
+
+
+def build_blocks(rows, cfg, prev_rows=None, log=print):
+    dates = sorted({r["date"] for r in rows})
+    if len(dates) != 7:
+        log(f"[주의] 날짜가 {len(dates)}일입니다 (보통 7일): {dates}")
+    di = {d: i for i, d in enumerate(dates)}
+    ridx = {id(r): i for i, r in enumerate(rows)}     # 칸 -> 원래 편성 줄 번호 (화면에서 클릭할 때 씀)
+
+    prev_keys = None
+    if prev_rows and cfg.get("pink_changed_from_prev"):
+        pd = sorted({r["date"] for r in prev_rows})
+        pwd = {d: datetime.datetime.strptime(d, "%Y%m%d").weekday() for d in pd}
+        prev_keys = {(pwd[r["date"]], r["s"], r["code"]) for r in prev_rows if r["plan"] == "1안"}
+
+    hl = set()
+    for item in cfg.get("highlight", []):
+        m = re.match(r"(\d{4})-?(\d{2})-?(\d{2})\s+(\d{1,2}:\d{2})", str(item))
+        if m:
+            hl.add((m.group(1) + m.group(2) + m.group(3), hhmm_to_min(m.group(4)) - DAY_START_MIN))
+
+    blocks = []
+    for d in dates:
+        day = [r for r in rows if r["date"] == d]
+        p1 = sorted([r for r in day if r["plan"] != "2안"], key=lambda r: r["s"])
+        p2 = sorted([r for r in day if r["plan"] == "2안"], key=lambda r: r["s"])
+        # 2안 구간(이어진 묶음) 찾기 -> 그 구간과 겹치는 1안은 왼쪽 반, 2안은 오른쪽 반
+        windows = []
+        for r in p2:
+            if windows and r["s"] <= windows[-1][1]:
+                windows[-1][1] = max(windows[-1][1], r["e"])
+            else:
+                windows.append([r["s"], r["e"]])
+        changed = True
+        while changed:   # 구간에 걸친 1안까지 포함하도록 넓힘
+            changed = False
+            for w in windows:
+                for r in p1:
+                    if r["s"] < w[1] and r["e"] > w[0] and (r["s"] < w[0] or r["e"] > w[1]):
+                        w[0], w[1] = min(w[0], r["s"]), max(w[1], r["e"])
+                        changed = True
+        in_win = lambda r: any(r["s"] >= w[0] and r["e"] <= w[1] for w in windows)
+        wd = datetime.datetime.strptime(d, "%Y%m%d").weekday()
+        for r in p1 + p2:
+            half = None
+            if in_win(r):
+                half = "R" if r["plan"] == "2안" else "L"
+            pink = bool(half) and cfg.get("pink_plan2", True)
+            if prev_keys is not None and r["plan"] != "2안" and (wd, r["s"], r["code"]) not in prev_keys:
+                pink = True
+            if (d, r["s"]) in hl:
+                pink = True
+            fp = r.get("force_pink")        # True: 켬 / False: 끔(2안·지난주 자동 분홍도 끔) / 없음: 자동
+            if fp is True:
+                pink = True
+            elif fp is False:
+                pink = False
+            blocks.append(dict(r, day0=di[d], day1=di[d], half=half, pink=pink, _ris=[ridx[id(r)]],
+                               label=clean_name(r["name"], cfg),
+                               shade=r.get("shade") or "", rule_shade=rule_shade(r, cfg),
+                               show_end=bool(r.get("show_end")) or rule_end(r, cfg)))
+        # 중간에 빈 시간 경고 (방송 종료 뒤는 제외)
+        t = None
+        for r in p1:
+            if t is not None and r["s"] > t:
+                log(f"[빈 시간] {d} {fmt_t(t)}~{fmt_t(r['s'])} 엑셀에 편성 없음")
+            t = r["e"] if t is None else max(t, r["e"])
+
+    # 이어진 날짜 묶기: 평일(0~4), 주말(5~6) 안에서 같은 코드·같은 시각이면 한 칸으로
+    merged = []
+    groups = [range(0, 5), range(5, 7)]
+    used = set()
+    key = lambda b: (b["code"], b["s"], b["e"])
+    full = [b for b in blocks if b["half"] is None]
+    by = {}
+    for b in full:
+        by.setdefault((b["day0"],) + key(b), b)
+    for b in sorted(full, key=lambda b: (b["day0"], b["s"])):
+        if id(b) in used:
+            continue
+        g = next((g for g in groups if b["day0"] in g), None)
+        end = b["day0"]
+        while g is not None and end + 1 in g:
+            nb = by.get((end + 1,) + key(b))
+            if nb is None or id(nb) in used or not b["code"]:
+                break
+            if nb.get("shade", "") != b.get("shade", "") or nb.get("rule_shade", "") != b.get("rule_shade", "") \
+                    or nb.get("show_end") != b.get("show_end") or bool(nb.get("bold")) != bool(b.get("bold")) \
+                    or (nb.get("hl") or "") != (b.get("hl") or "") or (nb.get("fg") or "") != (b.get("fg") or ""):
+                break
+            if (b.get("name_edited") or nb.get("name_edited")) and nb["label"] != b["label"]:
+                break
+            used.add(id(nb))
+            end += 1
+            b["pink"] = b["pink"] or nb["pink"]
+            b["_ris"] = b["_ris"] + nb["_ris"]
+        used.add(id(b))
+        merged.append(dict(b, day1=end))
+    merged += [b for b in blocks if b["half"] is not None]
+    return dates, merged
+
+
+def fmt_t(t):
+    m = t + DAY_START_MIN
+    return f"{m // 60:02d}:{m % 60:02d}"
+
+
+# ---------------------------------------------------------------- 그리기
+PAGE_W, PAGE_H = 595.0, 842.0
+X_COLS = {  # 원본 PDF에서 잰 좌표(pt)
+    "gL": (29.0, 42.0), "hL": (42.0, 55.4),
+    "days": [(55.4, 121.0), (121.0, 186.6), (186.6, 252.2), (252.2, 317.8), (317.8, 383.2),
+             (409.8, 475.5), (475.5, 541.1)],
+    "gM": (383.2, 396.5), "hM": (396.5, 409.8), "hR": (541.1, 554.4), "gR": (554.4, 567.7),
+}
+TABLE_TOP, HEAD_H, TABLE_BOTTOM = 107.5, 13.1, 766.6
+BLUE = (0.7216, 0.8, 0.8941)
+PINK = (1.0, 0.8824, 0.8824)
+LINE = (0.62, 0.62, 0.62)
+DARK = (0.15, 0.15, 0.15)
+ICON_COLORS = {"U": (233, 208, 35), "자": (117, 148, 204), "수": (249, 86, 35), "해": (194, 24, 91),
+               "R": (36, 144, 64), "L": (198, 148, 122), "AGE": (0, 0, 0)}
+ICON_ORIGINAL = dict(ICON_COLORS, 해=(243, 97, 220))      # 원본 PDF 색 (해: 연분홍)
+ICON_DARK_TEXT = {"U"}                                      # 이 아이콘들은 글자를 진회색으로
+ICON_NAMES = (("U", "UHD"), ("자", "자막"), ("수", "한국수어"), ("해", "화면해설"), ("R", "전국릴레이"),
+              ("L", "부분로컬"), ("AGE", "연령"))
+
+
+def icon_palette(cfg):
+    """설정의 icon_colors / icon_dark_text 를 반영한 (배경색, 글자색) 표"""
+    bg, fg = {}, {}
+    over = cfg.get("icon_colors", {}) or {}
+    dark = set(cfg.get("icon_dark_text", sorted(ICON_DARK_TEXT)))
+    for k, rgb in ICON_COLORS.items():
+        bg[k] = hex_to_rgb(over.get(k)) or tuple(c / 255 for c in rgb)
+        fg[k] = (0.1, 0.1, 0.1) if k in dark else (1, 1, 1)
+    return bg, fg
+ICON = 4.9
+FONT_SIZES = [6.5, 5.8, 5.1, 4.4, 3.6, 3.3, 2.8, 2.2]
+
+
+def find_font(cfg):
+    for f in cfg.get("font_files", []):
+        if os.path.exists(f):
+            return f
+    return None
+
+
+_FONT_CACHE = {}
+
+
+class Painter:
+    """도형은 한 Shape 에, 글자는 색깔별 TextWriter 에 모았다가 finish() 때 한 번에 그림 (빠름)
+    -> 도형이 먼저, 글자가 나중에 그려지므로 글자는 항상 도형 위에 보임"""
+    def __init__(self, page, fontfile):
+        self.page = page
+        self.font = _FONT_CACHE.get(fontfile)
+        if self.font is None and fontfile:
+            try:
+                self.font = pymupdf.Font(fontfile=fontfile)
+            except Exception:
+                self.font = None
+        if self.font is None:
+            self.font = pymupdf.Font("korea")
+        _FONT_CACHE[fontfile] = self.font
+        self.shape = page.new_shape()
+        self.writers = {}
+
+    def width(self, text, size):
+        return self.font.text_length(text, fontsize=size)
+
+    bold = False        # True 면 굵게 (같은 글자를 살짝 옆으로 한 번 더)
+
+    def text(self, x, y, s, size, color=(0, 0, 0)):
+        """(x, y) = 글자 왼쪽, 기준선"""
+        key = tuple(round(c, 3) for c in color)
+        tw = self.writers.get(key)
+        if tw is None:
+            tw = self.writers[key] = pymupdf.TextWriter(self.page.rect, color=key)
+        tw.append((x, y), s, font=self.font, fontsize=size)
+        if self.bold:
+            tw.append((x + size * 0.045, y), s, font=self.font, fontsize=size)
+
+    def text_center(self, cx, cy, s, size, color=(0, 0, 0)):
+        w = self.width(s, size)
+        self.text(cx - w / 2, cy + size * 0.36, s, size, color)
+
+    def rect(self, x0, y0, x1, y1, fill=None, stroke=LINE, width=0.3):
+        self.shape.draw_rect(pymupdf.Rect(x0, y0, x1, y1))
+        self.shape.finish(color=stroke, fill=fill, width=width if stroke else 0)
+
+    def finish(self):
+        self.shape.commit()
+        for tw in self.writers.values():
+            tw.write_text(self.page)
+
+
+def icon_list(b):
+    out = []
+    if b["uhd"]:
+        out.append("U")
+    if b["sign"]:
+        out.append("수")
+    if b["ad"]:
+        out.append("해")
+    if b["rl"] == "R":
+        out.append("R")
+    elif b["rl"] == "V":
+        out.append("L")
+    age = {"00": "A", "07": "7", "12": "12", "15": "15", "19": "19"}.get(b["age"])
+    if age:
+        out.append(("AGE", age))
+    if b["cc"]:
+        out.append("자")
+    return out
+
+
+def draw_icons(p, x1, top, icons, scale=1.0):
+    s = ICON * scale
+    x = x1 - s * len(icons)
+    for ic in icons:
+        if isinstance(ic, tuple):
+            key, label = ic
+        else:
+            key, label = ic, ic
+        bg, fg = getattr(p, "icon_pal", None) or icon_palette({})
+        p.rect(x, top, x + s, top + s, fill=bg[key], stroke=None)
+        fs = s * (0.62 if len(label) > 1 else 0.78)
+        p.text_center(x + s / 2, top + s / 2, label, fs, fg[key])
+        x += s
+    return s * len(icons)
+
+
+SUFFIX_RE = re.compile(r"^(.*?)\s*(\([^()]*\))$", re.S)
+
+
+def wrap_words(p, text, size, maxw):
+    words = text.split(" ")
+    lines, cur = [], ""
+    for w in words:
+        t = (cur + " " + w).strip()
+        if p.width(t, size) <= maxw:
+            cur = t
+            continue
+        if cur:
+            lines.append(cur)
+        cur = ""
+        if p.width(w, size) <= maxw:
+            cur = w
+        else:   # 한 단어가 너무 길면 글자 단위로 자름
+            for ch in w:
+                if p.width(cur + ch, size) <= maxw:
+                    cur += ch
+                else:
+                    lines.append(cur)
+                    cur = ch
+    if cur:
+        lines.append(cur)
+    return lines
+
+
+def layout_label(p, label, w, h):
+    """칸에 들어갈 줄 목록 [(글자, 크기)] 과 줄 높이 합"""
+    m = SUFFIX_RE.match(label)
+    main, suf = (m.group(1), m.group(2)) if m else (label, "")
+    forced = bool(suf) and bool(re.search(r"\n\s*\([^()]*\)\s*$", label))   # '|(목포M)' 처럼 직접 줄바꿈
+    for size in FONT_SIZES:
+        lh = size * 1.18
+        ss = round(size * 0.8, 1)
+        parts = main.split("\n") if main else []
+        if parts and size < 4.0 and len(parts) > 1:
+            parts = [" ".join(parts)]       # 아주 작은 칸은 한 줄로
+        lines = [ln for part in parts for ln in wrap_words(p, part, size, w)]
+        items = [(ln, size) for ln in lines]
+        if suf and forced:
+            items.append((suf, size))
+        elif suf:
+            short = suf == "(재)"
+            if items and (short or h < lh * (len(items) + 1)) and \
+                    p.width(items[-1][0], size) + p.width(suf, ss) + 1 <= w:
+                items[-1] = (items[-1][0], size, suf, ss)
+            else:
+                items.append((suf, ss))
+        total = sum(it[1] * 1.18 for it in items)
+        if total <= h + 0.5 and all(p.width(it[0], it[1]) + (p.width(it[2], it[3]) if len(it) > 2 else 0) <= w + 0.5
+                                    for it in items):
+            return items, total
+    return [(label.replace("\n", " "), FONT_SIZES[-1])], FONT_SIZES[-1] * 1.18
+
+
+def time_scale(blocks):
+    """시간 -> y 좌표. 짧은 구간도 최소 높이를 갖도록 구간별 높이를 정한 뒤 표 높이에 맞춤"""
+    pts = {0, DAY_LEN_MIN}
+    pts.update(range(0, DAY_LEN_MIN, 60))
+    for b in blocks:
+        pts.add(max(0, min(DAY_LEN_MIN, b["s"])))
+        pts.add(max(0, min(DAY_LEN_MIN, b["e"])))
+    pts = sorted(pts)
+    avail = TABLE_BOTTOM - (TABLE_TOP + HEAD_H)
+    k = avail / DAY_LEN_MIN
+    seg = [max((b - a) * k, 2.6) for a, b in zip(pts, pts[1:])]
+    scale = avail / sum(seg)
+    ys = [TABLE_TOP + HEAD_H]
+    for s in seg:
+        ys.append(ys[-1] + s * scale)
+    table = dict(zip(pts, ys))
+
+    def y_of(t):
+        t = max(0, min(DAY_LEN_MIN, t))
+        if t in table:
+            return table[t]
+        for a, b in zip(pts, pts[1:]):
+            if a <= t <= b:
+                return table[a] + (table[b] - table[a]) * (t - a) / (b - a)
+        return ys[-1]
+    return y_of
+
+
+def make_stamp(cfg, printed_at, dates):
+    """오른쪽 위 날짜 글자"""
+    mode = cfg.get("stamp_mode", "저장 시각")
+    wk = "월화수목금토일"
+    if mode == "표시 안 함":
+        return ""
+    if mode == "직접 입력":
+        return str(cfg.get("stamp_text", ""))
+    if mode == "엑셀 조회일" and cfg.get("_query_date"):
+        q = datetime.datetime.strptime(cfg["_query_date"], "%Y%m%d")
+        return f"{q.year}년 {q.month}월 {q.day}일 ({wk[q.weekday()]})"
+    if mode == "주간 범위" and dates:
+        a = datetime.datetime.strptime(dates[0], "%Y%m%d")
+        b = datetime.datetime.strptime(dates[-1], "%Y%m%d")
+        return f"{a.year}년 {a.month}월 {a.day}일 ({wk[a.weekday()]}) ~ {b.month}월 {b.day}일 ({wk[b.weekday()]})"
+    ampm = "AM" if printed_at.hour < 12 else "PM"
+    h12 = printed_at.hour % 12 or 12
+    return (f"{printed_at.year}년 {printed_at.month}월 {printed_at.day}일 ({wk[printed_at.weekday()]}) "
+            f"{ampm} {h12:02d}:{printed_at.minute:02d}")
+
+
+def draw_schedule(dates, blocks, cfg, out_path=None, printed_at=None):
+    """out_path 가 있으면 저장, 없으면 문서(doc)를 그대로 돌려줌 (화면 미리보기용).
+    반환: (doc 또는 None, 칸 위치 목록[{rect, block}])"""
+    geom = []
+    doc = pymupdf.open()
+    page = doc.new_page(width=PAGE_W, height=PAGE_H)
+    p = Painter(page, find_font(cfg))
+    p.icon_pal = icon_palette(cfg)
+    y_of = time_scale(blocks)
+    printed_at = printed_at or datetime.datetime.now()
+
+    # 제목
+    logo = cfg.get("logo_file")
+    if logo and not os.path.isabs(logo):
+        logo = next((os.path.join(d, logo) for d in (DATA_DIR, APP_DIR) if os.path.isfile(os.path.join(d, logo))), "")
+    if logo and os.path.isfile(logo):
+        page.insert_image(pymupdf.Rect(195.9, 33.8, 395.1, 82.8), filename=logo, keep_proportion=True)
+    else:
+        p.bold = bool(cfg.get("title_bold"))
+        try:
+            tsz = max(8.0, min(40.0, float(cfg.get("title_size", 22))))
+        except (TypeError, ValueError):
+            tsz = 22.0
+        p.text_center(PAGE_W / 2, 56, cfg.get("title_text", "MBC 주간편성표"), tsz, (0.17, 0.24, 0.33))
+        p.bold = False
+
+    # 범례 줄
+    p.rect(29, 86.5, 567.7, 98.5, fill=(0.9686, 0.9686, 0.9686), stroke=None)
+    x = 40
+    for key, label, name in (("U", "U", "UHD"), ("자", "자", "자막"), ("수", "수", "한국수어"), ("해", "해", "화면해설"),
+                             ("R", "R", "전국릴레이"), ("L", "L", "부분로컬")):
+        draw_icons(p, x + 6.5, 89.3, [(key, label)], scale=6.5 / ICON)
+        p.text(x + 8, 94.8, name, 5.8)
+        x += 10 + p.width(name, 5.8) + 6
+    for lab in ("A", "7", "12", "15", "19"):
+        draw_icons(p, x + 6.5, 89.3, [("AGE", lab)], scale=6.5 / ICON)
+        x += 7.6
+    p.text(x + 1, 94.8, "연령", 5.8)
+    stamp = make_stamp(cfg, printed_at, dates)
+    if stamp:
+        p.text(567.7 - p.width(stamp, 8.7), 95.5, stamp, 8.7, (0.2, 0.2, 0.2))
+
+    # 머리글
+    top, body = TABLE_TOP, TABLE_TOP + HEAD_H
+    for key, txt in (("gL", "급"), ("hL", "시"), ("gM", "급"), ("hM", "시"), ("hR", "시"), ("gR", "급")):
+        x0, x1 = X_COLS[key]
+        p.rect(x0, top, x1, body, fill=BLUE, stroke=DARK)
+        p.text_center((x0 + x1) / 2, top + HEAD_H / 2, txt, 8.2)
+    for i, d in enumerate(dates[:7]):
+        x0, x1 = X_COLS["days"][i]
+        dt = datetime.datetime.strptime(d, "%Y%m%d")
+        p.rect(x0, top, x1, body, fill=BLUE, stroke=DARK)
+        p.text_center((x0 + x1) / 2, top + HEAD_H / 2, f"{dt.month}/{dt.day}({'월화수목금토일'[dt.weekday()]})", 8.7)
+
+    # 시 열
+    for key in ("hL", "hM", "hR"):
+        x0, x1 = X_COLS[key]
+        for hh in range(24):
+            y0, y1 = y_of(hh * 60), y_of(hh * 60 + 60)
+            p.rect(x0, y0, x1, y1, fill=BLUE, stroke=DARK)
+            p.text_center((x0 + x1) / 2, (y0 + y1) / 2, str((hh + 5) % 12 or 12), 6.5)
+    # 급 열
+    for key, gk in (("gL", "grade_weekday"), ("gM", "grade_weekend"), ("gR", "grade_weekend")):
+        x0, x1 = X_COLS[key]
+        for s, e, g in cfg.get(gk, []):
+            y0, y1 = y_of(hhmm_to_min(s) - DAY_START_MIN), y_of(hhmm_to_min(e) - DAY_START_MIN)
+            p.rect(x0, y0, x1, y1, fill=BLUE, stroke=DARK)
+            if g == "SA":
+                p.text_center((x0 + x1) / 2, (y0 + y1) / 2 - 4.5, "S", 8.2)
+                p.text_center((x0 + x1) / 2, (y0 + y1) / 2 + 4.5, "A", 8.2)
+            else:
+                p.text_center((x0 + x1) / 2, (y0 + y1) / 2, g, 8.2)
+
+    # 날짜 칸 바탕 (편성 없는 시간은 흰 칸)
+    for i in range(min(7, len(dates))):
+        x0, x1 = X_COLS["days"][i]
+        p.rect(x0, body, x1, TABLE_BOTTOM, fill=(1, 1, 1), stroke=LINE)
+
+    # 프로그램 칸
+    for b in sorted(blocks, key=lambda b: (b["day0"], b["s"])):
+        if b["day0"] > 6:
+            continue
+        x0 = X_COLS["days"][b["day0"]][0]
+        x1 = X_COLS["days"][min(b["day1"], 6)][1]
+        if b["half"] == "L":
+            x1 = (x0 + x1) / 2
+        elif b["half"] == "R":
+            x0 = (x0 + x1) / 2
+        y0, y1 = y_of(b["s"]), y_of(b["e"])
+        if y1 - y0 < 0.5:
+            continue
+        geom.append({"rect": (x0, y0, x1, y1), "block": b})
+        fill = hex_to_rgb(b.get("shade")) or (PINK if b["pink"] else None) or hex_to_rgb(b.get("rule_shade")) \
+            or (1, 1, 1)
+        p.rect(x0, y0, x1, y1, fill=fill, stroke=LINE)
+        h = y1 - y0
+        mm = f"{(b['s'] + DAY_START_MIN) % 60:02d}"
+        msz = 4.4 if h >= 4.6 else max(2.2, h * 0.9)
+        p.bold = bool(b.get("bold"))
+        if b.get("local") and h >= 9:
+            p.text(x0 + 1.0, y0 + h / 2 + 2.2, mm, 6.0, (0.3, 0.3, 0.3))   # 로컬은 분 표시를 크게
+        else:
+            p.text(x0 + 0.3, y0 + msz * 0.8, mm, msz)
+        if b.get("show_end") and h >= msz * 2:      # 끝 시각: 칸 왼쪽 아래
+            em = b["e"] + DAY_START_MIN
+            et = cfg.get("end_label_format", "{mm}").format(hh=f"{em // 60:02d}", mm=f"{em % 60:02d}")
+            p.text(x0 + 0.3, y1 - 0.7, et, msz, hex_to_rgb(cfg.get("end_label_color")) or (0, 0, 0))
+        icons = icon_list(b)
+        isc = 1.0 if h >= ICON else max(0.5, h / ICON)
+        iw = draw_icons(p, x1, y0, icons, scale=isc) if icons else 0
+        if b["half"] and cfg.get("plan_label") and h >= 8:
+            p.text(x0 + 0.4, y1 - 0.6, "1안" if b["half"] == "L" else "2안", 3.0, (0.75, 0.2, 0.3))
+        # 글자: 칸이 낮으면 분 표시·아이콘 옆 공간에, 높으면 칸 전체 가운데에
+        lw = p.width(mm, msz) + 1
+        if b.get("local") and h >= 9:       # 로컬: 왼쪽의 큰 분 표시와 오른쪽 아이콘을 피해서 가운데
+            big = p.width(mm, 6.0) + 2.5
+            tx0, tx1, ty0, ty1 = x0 + big, x1 - max(iw, big) * (1 if iw else 0.3), y0, y1
+        elif h < 11:
+            tx0, tx1, ty0, ty1 = x0 + lw, x1 - iw - 0.5, y0, y1
+        else:
+            tx0, tx1, ty0, ty1 = x0 + 1.5, x1 - 1.5, y0 + min(ICON, h * 0.15), y1
+        items, total = layout_label(p, b["label"], tx1 - tx0, ty1 - ty0)
+        cy = (ty0 + ty1) / 2 - total / 2
+        fg = hex_to_rgb(b.get("fg")) or (0, 0, 0)
+        hl = hex_to_rgb(b.get("hl"))
+        for it in items:
+            size = it[1]
+            lh = size * 1.18
+            if len(it) > 2:
+                wa, wb = p.width(it[0], size), p.width(it[2], it[3])
+                tw = wa + wb + 0.6
+            else:
+                tw = p.width(it[0], size)
+            sx = (tx0 + tx1) / 2 - tw / 2
+            if hl:      # 형광펜: 글자 줄 뒤에만 색
+                p.rect(sx - 0.8, cy + lh * 0.08, sx + tw + 0.8, cy + lh * 0.98, fill=hl, stroke=None)
+            if len(it) > 2:
+                p.text(sx, cy + lh * 0.8, it[0], size, fg)
+                p.text(sx + wa + 0.6, cy + lh * 0.8, it[2], it[3], fg)
+            else:
+                p.text(sx, cy + lh / 2 + size * 0.36, it[0], size, fg)
+            cy += lh
+        p.bold = False
+
+    # 바깥 테두리
+    p.rect(29.0, TABLE_TOP, 567.7, TABLE_BOTTOM, fill=None, stroke=DARK, width=0.6)
+    p.finish()
+    doc.set_metadata({"title": "주간편성표", "creator": f"{APP_NAME} {VERSION}"})
+    if not out_path:
+        return doc, geom
+    save_pdf(doc, out_path)
+    return None, geom
+
+
+def page_png(doc_or_path, zoom=1.0):
+    doc = pymupdf.open(doc_or_path) if isinstance(doc_or_path, str) else doc_or_path
+    png = doc[0].get_pixmap(matrix=pymupdf.Matrix(zoom, zoom)).tobytes("png")
+    if isinstance(doc_or_path, str):
+        doc.close()
+    return png
+
+
+def save_pdf(doc, out_path, subset=True):
+    """PDF 저장. 글꼴을 줄여(subset) 파일을 작게 하되, 저장한 파일을 다시 그려 화면과 똑같은지 확인.
+    다르면 글꼴을 줄이지 않고 다시 저장 -> 화면 = 미리보기 = 출력물 보장"""
+    ref = page_png(doc)
+    if subset:
+        try:
+            doc.subset_fonts()
+        except Exception:
+            subset = False
+    doc.save(out_path, garbage=3, deflate=True)
+    if subset and page_png(out_path) != ref:
+        return False        # 글꼴 줄이기로 모양이 달라짐 -> 부른 쪽에서 다시 그려 전체 글꼴로 저장
+    return True
+
+
+def compose(rows, prev_rows=None, cfg=None, printed_at=None, log=lambda s: None):
+    """화면 보기·미리보기·PDF 저장이 모두 쓰는 단 하나의 그리기 함수"""
+    cfg = cfg or load_config()
+    dates, blocks = build_blocks(rows, cfg, prev_rows, log)
+    if not dates:
+        raise ValueError("편성 줄이 없습니다.")
+    doc, geom = draw_schedule(dates, blocks, cfg, None, printed_at)
+    return doc, geom, dates, blocks
+
+
+def generate(rows, out_path, prev_rows=None, log=print, printed_at=None, cfg_over=None):
+    cfg = load_config()
+    cfg.update(cfg_over or {})
+    printed_at = printed_at or datetime.datetime.now()
+    doc, _, dates, blocks = compose(rows, prev_rows, cfg, printed_at, log)
+    if not save_pdf(doc, out_path):
+        doc.close()
+        doc, _, dates, blocks = compose(rows, prev_rows, cfg, printed_at)
+        save_pdf(doc, out_path, subset=False)
+        log("[알림] 글꼴 줄이기에서 모양이 달라져, 글꼴 전체를 넣어 저장했습니다 (파일이 조금 큼).")
+    doc.close()
+    n2 = sum(1 for r in rows if r["plan"] == "2안")
+    log(f"[완료] {dates[0]}~{dates[-1]}  프로그램 {len(rows)}건(2안 {n2}건) -> 칸 {len(blocks)}개")
+    log(f"[저장] {out_path}")
+    if not find_font(cfg):
+        log("[주의] 설정한 글꼴 파일을 찾지 못해 기본 한글 글꼴로 만들었습니다.")
+    return out_path
+
+
+def render_live(rows, prev_rows=None, zoom=1.4, cfg=None):
+    """화면용: PDF 저장과 같은 compose() 로 그려서 PNG(바이트)와 칸 위치를 돌려줌"""
+    doc, geom, dates, _ = compose(rows, prev_rows, cfg)
+    png = page_png(doc, zoom)
+    doc.close()
+    return png, geom, dates
+
+
+def make_pdf(xlsx, out_path=None, prev_xlsx=None, log=print):
+    rows = read_schedule_xlsx(xlsx)
+    apply_local_rules(rows, load_config(), log)
+    over = {"_query_date": read_query_date(xlsx)}
+    prev = read_schedule_xlsx(prev_xlsx) if prev_xlsx else None
+    return generate(rows, out_path or os.path.splitext(xlsx)[0] + "_편성표.pdf", prev, log, cfg_over=over)
+
+
+def add_shade_rule(match, color):
+    cfg = load_config()
+    rules = [r for r in cfg.get("shade_rules", []) if r.get("match") != match]
+    if color:
+        rules.append({"match": match, "color": color})
+    cfg["shade_rules"] = rules
+    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, ensure_ascii=False, indent=2)
+
+
+WEEKDAYS = "월화수목금토일"
+
+
+def parse_days(spec):
+    """'월-금', '토-일', '월,수,금', '매일' -> 요일 번호 집합(월=0)"""
+    spec = str(spec).replace(" ", "")
+    if spec in ("매일", "전체", ""):
+        return set(range(7))
+    out = set()
+    for part in spec.split(","):
+        if "-" in part or "~" in part:
+            a, b = re.split("[-~]", part)[:2]
+            if a in WEEKDAYS and b in WEEKDAYS:
+                i, j = WEEKDAYS.index(a), WEEKDAYS.index(b)
+                out.update(range(i, j + 1) if i <= j else list(range(i, 7)) + list(range(0, j + 1)))
+        elif part in WEEKDAYS:
+            out.add(WEEKDAYS.index(part))
+    return out
+
+
+def insert_local(rows, dates, name, s, e, shade="#d9d9d9", bold=True, code=None, extra=None, log=print):
+    """고른 날짜마다 1안 편성의 s~e 를 로컬 프로그램으로 바꿈.
+    겹치는 전국 프로그램은 앞/뒤 조각으로 잘라 남김(같은 코드라 요일끼리 계속 한 칸으로 묶임).
+    반환: 새로 넣은 로컬 줄 목록"""
+    code = code or ("LOCAL-" + norm_key(name))
+    added = []
+    for d in dates:
+        day = [r for r in rows if r["date"] == d and r["plan"] != "2안"]
+        if any(r["date"] == d and r["plan"] == "2안" and r["s"] < e and r["e"] > s for r in rows):
+            log(f"[주의] {day_label(d)} 이 시간에 2안이 있습니다. 로컬은 1안에만 넣습니다.")
+        for r in day:
+            if r["s"] < e and r["e"] > s:       # 겹침
+                rows.remove(r)
+                if r["s"] < s:
+                    rows.append(dict(r, e=s, edited=True, cut=True))
+                if r["e"] > e:
+                    rows.append(dict(r, s=e, edited=True, cut=True))
+                log(f"[로컬] {day_label(d)} '{r['name']}' {fmt_t(r['s'])}~{fmt_t(r['e'])} 중 "
+                    f"{fmt_t(max(s, r['s']))}~{fmt_t(min(e, r['e']))} 을 로컬로")
+        new = {"date": d, "code": code, "name": name, "s": s, "e": e, "uhd": False, "cc": True, "ad": False,
+               "sign": False, "age": "", "rl": "", "rerun": False, "plan": "1안", "shade": shade or "",
+               "bold": bool(bold), "local": True, "edited": True}
+        new.update(extra or {})
+        rows.append(new)
+        added.append(new)
+    return added
+
+
+def apply_local_rules(rows, cfg, log=print):
+    """설정의 local_rules 를 이번 주 편성에 적용 (엑셀 불러올 때)"""
+    dates = sorted({r["date"] for r in rows})
+    n = 0
+    for rule in cfg.get("local_rules", []):
+        try:
+            s = hhmm_to_min(rule["start"]) - DAY_START_MIN
+            e = hhmm_to_min(rule["end"]) - DAY_START_MIN
+        except (KeyError, ValueError):
+            log(f"[주의] 로컬 규칙 형식 오류: {rule}")
+            continue
+        wd = parse_days(rule.get("days", "월-금"))
+        target = [d for d in dates if datetime.datetime.strptime(d, "%Y%m%d").weekday() in wd]
+        if not target:
+            continue
+        insert_local(rows, target, rule.get("name", "로컬"), s, e, rule.get("shade", "#d9d9d9"),
+                     rule.get("bold", True), rule.get("code"),
+                     {k: rule[k] for k in ("cc", "age", "rl", "uhd", "ad", "sign") if k in rule}, log=lambda x: None)
+        n += 1
+        log(f"[로컬 규칙] '{rule.get('name')}' {rule.get('days', '월-금')} {rule['start']}~{rule['end']} 넣음")
+    return n
+
+
+def add_local_rule(rule):
+    cfg = load_config()
+    rules = [r for r in cfg.get("local_rules", []) if not (r.get("name") == rule["name"] and
+                                                          r.get("start") == rule["start"])]
+    rules.append(rule)
+    cfg["local_rules"] = rules
+    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, ensure_ascii=False, indent=2)
+
+
+# ---------------------------------------------------------------- 프로젝트 파일 (.tvproj)
+PROJ_EXT = ".tvproj"
+RECENT_PATH = os.path.join(DATA_DIR, "recent_projects.json")
+PROJ_CFG_KEYS = ("title_text", "title_size", "title_bold", "stamp_mode", "stamp_text")
+
+
+def save_project(path, data):
+    """편성 줄(고친 내용 포함)·엑셀 원래 내용·제목/날짜 설정을 한 파일에 저장 -> 엑셀 없이도 다시 열어 편집"""
+    data = dict(data, format="tv_schedule_project", version=VERSION,
+                saved=datetime.datetime.now().isoformat(timespec="seconds"))
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False)
+    os.replace(tmp, path)
+    add_recent(path)
+    return path
+
+
+def load_project(path):
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    if data.get("format") != "tv_schedule_project" or not isinstance(data.get("rows"), list):
+        raise ValueError("편성표 프로젝트 파일이 아닙니다.")
+    add_recent(path)
+    return data
+
+
+def recent_projects():
+    try:
+        with open(RECENT_PATH, "r", encoding="utf-8") as f:
+            lst = json.load(f)
+        return [p for p in lst if os.path.isfile(p)]
+    except Exception:
+        return []
+
+
+def add_recent(path):
+    path = os.path.abspath(path)
+    lst = [p for p in recent_projects() if os.path.abspath(p) != path]
+    lst.insert(0, path)
+    try:
+        with open(RECENT_PATH, "w", encoding="utf-8") as f:
+            json.dump(lst[:10], f, ensure_ascii=False, indent=1)
+    except Exception:
+        pass
+
+
+def project_info(path):
+    """최근 목록에 보일 글: 파일명 · 주간 · 저장 시각"""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            d = json.load(f)
+        dates = sorted({r["date"] for r in d.get("rows", [])})
+        wk = f"{day_label(dates[0])}~{day_label(dates[-1])}" if dates else ""
+        return f"{os.path.basename(path)}   ({wk} · 저장 {d.get('saved', '')[:16].replace('T', ' ')})"
+    except Exception:
+        return os.path.basename(path)
+
+
+# ---------------------------------------------------------------- 작업 파일 (고친 내용 저장)
+def work_path(xlsx):
+    return os.path.splitext(xlsx)[0] + "_작업.json"
+
+
+def save_work(xlsx, rows, edits):
+    with open(work_path(xlsx), "w", encoding="utf-8") as f:
+        json.dump({"source": os.path.basename(xlsx), "saved": datetime.datetime.now().isoformat(timespec="seconds"),
+                   "edits": edits, "rows": rows}, f, ensure_ascii=False, indent=0)
+    return work_path(xlsx)
+
+
+def load_work(xlsx):
+    with open(work_path(xlsx), "r", encoding="utf-8") as f:
+        w = json.load(f)
+    return w["rows"], w.get("edits", 0), w.get("saved", "")
+
+
+# ---------------------------------------------------------------- 창(GUI)
+def day_label(d):
+    dt = datetime.datetime.strptime(d, "%Y%m%d")
+    return f"{dt.month}/{dt.day}({'월화수목금토일'[dt.weekday()]})"
+
+
+def icon_text(r):
+    return " ".join(i[1] if isinstance(i, tuple) else i for i in icon_list(r))
+
+
+class App:
+    COLS = (("date", "날짜", 80), ("s", "시작", 55), ("e", "끝", 55), ("name", "프로그램명", 330),
+            ("plan", "안", 40), ("icons", "아이콘", 120), ("bg", "배경", 70), ("end", "끝표시", 50), ("edited", "고침", 45))
+
+    def __init__(self):
+        import tkinter as tk
+        from tkinter import ttk
+        self.tk, self.ttk = tk, ttk
+        self.root = root = tk.Tk()
+        root.title(f"{APP_NAME} {VERSION}")
+        root.geometry("1400x900")
+        self.xlsx = None
+        self.rows, self.orig = [], []
+        self.t0 = None
+        self.sel = None             # 고른 편성 줄 번호
+        self.deleted = 0
+        self.zoom = 1.4
+        self._redraw_id = None
+        self.geom, self.dates = [], []
+        self.diff_keys = set()
+        self._loading = self._quiet = False
+        self._prev_path = self._prev_rows = None
+        self.cfg = load_config()
+        self.img = None
+        self.pink_state = {}        # 줄 번호 -> 지금 편성표에서 분홍인지
+        self.undo_stack, self.redo_stack = [], []
+        self.proj_path = None       # 지금 프로젝트 파일
+        self.multi = []             # 여러 칸 선택 (Ctrl+클릭 / Shift+클릭)
+        self._multi_warned = False
+        self._last_tag, self._last_t = None, 0.0
+        self.saved = True
+        self.day = tk.StringVar(value="전체")
+        self.v_prev = tk.StringVar()
+        self.v_x = tk.StringVar()
+
+        # 맨 위 줄 (첫 화면에도 보임): [엑셀 열기] [지난주 엑셀] [설정] 상태
+        top = tk.Frame(root)
+        top.pack(fill=tk.X, padx=8, pady=6)
+        self.topbar = top
+        tk.Button(top, text="엑셀 열기", width=10, command=lambda: (self.v_x.set(""), self.open_xlsx())).pack(
+            side=tk.LEFT)
+        tk.Button(top, text="프로젝트 열기", command=lambda: self.open_project()).pack(side=tk.LEFT, padx=(6, 0))
+        self.recent_mb = tk.Menubutton(top, text="최근 ▼", relief="raised")
+        self.recent_mb.pack(side=tk.LEFT, padx=(2, 0))
+        self.recent_menu = tk.Menu(self.recent_mb, tearoff=0)
+        self.recent_mb.config(menu=self.recent_menu)
+        tk.Button(top, text="⚙ 설정 (제목/날짜/아이콘)", command=self.toggle_head).pack(side=tk.LEFT, padx=6)
+        self.status = tk.Label(top, text=f"[{VERSION}] 상단의 '엑셀 열기'를 눌러 시작하세요.")
+        self.status.pack(side=tk.LEFT, padx=16)
+
+        # 위쪽 실행 버튼 줄
+        act = tk.Frame(root)
+        act.pack(fill=tk.X, padx=8, pady=(0, 4))
+        self.act = act
+        abtn = lambda text, cmd, color=None: tk.Button(act, text=text, command=cmd,
+                                                       bg=color or "#e0e0e0").pack(side=tk.LEFT, padx=2)
+        self.btn_undo = tk.Button(act, text="↶ 되돌리기", command=self.undo, state=tk.DISABLED)
+        self.btn_undo.pack(side=tk.LEFT, padx=2)
+        self.btn_redo = tk.Button(act, text="↷ 다시 하기", command=self.redo, state=tk.DISABLED)
+        self.btn_redo.pack(side=tk.LEFT, padx=(2, 10))
+        abtn("분홍 모두 지우기", self.clear_all_pink, "#ffd6d6")
+        abtn("PDF 저장", self.make, "#4CAF50")
+        root.bind("<Escape>", lambda e: self.clear_selection())
+        root.bind_all("<Control-s>", lambda e: (self.save(), "break")[1])
+        root.bind_all("<Control-o>", lambda e: (self.open_project(), "break")[1])
+        for k in ("<Control-z>", "<Control-Z>"):
+            root.bind_all(k, lambda e: (self.undo(), "break")[1])
+        for k in ("<Control-y>", "<Control-Y>", "<Control-Shift-Z>"):
+            root.bind_all(k, lambda e: (self.redo(), "break")[1])
+        abtn("프로젝트 저장", self.save, "#c8e6c9")
+        abtn("다른 이름으로", lambda: self.save(ask=True))
+        abtn("설정 파일 열기", self.open_config)
+        abtn("큰 창 미리보기", self.preview, "#bbdefb")
+
+        # 제목 · 날짜 (바꾸면 바로 편성표에 반영, 설정에 저장되어 다음 주에도 그대로)
+        cfg0 = load_config()
+        head = tk.Frame(root)
+        head.pack(fill=tk.X, padx=8, pady=(0, 4))
+        self.head = head
+        self.head_visible = False
+        self.v_title = tk.StringVar(value=cfg0.get("title_text", "MBC 주간편성표"))
+        self.v_tsize = tk.StringVar(value=str(cfg0.get("title_size", 22)))
+        self.v_tbold = tk.BooleanVar(value=bool(cfg0.get("title_bold")))
+        self.v_smode = tk.StringVar(value=cfg0.get("stamp_mode", "저장 시각"))
+        self.v_stext = tk.StringVar(value=cfg0.get("stamp_text", ""))
+        tk.Label(head, text="제목").pack(side=tk.LEFT)
+        tk.Entry(head, textvariable=self.v_title, width=24).pack(side=tk.LEFT, padx=2)
+        tk.Label(head, text="크기").pack(side=tk.LEFT)
+        ttk.Combobox(head, textvariable=self.v_tsize, values=("16", "18", "20", "22", "24", "26", "28", "32"),
+                     width=4).pack(side=tk.LEFT, padx=2)
+        tk.Checkbutton(head, text="굵게", variable=self.v_tbold).pack(side=tk.LEFT)
+        tk.Label(head, text="   오른쪽 위 날짜").pack(side=tk.LEFT)
+        ttk.Combobox(head, textvariable=self.v_smode, width=10, state="readonly",
+                     values=("저장 시각", "엑셀 조회일", "주간 범위", "직접 입력", "표시 안 함")).pack(side=tk.LEFT, padx=2)
+        self.ent_stext = tk.Entry(head, textvariable=self.v_stext, width=34)
+        self.ent_stext.pack(side=tk.LEFT, padx=2)
+        tk.Label(head, text="(직접 입력일 때)", fg="#777").pack(side=tk.LEFT)
+        tk.Button(head, text="아이콘 색 ...", command=self.icon_color_dialog).pack(side=tk.LEFT, padx=10)
+        self._head_id = None
+        for v in (self.v_title, self.v_tsize, self.v_tbold, self.v_smode, self.v_stext):
+            v.trace_add("write", lambda *a: self.head_changed())
+
+        nb = ttk.Notebook(root)
+        nb.pack(fill=tk.BOTH, expand=True, padx=8, pady=2)
+        self.nb = nb
+
+        # ---- 탭 1: 편성표 보면서 고치기
+        live = tk.Frame(nb)
+        nb.add(live, text="  편성표 보면서 고치기  ")
+        pw = tk.PanedWindow(live, orient=tk.HORIZONTAL, sashwidth=6)
+        pw.pack(fill=tk.BOTH, expand=True)
+        left = tk.Frame(pw)
+        pw.add(left, stretch="always")
+        zbar = tk.Frame(left)
+        zbar.pack(fill=tk.X)
+        tk.Button(zbar, text="－", width=3, command=lambda: self.set_zoom(self.zoom / 1.2)).pack(side=tk.LEFT)
+        self.zoom_lbl = tk.Label(zbar, text="140%", width=6)
+        self.zoom_lbl.pack(side=tk.LEFT)
+        tk.Button(zbar, text="＋", width=3, command=lambda: self.set_zoom(self.zoom * 1.2)).pack(side=tk.LEFT)
+        tk.Button(zbar, text="한 장 맞춤", command=self.zoom_fit).pack(side=tk.LEFT, padx=4)
+        self.show_marks = tk.BooleanVar(value=True)
+        tk.Checkbutton(zbar, text="선택·차이 테두리 보기 (끄면 출력물 모양 그대로)", variable=self.show_marks,
+                       command=self.draw_marks).pack(side=tk.LEFT, padx=6)
+        self.draw_lbl = tk.Label(zbar, text="클릭: 고르기 · Ctrl+클릭: 여러 칸 · Shift+클릭: 묶인 요일 전체 · Esc: 풀기 · 오른쪽 버튼: 메뉴", fg="#555")
+        self.draw_lbl.pack(side=tk.LEFT, padx=8)
+        cvf = tk.Frame(left)
+        cvf.pack(fill=tk.BOTH, expand=True)
+        self.cv = tk.Canvas(cvf, bg="#808080", highlightthickness=0)
+        ys = tk.Scrollbar(cvf, orient=tk.VERTICAL, command=self.cv.yview)
+        xs = tk.Scrollbar(cvf, orient=tk.HORIZONTAL, command=self.cv.xview)
+        self.cv.configure(yscrollcommand=ys.set, xscrollcommand=xs.set)
+        ys.pack(side=tk.RIGHT, fill=tk.Y)
+        xs.pack(side=tk.BOTTOM, fill=tk.X)
+        self.cv.pack(fill=tk.BOTH, expand=True)
+        self.cv.bind("<Button-1>", self.on_canvas_click)
+        self.cv.bind("<Button-3>", self.on_canvas_menu)
+        self.cv.bind("<Double-1>", lambda e: self.edit_row())
+        self.cv.bind("<MouseWheel>", self.on_wheel)
+        self.cv.bind("<Button-4>", lambda e: self.cv.yview_scroll(-3, "units"))
+        self.cv.bind("<Button-5>", lambda e: self.cv.yview_scroll(3, "units"))
+
+        right = tk.Frame(pw, padx=6)
+        pw.add(right, width=380, stretch="never")
+        self.build_form(right)
+
+        # ---- 탭 2: 전체 표
+        table = tk.Frame(nb)
+        nb.add(table, text="  전체 표  ")
+        self.dayfrm = tk.Frame(table)
+        self.dayfrm.pack(fill=tk.X)
+        mid = tk.Frame(table)
+        mid.pack(fill=tk.BOTH, expand=True, pady=4)
+        self.tree = ttk.Treeview(mid, columns=[c[0] for c in self.COLS], show="headings", height=18)
+        for key, title, w in self.COLS:
+            self.tree.heading(key, text=title)
+            self.tree.column(key, width=w, anchor="w" if key == "name" else "center")
+        self.tree.tag_configure("pink", background="#ffe1e1")
+        self.tree.tag_configure("edited", foreground="#c62828")
+        sb = ttk.Scrollbar(mid, orient=tk.VERTICAL, command=self.tree.yview)
+        self.tree.configure(yscrollcommand=sb.set)
+        self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        sb.pack(side=tk.LEFT, fill=tk.Y)
+        self.tree.bind("<Double-1>", lambda e: self.edit_row())
+        self.tree.bind("<<TreeviewSelect>>", self.on_tree_select)
+
+        side = tk.Frame(mid)
+        side.pack(side=tk.LEFT, fill=tk.Y, padx=8)
+        btn = lambda text, cmd, color=None: tk.Button(side, text=text, command=cmd, width=22,
+                                                      bg=color or "#e0e0e0").pack(pady=2)
+        btn("줄 고치기 (더블클릭)", self.edit_row)
+        btn("줄 추가", self.add_row)
+        btn("줄 삭제", self.del_row)
+        btn("분홍 켜기 / 끄기", self.toggle_pink, "#ffd6d6")
+        btn("음영 넣기 / 빼기", self.shade_dialog, "#d9d9d9")
+        btn("끝 시각 표시 켜기 / 끄기", self.toggle_end, "#ffcdd2")
+        btn("이 줄 엑셀 원래대로", self.revert_row)
+        btn("로컬 끼워 넣기", self.local_dialog, "#cfd8dc")
+
+        self.logbox = tk.Text(root, height=8)
+        self.logbox.pack(fill=tk.BOTH, padx=8, pady=(0, 8))
+
+        # 첫 화면: 엑셀을 열기 전에는 안내만 (회색 빈 화면 + 오른쪽 빈 칸)
+        ph = tk.Frame(root)
+        self.placeholder = ph
+        left_ph = tk.Frame(ph, bg="#e4e6ea")
+        left_ph.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        tk.Frame(ph, bg="#f0f3f8", width=380).pack(side=tk.RIGHT, fill=tk.Y)
+        inner = tk.Frame(left_ph, bg="#e4e6ea")
+        inner.place(relx=0.5, rely=0.42, anchor="center")
+        tk.Label(inner, text="엑셀 파일이 열리지 않았습니다.", bg="#e4e6ea", fg="#7a7a7a",
+                 font=("", 15, "bold")).pack()
+        tk.Label(inner, text="상단의 [엑셀 열기]를 눌러 시작하세요.", bg="#e4e6ea", fg="#9a9a9a",
+                 font=("", 10)).pack(pady=(14, 0))
+        self.recent_box = tk.Frame(inner, bg="#e4e6ea")
+        self.recent_box.pack(pady=(26, 0))
+        self.build_recent()
+        self.main_shown = True
+        self.show_start()
+        root.protocol("WM_DELETE_WINDOW", self.on_close)
+        self.tick()
+
+    # ---------- 공통
+    def log(self, s):
+        self.logbox.insert(self.tk.END, s + "\n")
+        self.logbox.see(self.tk.END)
+        self.root.update_idletasks()
+
+    def elapsed(self):
+        if self.t0 is None:
+            return "00:00"
+        sec = int(datetime.datetime.now().timestamp() - self.t0)
+        return f"{sec // 60:02d}:{sec % 60:02d}"
+
+    def tick(self):
+        if self.xlsx:
+            self.status.config(text=f"{os.path.basename(self.xlsx)}"
+                                    + f"  ·  작업 시간 {self.elapsed()}  ·  고친 줄 {self.edits}개"
+                                    + ("" if self.saved else "  ·  저장 안 됨"))
+        self.root.after(1000, self.tick)
+
+    def error(self, title, e):
+        import traceback
+        from tkinter import messagebox
+        self.log("[오류] " + traceback.format_exc())
+        messagebox.showerror(title, f"{type(e).__name__}: {e}")
+
+    def mark_edit(self, r):
+        r["edited"] = True
+        self.saved = False
+
+    # ---------- 불러오기
+    def open_xlsx(self):
+        from tkinter import filedialog, messagebox
+        if self.xlsx and not self.saved:
+            ans = messagebox.askyesnocancel("엑셀 열기", "지금 고친 내용을 저장하지 않았습니다.\n저장하고 새 엑셀을 열까요?")
+            if ans is None or (ans and not self.save()):
+                return
+        f = self.v_x.get().strip()
+        if not f or not os.path.isfile(f):
+            f = filedialog.askopenfilename(filetypes=[("엑셀", "*.xlsx")])
+            if not f:
+                return
+        try:
+            rows = read_schedule_xlsx(f)
+        except Exception as e:
+            self.error("엑셀 읽기 오류", e)
+            return
+        self.xlsx = f
+        self.v_x.set(f)
+        self.proj_path = None
+        self.last_pdf = ""
+        self.root.title(f"{APP_NAME} {VERSION} - {os.path.basename(f)}")
+        self.show_main()
+        self.query_date = read_query_date(f)
+        self.orig = json.loads(json.dumps(rows))
+        self.rows = rows
+        self.deleted = 0
+        self.sel = None
+        self.multi = []
+        self.diff_keys = set()
+        if os.path.exists(work_path(f)):
+            try:
+                wrows, wedits, saved = load_work(f)
+                if messagebox.askyesno("이어서 하기", f"저장해 둔 작업이 있습니다 ({saved}).\n이어서 할까요?"):
+                    self.rows = wrows
+            except Exception as e:
+                self.log(f"[주의] 작업 파일을 읽지 못했습니다: {e}")
+        if not any(r.get("local") for r in self.rows):
+            n = apply_local_rules(self.rows, load_config(), self.log)
+            if n:
+                self.log(f"[로컬 규칙] {n}개를 자동으로 넣었습니다. (설정 파일 local_rules)")
+        self.t0 = datetime.datetime.now().timestamp()
+        self.saved = True
+        self.undo_stack.clear()
+        self.redo_stack.clear()
+        self.update_undo_buttons()
+        self.build_day_buttons()
+        self.refresh()
+        self.root.after(300, self.zoom_fit)
+        self.log(f"[불러옴] {os.path.basename(f)}  편성 {len(self.rows)}줄 (작업 시간 재기 시작)")
+
+    def pick_prev(self):
+        from tkinter import filedialog
+        f = filedialog.askopenfilename(title="지난주 엑셀 (달라진 칸 분홍 표시용)", filetypes=[("엑셀", "*.xlsx")])
+        if f:
+            self.v_prev.set(f)
+            if self.xlsx:
+                self.log(f"[지난주 엑셀] {os.path.basename(f)} - 지난주와 달라진 칸을 분홍으로 표시합니다.")
+                self.schedule_redraw(50)
+
+    def build_day_buttons(self):
+        for w in self.dayfrm.winfo_children():
+            w.destroy()
+        dates = sorted({r["date"] for r in self.rows})
+        self.tk.Label(self.dayfrm, text="보기:").pack(side=self.tk.LEFT)
+        for d in ["전체"] + dates:
+            self.tk.Radiobutton(self.dayfrm, text=d if d == "전체" else day_label(d), value=d,
+                                variable=self.day, indicatoron=False, width=10,
+                                command=self.refresh).pack(side=self.tk.LEFT, padx=1)
+        self.day.set("전체")
+
+    def refresh(self, keep=None):
+        """줄 내용이 바뀐 뒤: 표, 오른쪽 수정란, 편성표를 모두 다시"""
+        if keep is not None:
+            self.sel = keep if 0 <= keep < len(self.rows) else None
+        elif not self.valid_sel():
+            self.sel = None
+        self.refresh_tree()
+        self.select(self.sel, keep_multi=True)
+        self.schedule_redraw()
+
+    def refresh_tree(self):
+        self.cfg = load_config()
+        sel = self.sel
+        self.tree.delete(*self.tree.get_children())
+        day = self.day.get()
+        order = sorted(range(len(self.rows)), key=lambda i: (self.rows[i]["date"], self.rows[i]["plan"],
+                                                             self.rows[i]["s"]))
+        for i in order:
+            r = self.rows[i]
+            if day != "전체" and r["date"] != day:
+                continue
+            tags = []
+            shade = r.get("shade") or rule_shade(r, self.cfg)
+            if r.get("shade"):
+                tag = "sh_" + r["shade"].lstrip("#")
+                self.tree.tag_configure(tag, background=r["shade"])
+                tags.append(tag)
+            elif self.eff_pink(i):
+                tags.append("pink")
+            elif shade:
+                tag = "sh_" + shade.lstrip("#")
+                self.tree.tag_configure(tag, background=shade)
+                tags.append(tag)
+            if r.get("edited"):
+                tags.append("edited")
+            self.tree.insert("", self.tk.END, iid=str(i), tags=tags, values=(
+                day_label(r["date"]), fmt_t(r["s"]), fmt_t(r["e"]), r["name"], r["plan"], icon_text(r),
+                ("음영" if r.get("shade") else
+                 ("분홍(직접)" if r.get("force_pink") is True else "분홍") if self.eff_pink(i) else
+                 "분홍 끔" if r.get("force_pink") is False else "음영(자동)" if shade else ""),
+                "●" if (r.get("show_end") or rule_end(r, self.cfg)) else "",
+                "●" if r.get("edited") else ""))
+        if sel is not None and self.tree.exists(str(sel)):
+            self._quiet = True
+            self.tree.selection_set(str(sel))
+            self.tree.see(str(sel))
+            self._quiet = False
+
+    def selected_index(self):
+        return self.sel if self.valid_sel() else None
+
+    def need_row(self):
+        from tkinter import messagebox
+        i = self.selected_index()
+        if i is None:
+            messagebox.showinfo("알림", "편성표나 표에서 칸을 먼저 고르세요.")
+        return i
+
+    # ---------- 줄 편집
+    def edit_row(self, idx=None, new=False):
+        tk, ttk = self.tk, self.ttk
+        from tkinter import messagebox
+        i = idx if idx is not None else self.need_row()
+        if i is None:
+            return
+        r = self.rows[i]
+        top = tk.Toplevel(self.root)
+        top.title("편성 줄 추가" if new else "편성 줄 고치기")
+        top.transient(self.root)
+        f = tk.Frame(top, padx=12, pady=10)
+        f.pack()
+        v = {k: tk.StringVar(value=val) for k, val in (
+            ("name", r["name"]), ("s", fmt_t(r["s"])), ("e", fmt_t(r["e"])), ("plan", r["plan"]),
+            ("age", r["age"]), ("rl", r["rl"]), ("code", r.get("code", "")))}
+        b = {k: tk.BooleanVar(value=bool(r.get(k))) for k in ("uhd", "cc", "sign", "ad", "force_pink", "show_end")}
+        pink_now = self.eff_pink(i)
+        b["force_pink"].set(pink_now)
+        tk.Label(f, text=day_label(r["date"]), font=("", 11, "bold")).grid(row=0, column=0, columnspan=4, sticky="w")
+        tk.Label(f, text="프로그램명").grid(row=1, column=0, sticky="w")
+        e_name = tk.Entry(f, textvariable=v["name"], width=46)
+        e_name.grid(row=1, column=1, columnspan=3, pady=2)
+        bind_linebreak(e_name)
+        tk.Label(f, text="시작 (HH:MM)").grid(row=2, column=0, sticky="w")
+        tk.Entry(f, textvariable=v["s"], width=8).grid(row=2, column=1, sticky="w")
+        tk.Label(f, text="끝 (25:30 처럼)").grid(row=2, column=2, sticky="w")
+        tk.Entry(f, textvariable=v["e"], width=8).grid(row=2, column=3, sticky="w")
+        tk.Label(f, text="편성안").grid(row=3, column=0, sticky="w")
+        ttk.Combobox(f, textvariable=v["plan"], values=("1안", "2안"), width=6, state="readonly").grid(
+            row=3, column=1, sticky="w")
+        tk.Label(f, text="연령").grid(row=3, column=2, sticky="w")
+        ttk.Combobox(f, textvariable=v["age"], values=("", "00", "07", "12", "15", "19"), width=6,
+                     state="readonly").grid(row=3, column=3, sticky="w")
+        tk.Label(f, text="R/L (R=릴레이, V=부분로컬)").grid(row=4, column=0, columnspan=2, sticky="w")
+        ttk.Combobox(f, textvariable=v["rl"], values=("", "R", "V", "L"), width=6, state="readonly").grid(
+            row=4, column=2, sticky="w")
+        cf = tk.Frame(f)
+        cf.grid(row=5, column=0, columnspan=4, sticky="w", pady=4)
+        for k, t in (("uhd", "UHD"), ("cc", "자막"), ("sign", "수어"), ("ad", "화면해설"), ("force_pink", "분홍"),
+                     ("show_end", "끝 시각 표시")):
+            tk.Checkbutton(cf, text=t, variable=b[k]).pack(side=tk.LEFT, padx=3)
+        tk.Label(f, text="음영(배경색)").grid(row=7, column=0, sticky="w")
+        v["shade"] = tk.StringVar(value=r.get("shade", ""))
+        names = list(SHADE_PRESETS)
+        cur = next((k for k, c in SHADE_PRESETS.items() if c and c == v["shade"].get()), None)
+        v_sn = tk.StringVar(value=cur or ("없음" if not v["shade"].get() else "직접 고른 색"))
+        cb = ttk.Combobox(f, textvariable=v_sn, values=names, width=10, state="readonly")
+        cb.grid(row=7, column=1, sticky="w")
+        cb.bind("<<ComboboxSelected>>", lambda e: v["shade"].set(SHADE_PRESETS.get(v_sn.get(), "")))
+
+        def pick_color():
+            from tkinter import colorchooser
+            c = colorchooser.askcolor(color=v["shade"].get() or "#d9d9d9", parent=top)[1]
+            if c:
+                v["shade"].set(c)
+                v_sn.set("직접 고른 색")
+        tk.Button(f, text="색 고르기", command=pick_color).grid(row=7, column=2, sticky="w")
+        tk.Label(f, text="프로그램코드").grid(row=6, column=0, sticky="w")
+        tk.Entry(f, textvariable=v["code"], width=16).grid(row=6, column=1, sticky="w")
+        tk.Label(f, text="(같은 코드·같은 시각이면 옆 날짜와 한 칸으로 묶임)", fg="#777").grid(
+            row=6, column=2, columnspan=2, sticky="w")
+
+        def ok():
+            try:
+                s_ = hhmm_to_min(v["s"].get()) - DAY_START_MIN
+                e_ = hhmm_to_min(v["e"].get()) - DAY_START_MIN
+            except ValueError:
+                messagebox.showwarning("입력 오류", "시각은 HH:MM 으로 입력하세요. (예: 07:50, 25:30)", parent=top)
+                return
+            if e_ <= s_:
+                messagebox.showwarning("입력 오류", "끝 시각이 시작보다 늦어야 합니다. 자정 넘으면 25:30 처럼.",
+                                       parent=top)
+                return
+            if not (0 <= s_ < DAY_LEN_MIN and 0 < e_ <= DAY_LEN_MIN):
+                messagebox.showwarning("입력 오류", "05:00 ~ 29:00 사이로 입력하세요.", parent=top)
+                return
+            if not v["name"].get().strip():
+                messagebox.showwarning("입력 오류", "프로그램명을 입력하세요.", parent=top)
+                return
+            self.push_undo("edit")
+            if v["name"].get().strip() != r["name"]:
+                r["name_edited"] = True        # 이름을 바꾼 줄은 옆 날짜와 묶지 않음
+            r.update(name=v["name"].get().strip(), s=s_, e=e_, plan=v["plan"].get(), age=v["age"].get(),
+                     rl=v["rl"].get(), code=v["code"].get().strip(), shade=v["shade"].get(),
+                     **{k: b[k].get() for k in b if k != "force_pink"})
+            if b["force_pink"].get() != pink_now:      # 바꿨을 때만 직접 값으로
+                r["force_pink"] = b["force_pink"].get()
+            self.mark_edit(r)
+            self.log(f"[고침] {day_label(r['date'])} {fmt_t(s_)}~{fmt_t(e_)} {r['name']} ({r['plan']})")
+            top.destroy()
+            self.refresh(keep=i)
+            self.check_overlap(r["date"])
+
+        def cancel():
+            if new:
+                self.rows.pop(i)
+                self.refresh()
+            top.destroy()
+        bf = tk.Frame(f)
+        bf.grid(row=8, column=0, columnspan=4, pady=8)
+        tk.Button(bf, text="확인", command=ok, width=10, bg="#4CAF50").pack(side=tk.LEFT, padx=6)
+        tk.Button(bf, text="취소", command=cancel, width=10).pack(side=tk.LEFT, padx=6)
+        top.protocol("WM_DELETE_WINDOW", cancel)
+        top.bind("<Return>", lambda e: ok())
+        top.after(150, lambda: top.grab_set())
+
+    def check_overlap(self, date):
+        for plan in ("1안", "2안"):
+            day = sorted([r for r in self.rows if r["date"] == date and r["plan"] == plan], key=lambda r: r["s"])
+            for a, b2 in zip(day, day[1:]):
+                if b2["s"] < a["e"]:
+                    self.log(f"[겹침 주의] {day_label(date)} {plan}: '{a['name']}'({fmt_t(a['s'])}~{fmt_t(a['e'])}) 와 "
+                             f"'{b2['name']}'({fmt_t(b2['s'])}~{fmt_t(b2['e'])}) 시간이 겹칩니다.")
+
+    def add_row(self):
+        self.push_undo("add")
+        i = self.selected_index()
+        if i is not None:
+            base = self.rows[i]
+            date, s_, plan = base["date"], base["e"], base["plan"]
+        else:
+            day = self.day.get()
+            dates = sorted({r["date"] for r in self.rows})
+            if not dates:
+                return
+            date, s_, plan = (day if day != "전체" else dates[0]), 0, "1안"
+        r = {"date": date, "code": "", "name": "새 프로그램", "s": s_, "e": min(DAY_LEN_MIN, s_ + 30),
+             "uhd": False, "cc": True, "ad": False, "sign": False, "age": "", "rl": "L", "rerun": False,
+             "plan": plan}
+        self.rows.append(r)
+        self.refresh(keep=len(self.rows) - 1)
+        self.edit_row(len(self.rows) - 1, new=True)
+
+    def del_row(self):
+        from tkinter import messagebox
+        i = self.need_row()
+        if i is None:
+            return
+        r = self.rows[i]
+        sel = sorted(self.selected_rows(), reverse=True)
+        msg = (f"고른 {len(sel)}줄을 지울까요?" if len(sel) > 1 else
+               f"{day_label(r['date'])} {fmt_t(r['s'])} '{r['name']}' 줄을 지울까요?")
+        if messagebox.askyesno("줄 삭제", msg):
+            self.push_undo("del")
+            for k in sel:
+                x = self.rows.pop(k)
+                self.deleted += 1
+                self.log(f"[삭제] {day_label(x['date'])} {fmt_t(x['s'])} {x['name']}")
+            self.saved = False
+            self.multi = []
+            self.refresh(keep=-1)
+
+    def eff_pink(self, i):
+        """이 줄이 지금 분홍인지 (직접 켠/끈 값이 먼저, 없으면 2안·지난주 비교로 정해진 자동 값)"""
+        r = self.rows[i]
+        if isinstance(r.get("force_pink"), bool):
+            return r["force_pink"]
+        if i in self.pink_state:
+            return self.pink_state[i]
+        return r["plan"] == "2안"
+
+    def toggle_pink(self):
+        i = self.need_row()
+        if i is None:
+            return
+        r = self.rows[i]
+        self.push_undo("pink")
+        on = not self.eff_pink(i)
+        for k in self.selected_rows():
+            self.rows[k]["force_pink"] = on
+            self.mark_edit(self.rows[k])
+        n = len(self.selected_rows())
+        self.log(f"[분홍] {day_label(r['date'])} {fmt_t(r['s'])} {r['name']}" + (f" 외 {n - 1}칸" if n > 1 else "")
+                 + f" -> {'켬' if on else '끔'}")
+        self.refresh(keep=i)
+
+    def toggle_end(self):
+        """로컬처럼 기본 프로그램보다 먼저 끝나는 칸에 끝나는 분 표시"""
+        from tkinter import messagebox
+        i = self.need_row()
+        if i is None:
+            return
+        r = self.rows[i]
+        on = not r.get("show_end")
+        key = norm_key(split_suffix(r["name"])[0])
+        same = [x for x in self.rows if x is not r and x["s"] == r["s"]
+                and norm_key(split_suffix(x["name"])[0]) == key]
+        targets = [r]
+        if len(self.selected_rows()) > 1:       # 여러 칸을 골랐으면 고른 칸에만
+            targets = [self.rows[k] for k in self.selected_rows()]
+            same = []
+        if same:
+            ans = messagebox.askyesnocancel(
+                "끝 시각 표시", f"이번 주 같은 시각의 같은 프로그램 {len(same)}줄에도 똑같이 적용할까요?\n"
+                                "(예: 모두 / 아니오: 이 줄만)")
+            if ans is None:
+                return
+            if ans:
+                targets += same
+        self.push_undo("end")
+        for x in targets:
+            x["show_end"] = on
+            self.mark_edit(x)
+        self.log(f"[끝 시각] '{r['name']}' {len(targets)}줄 {'표시' if on else '안 함'} "
+                 f"(끝 {fmt_t(r['e'])})")
+        self.refresh(keep=i)
+
+    def affix_dialog(self):
+        """고른 칸들의 프로그램명 앞뒤에 글자 붙이기/빼기 (예: R/L...MBC 뉴스데스크...R/L). 칸마다 이름은 그대로 둠"""
+        tk = self.tk
+        from tkinter import messagebox
+        if self.need_row() is None:
+            return
+        picked = self.selected_rows()
+        top = tk.Toplevel(self.root)
+        top.title("이름 앞뒤에 글자")
+        top.transient(self.root)
+        f = tk.Frame(top, padx=14, pady=10)
+        f.pack()
+        tk.Label(f, text=f"고른 {len(picked)}칸의 프로그램명 앞뒤에 붙입니다.", font=("", 10, "bold")).grid(
+            row=0, column=0, columnspan=4, sticky="w")
+        v_pre, v_suf = tk.StringVar(value="R/L..."), tk.StringVar(value="...R/L")
+        tk.Label(f, text="앞").grid(row=1, column=0, sticky="w")
+        tk.Entry(f, textvariable=v_pre, width=14).grid(row=1, column=1, sticky="w", pady=3)
+        tk.Label(f, text="뒤").grid(row=1, column=2, sticky="e")
+        tk.Entry(f, textvariable=v_suf, width=14).grid(row=1, column=3, sticky="w")
+        ex = self.rows[picked[0]]["name"]
+        prev = tk.Label(f, fg="#1565c0")
+        prev.grid(row=2, column=0, columnspan=4, sticky="w")
+
+        def show(*a):
+            prev.config(text=f"예: {v_pre.get()}{ex}{v_suf.get()}")
+        v_pre.trace_add("write", show)
+        v_suf.trace_add("write", show)
+        show()
+
+        def run(add):
+            pre, suf = v_pre.get(), v_suf.get()
+            if not pre and not suf:
+                return
+            self.push_undo("affix")
+            n = 0
+            for k in picked:
+                x = self.rows[k]
+                name = x["name"]
+                if add:
+                    if pre and not name.startswith(pre):
+                        name = pre + name
+                    if suf and not name.endswith(suf):
+                        name = name + suf
+                else:
+                    if pre and name.startswith(pre):
+                        name = name[len(pre):]
+                    if suf and name.endswith(suf):
+                        name = name[:-len(suf)]
+                if name != x["name"]:
+                    x["name"], x["name_edited"] = name, True
+                    self.mark_edit(x)
+                    n += 1
+            self.log(f"[이름 앞뒤] {n}칸 {'붙임' if add else '뺌'}: '{pre}' ... '{suf}'")
+            top.destroy()
+            self.refresh(keep=self.sel)
+            if n == 0:
+                messagebox.showinfo("알림", "바뀐 칸이 없습니다.")
+        bf = tk.Frame(f)
+        bf.grid(row=3, column=0, columnspan=4, pady=8)
+        tk.Button(bf, text="붙이기", command=lambda: run(True), width=10, bg="#4CAF50").pack(side=tk.LEFT, padx=4)
+        tk.Button(bf, text="빼기", command=lambda: run(False), width=10).pack(side=tk.LEFT, padx=4)
+        tk.Button(bf, text="취소", command=top.destroy, width=10).pack(side=tk.LEFT, padx=4)
+        top.after(150, lambda: top.grab_set())
+
+    def local_dialog(self):
+        """고른 전국 프로그램 시간 안에 로컬 프로그램을 끼워 넣음 (여러 요일 한꺼번에, 매주 자동 저장 가능)"""
+        tk, ttk = self.tk, self.ttk
+        from tkinter import messagebox
+        i = self.need_row()
+        if i is None:
+            return
+        base = self.rows[i]
+        top = tk.Toplevel(self.root)
+        top.title("로컬 끼워 넣기")
+        top.transient(self.root)
+        f = tk.Frame(top, padx=14, pady=10)
+        f.pack()
+        tk.Label(f, text=f"기준: {day_label(base['date'])} {fmt_t(base['s'])}~{fmt_t(base['e'])} {base['name']}",
+                 font=("", 10, "bold")).grid(row=0, column=0, columnspan=8, sticky="w")
+        v_name = tk.StringVar(value="광주MBC ")
+        v_s = tk.StringVar(value=fmt_t(base["s"]))
+        v_e = tk.StringVar(value=fmt_t(base["e"]))
+        tk.Label(f, text="로컬 프로그램명").grid(row=1, column=0, sticky="w")
+        ent = tk.Entry(f, textvariable=v_name, width=36)
+        ent.grid(row=1, column=1, columnspan=7, sticky="w", pady=3)
+        tk.Label(f, text="시작").grid(row=2, column=0, sticky="w")
+        tk.Entry(f, textvariable=v_s, width=7).grid(row=2, column=1, sticky="w")
+        tk.Label(f, text="끝").grid(row=2, column=2, sticky="e")
+        tk.Entry(f, textvariable=v_e, width=7).grid(row=2, column=3, sticky="w")
+        tk.Label(f, text="요일").grid(row=3, column=0, sticky="w")
+        key = norm_key(split_suffix(base["name"])[0])
+        has = {datetime.datetime.strptime(r["date"], "%Y%m%d").weekday() for r in self.rows
+               if r["plan"] != "2안" and norm_key(split_suffix(r["name"])[0]) == key and r["s"] == base["s"]}
+        dates = sorted({r["date"] for r in self.rows})
+        wd_of = {datetime.datetime.strptime(d, "%Y%m%d").weekday(): d for d in dates}
+        v_days = {}
+        for k in range(7):
+            v_days[k] = tk.BooleanVar(value=k in has)
+            tk.Checkbutton(f, text=WEEKDAYS[k], variable=v_days[k]).grid(row=3, column=1 + k, sticky="w")
+        tk.Label(f, text=f"(같은 시각에 '{split_suffix(base['name'])[0]}'이 있는 요일을 미리 골라 둠)",
+                 fg="#777").grid(row=4, column=0, columnspan=8, sticky="w")
+        v_shade = tk.StringVar(value="회색")
+        v_bold = tk.BooleanVar(value=True)
+        v_cc = tk.BooleanVar(value=True)
+        v_rule = tk.BooleanVar(value=False)
+        tk.Label(f, text="음영").grid(row=5, column=0, sticky="w")
+        ttk.Combobox(f, textvariable=v_shade, values=list(SHADE_PRESETS), width=8, state="readonly").grid(
+            row=5, column=1, columnspan=2, sticky="w", pady=3)
+        tk.Checkbutton(f, text="굵게", variable=v_bold).grid(row=5, column=3, columnspan=2, sticky="w")
+        tk.Checkbutton(f, text="자막", variable=v_cc).grid(row=5, column=5, columnspan=2, sticky="w")
+        tk.Checkbutton(f, text="매주 자동으로 넣기 (설정 파일에 규칙 저장)", variable=v_rule).grid(
+            row=6, column=0, columnspan=8, sticky="w")
+
+        def ok():
+            name = v_name.get().strip()
+            try:
+                s_ = hhmm_to_min(v_s.get()) - DAY_START_MIN
+                e_ = hhmm_to_min(v_e.get()) - DAY_START_MIN
+                if e_ <= s_ or not (0 <= s_ < DAY_LEN_MIN and 0 < e_ <= DAY_LEN_MIN):
+                    raise ValueError
+            except ValueError:
+                messagebox.showwarning("입력 오류", "시각을 확인하세요. (예: 07:20 ~ 07:50)", parent=top)
+                return
+            days = [k for k in range(7) if v_days[k].get() and k in wd_of]
+            if not name or not days:
+                messagebox.showwarning("입력 오류", "로컬 프로그램명과 요일을 고르세요.", parent=top)
+                return
+            shade = SHADE_PRESETS.get(v_shade.get(), "#d9d9d9")
+            self.push_undo("local")
+            added = insert_local(self.rows, [wd_of[k] for k in days], name, s_, e_, shade, v_bold.get(),
+                                 extra={"cc": v_cc.get()}, log=self.log)
+            spec = "".join(WEEKDAYS[k] for k in days)
+            if v_rule.get():
+                add_local_rule({"name": name, "days": ",".join(WEEKDAYS[k] for k in days),
+                                "start": fmt_t(s_), "end": fmt_t(e_), "shade": shade, "bold": v_bold.get(),
+                                "cc": v_cc.get()})
+                self.log(f"[로컬 규칙 저장] '{name}' {spec} {fmt_t(s_)}~{fmt_t(e_)} - 다음 주부터 자동")
+            self.saved = False
+            self.log(f"[로컬] '{name}' {spec} {fmt_t(s_)}~{fmt_t(e_)} 넣음 ({len(added)}줄)")
+            top.destroy()
+            self.refresh(keep=self.rows.index(added[0]) if added else None)
+        bf = tk.Frame(f)
+        bf.grid(row=7, column=0, columnspan=8, pady=8)
+        tk.Button(bf, text="넣기", command=ok, width=10, bg="#4CAF50").pack(side=tk.LEFT, padx=6)
+        tk.Button(bf, text="취소", command=top.destroy, width=10).pack(side=tk.LEFT, padx=6)
+        ent.focus_set()
+        ent.icursor(tk.END)
+        top.after(150, lambda: top.grab_set())
+
+    def shade_dialog(self):
+        """고른 프로그램에 음영(배경색) 넣기: 이 줄만 / 이번 주 같은 프로그램 모두 / 매주 자동"""
+        tk, ttk = self.tk, self.ttk
+        from tkinter import colorchooser
+        i = self.need_row()
+        if i is None:
+            return
+        r = self.rows[i]
+        top = tk.Toplevel(self.root)
+        top.title("음영 넣기")
+        top.transient(self.root)
+        f = tk.Frame(top, padx=14, pady=10)
+        f.pack()
+        tk.Label(f, text=f"{r['name']}", font=("", 11, "bold")).grid(row=0, column=0, columnspan=3, sticky="w")
+        tk.Label(f, text="색").grid(row=1, column=0, sticky="w", pady=4)
+        v_name = tk.StringVar(value="회색")
+        v_col = tk.StringVar(value=SHADE_PRESETS["회색"])
+        cb = ttk.Combobox(f, textvariable=v_name, values=list(SHADE_PRESETS), width=10, state="readonly")
+        cb.grid(row=1, column=1, sticky="w")
+        sw = tk.Label(f, text="      ", bg=v_col.get(), relief="solid", bd=1)
+        sw.grid(row=1, column=3, padx=4)
+
+        def set_col(c):
+            v_col.set(c)
+            sw.config(bg=c or "#ffffff")
+        cb.bind("<<ComboboxSelected>>", lambda e: set_col(SHADE_PRESETS.get(v_name.get(), "")))
+
+        def pick():
+            c = colorchooser.askcolor(color=v_col.get() or "#d9d9d9", parent=top)[1]
+            if c:
+                set_col(c)
+                v_name.set("직접 고른 색")
+        tk.Button(f, text="색 고르기", command=pick).grid(row=1, column=2, padx=4)
+        picked = [self.rows[k] for k in self.selected_rows()]
+        scope = tk.StringVar(value="picked" if len(picked) > 1 else "same")
+        same = [x for x in self.rows if (r.get("code") and x.get("code") == r.get("code"))
+                or norm_key(split_suffix(x["name"])[0]) == norm_key(split_suffix(r["name"])[0])]
+        for k, t in ((("picked", f"고른 칸 모두 ({len(picked)}칸)"),) if len(picked) > 1 else ()) + (
+                     ("one", "이 줄만"), ("same", f"이번 주 같은 프로그램 모두 ({len(same)}줄)"),
+                     ("rule", "매주 자동 (설정 파일에 규칙 저장)")):
+            tk.Radiobutton(f, text=t, value=k, variable=scope).grid(columnspan=4, sticky="w")
+        tk.Label(f, text="'없음'을 고르면 음영을 뺍니다.", fg="#777").grid(columnspan=4, sticky="w")
+
+        def ok():
+            c = v_col.get()
+            self.push_undo("shade")
+            if scope.get() == "rule":
+                key = split_suffix(r["name"])[0].strip()
+                add_shade_rule(key, c)
+                self.log(f"[음영 규칙] '{key}' -> {c or '없음'} (매주 자동, 설정 파일에 저장)")
+            targets = [r] if scope.get() == "one" else picked if scope.get() == "picked" else same
+            for x in targets:
+                if scope.get() == "rule":
+                    x.pop("shade", None)          # 규칙이 적용되도록 줄 음영은 비움
+                else:
+                    x["shade"] = c
+                self.mark_edit(x)
+            if scope.get() != "rule":
+                self.log(f"[음영] '{r['name']}' {len(targets)}줄 -> {c or '없음'}")
+            top.destroy()
+            self.refresh(keep=i)
+        bf = tk.Frame(f)
+        bf.grid(columnspan=4, pady=8)
+        tk.Button(bf, text="적용", command=ok, width=10, bg="#4CAF50").pack(side=tk.LEFT, padx=6)
+        tk.Button(bf, text="취소", command=top.destroy, width=10).pack(side=tk.LEFT, padx=6)
+        top.after(150, lambda: top.grab_set())
+
+    def revert_row(self):
+        from tkinter import messagebox
+        i = self.need_row()
+        if i is None:
+            return
+        r = self.rows[i]
+        o = next((o for o in self.orig if o["date"] == r["date"] and o.get("code") == r.get("code")
+                  and o["plan"] == r["plan"] and (o["s"] == r["s"] or o["name"] == r["name"])), None)
+        if o is None:
+            messagebox.showinfo("알림", "엑셀에서 같은 줄을 찾지 못했습니다. (새로 추가한 줄이면 [줄 삭제]를 쓰세요)")
+            return
+        self.push_undo("revert")
+        self.rows[i] = dict(o)
+        self.saved = False
+        self.log(f"[되돌림] {day_label(o['date'])} {fmt_t(o['s'])} {o['name']}")
+        self.refresh(keep=i)
+
+    # ---------- 만들기 · 확인
+    def prev_rows(self):
+        p = self.v_prev.get().strip()
+        if not p:
+            return None
+        try:
+            return read_schedule_xlsx(p)
+        except Exception as e:
+            self.log(f"[주의] 지난주 엑셀을 읽지 못해 비교 없이 만듭니다: {e}")
+            return None
+
+    def build_temp(self):
+        import tempfile
+        out = os.path.join(tempfile.gettempdir(), "tv_schedule_preview.pdf")
+        generate(self.rows, out, self.prev_rows_cached(), log=lambda s: None, cfg_over=self.cfg_over())
+        return out
+
+    def ready(self):
+        from tkinter import messagebox
+        if not self.rows:
+            messagebox.showinfo("알림", "먼저 [불러오기]로 엑셀을 여세요.")
+            return False
+        return True
+
+    def make(self):
+        from tkinter import filedialog, messagebox
+        if not self.ready():
+            return
+        base = os.path.splitext(self.proj_path or self.default_proj_path())[0]
+        out = filedialog.asksaveasfilename(defaultextension=".pdf", filetypes=[("PDF", "*.pdf")],
+                                           initialfile=os.path.basename(base) + ".pdf",
+                                           initialdir=os.path.dirname(base) or None)
+        if not out:
+            return
+        try:
+            generate(self.rows, out, self.prev_rows_cached(), self.log, cfg_over=self.cfg_over())
+        except Exception as e:
+            self.error("PDF 만들기 오류", e)
+            return
+        self.last_pdf = out
+        # PDF 옆에 같은 이름의 프로젝트도 함께 저장 -> 나중에 다시 열어 고칠 수 있음
+        self.save(path=os.path.splitext(out)[0] + PROJ_EXT)
+        self.log(f"[작업 기록] 불러온 뒤 {self.elapsed()} 걸림 · 고친 줄 {self.edits}개 "
+                 f"(프로젝트도 함께 저장: {os.path.basename(self.proj_path or '')})")
+        if messagebox.askyesno("완료", "PDF를 만들었습니다. 열어 볼까요?"):
+            open_file(out)
+
+    def preview(self):
+        if not self.ready():
+            return
+        tk = self.tk
+        try:
+            pdf = self.build_temp()
+            doc = pymupdf.open(pdf)
+            pix = doc[0].get_pixmap(matrix=pymupdf.Matrix(1.6, 1.6))
+            import base64
+            data = base64.b64encode(pix.tobytes("png")).decode("ascii")
+            doc.close()
+        except Exception as e:
+            self.error("미리보기 오류", e)
+            return
+        top = tk.Toplevel(self.root)
+        top.title("미리보기 - 실제로 저장되는 PDF 그대로")
+        top.geometry("1000x900")
+        img = tk.PhotoImage(data=data)
+        cv = tk.Canvas(top, scrollregion=(0, 0, img.width(), img.height()))
+        ys = tk.Scrollbar(top, orient=tk.VERTICAL, command=cv.yview)
+        xs = tk.Scrollbar(top, orient=tk.HORIZONTAL, command=cv.xview)
+        cv.configure(yscrollcommand=ys.set, xscrollcommand=xs.set)
+        ys.pack(side=tk.RIGHT, fill=tk.Y)
+        xs.pack(side=tk.BOTTOM, fill=tk.X)
+        cv.pack(fill=tk.BOTH, expand=True)
+        cv.create_image(0, 0, image=img, anchor="nw")
+        cv.image = img
+        cv.bind("<MouseWheel>", lambda e: cv.yview_scroll(int(-e.delta / 120), "units"))
+        cv.bind("<Button-4>", lambda e: cv.yview_scroll(-3, "units"))
+        cv.bind("<Button-5>", lambda e: cv.yview_scroll(3, "units"))
+
+    def compare_original(self):
+        from tkinter import filedialog
+        if not self.ready():
+            return
+        base = filedialog.askopenfilename(title="기준이 될 원본(완성본) 편성표 PDF", filetypes=[("PDF", "*.pdf")])
+        if not base:
+            return
+        try:
+            res = compare_pdfs(base, self.build_temp(), self.log)
+        except Exception as e:
+            self.error("비교 오류", e)
+            return
+        self.diff_keys = set(res.get("다른 칸", []))
+        self.draw_marks()
+        if self.diff_keys:
+            self.log(f"[비교] 원본과 다른 칸 {len(self.diff_keys)}개를 편성표에 주황 테두리로 표시했습니다.")
+
+    def compare_two(self):
+        from tkinter import filedialog
+        a = filedialog.askopenfilename(title="1) 기준 PDF (완성본/원본)", filetypes=[("PDF", "*.pdf")])
+        if not a:
+            return
+        b2 = filedialog.askopenfilename(title="2) 비교할 PDF (편집기로 고친 것 등)", filetypes=[("PDF", "*.pdf")])
+        if not b2:
+            return
+        try:
+            compare_pdfs(a, b2, self.log)
+        except Exception as e:
+            self.error("비교 오류", e)
+
+    # ---------- 기타
+    def project_data(self):
+        cfg = load_config()
+        return {"source": self.xlsx or "", "query_date": getattr(self, "query_date", ""),
+                "rows": self.rows, "orig": self.orig, "deleted": self.deleted,
+                "settings": {k: cfg.get(k) for k in PROJ_CFG_KEYS}, "last_pdf": getattr(self, "last_pdf", "")}
+
+    def default_proj_path(self):
+        base = os.path.splitext(self.xlsx or "편성표")[0]
+        if base.endswith("_편성표"):
+            base = base[:-4]
+        return base + "_편성표" + PROJ_EXT
+
+    def save(self, ask=False, path=None):
+        """프로젝트 저장 (Ctrl+S). 처음이거나 '다른 이름으로'면 저장 위치를 물음"""
+        from tkinter import filedialog
+        if not self.ready():
+            return False
+        p = path or (None if ask else self.proj_path)
+        if not p:
+            d = self.default_proj_path()
+            p = filedialog.asksaveasfilename(defaultextension=PROJ_EXT, filetypes=[("편성표 프로젝트", "*" + PROJ_EXT)],
+                                             initialfile=os.path.basename(d), initialdir=os.path.dirname(d) or None)
+            if not p:
+                return False
+        try:
+            save_project(p, self.project_data())
+        except Exception as e:
+            self.error("프로젝트 저장 오류", e)
+            return False
+        self.proj_path = p
+        self.saved = True
+        self.root.title(f"{APP_NAME} {VERSION} - {os.path.basename(p)}")
+        self.build_recent()
+        self.log(f"[프로젝트 저장] {p}")
+        return True
+
+    def open_project(self, path=None):
+        """프로젝트(.tvproj) 열기: 고친 상태 그대로 이어서 편집 (엑셀 파일이 없어도 됨)"""
+        from tkinter import filedialog, messagebox
+        if self.xlsx and not self.saved:
+            ans = messagebox.askyesnocancel("프로젝트 열기", "지금 고친 내용을 저장하지 않았습니다.\n저장하고 열까요?")
+            if ans is None or (ans and not self.save()):
+                return
+        if not path:
+            path = filedialog.askopenfilename(filetypes=[("편성표 프로젝트", "*" + PROJ_EXT)])
+            if not path:
+                return
+        try:
+            d = load_project(path)
+        except Exception as e:
+            self.error("프로젝트 열기 오류", e)
+            return
+        st = {k: v for k, v in (d.get("settings") or {}).items() if v is not None}
+        if st:
+            save_config_keys(st)
+            self._loading = True
+            for var, k in ((self.v_title, "title_text"), (self.v_tsize, "title_size"), (self.v_smode, "stamp_mode"),
+                           (self.v_stext, "stamp_text")):
+                if k in st:
+                    var.set(str(st[k]))
+            if "title_bold" in st:
+                self.v_tbold.set(bool(st["title_bold"]))
+            self._loading = False
+        self.rows = d["rows"]
+        self.orig = d.get("orig") or json.loads(json.dumps(d["rows"]))
+        self.deleted = d.get("deleted", 0)
+        self.xlsx = d.get("source") or path
+        self.query_date = d.get("query_date", "")
+        self.last_pdf = d.get("last_pdf", "")
+        self.proj_path = path
+        self.sel, self.multi, self.diff_keys = None, [], set()
+        self.undo_stack.clear()
+        self.redo_stack.clear()
+        self.update_undo_buttons()
+        self.t0 = datetime.datetime.now().timestamp()
+        self.saved = True
+        self.show_main()
+        self.build_day_buttons()
+        self.refresh()
+        self.root.after(300, self.zoom_fit)
+        self.root.title(f"{APP_NAME} {VERSION} - {os.path.basename(path)}")
+        self.build_recent()
+        self.log(f"[프로젝트 열기] {os.path.basename(path)}  편성 {len(self.rows)}줄 · 고친 줄 {self.edits}개 "
+                 f"(저장 {d.get('saved', '')[:16].replace('T', ' ')})")
+
+    def build_recent(self):
+        """첫 화면의 최근 프로젝트 목록 + 위쪽 [최근 ▼] 메뉴"""
+        tk = self.tk
+        lst = recent_projects()
+        try:
+            self.recent_menu.delete(0, "end")
+            for p in lst:
+                self.recent_menu.add_command(label=project_info(p), command=lambda p=p: self.open_project(p))
+            if not lst:
+                self.recent_menu.add_command(label="(최근 프로젝트 없음)", state="disabled")
+        except Exception:
+            pass
+        box = getattr(self, "recent_box", None)
+        if box is None:
+            return
+        for w_ in box.winfo_children():
+            w_.destroy()
+        if not lst:
+            return
+        tk.Button(box, text=f"▶ 마지막 프로젝트 이어서 편집:  {os.path.basename(lst[0])}", bg="#4CAF50", fg="white",
+                  font=("", 11, "bold"), padx=10, pady=4, command=lambda: self.open_project(lst[0])).pack(pady=(0, 10))
+        tk.Label(box, text="최근 프로젝트", bg="#e4e6ea", fg="#666", font=("", 9, "bold")).pack(anchor="w")
+        for p in lst[:6]:
+            tk.Button(box, text=project_info(p), anchor="w", relief="flat", bg="#f4f5f7", width=70,
+                      command=lambda p=p: self.open_project(p)).pack(fill=tk.X, pady=1)
+
+    def learn(self):
+        global _name_dict
+        from tkinter import filedialog, messagebox
+        if not self.xlsx:
+            messagebox.showwarning("알림", "먼저 엑셀을 불러오세요. 같은 주의 원본 PDF와 비교합니다.")
+            return
+        pdf = filedialog.askopenfilename(title="같은 주의 원본 편성표 PDF", filetypes=[("PDF", "*.pdf")])
+        if not pdf:
+            return
+        try:
+            _name_dict = None
+            learn_names(self.xlsx, pdf, self.log)
+        except Exception as e:
+            self.error("이름 배우기 오류", e)
+
+    def open_config(self):
+        load_config()
+        open_file(CONFIG_PATH)
+        self.log(f"[설정 파일] {CONFIG_PATH}  (고친 뒤 저장하면 다음 PDF부터 적용)")
+
+    def on_close(self):
+        from tkinter import messagebox
+        if self.xlsx and not self.saved:
+            ans = messagebox.askyesnocancel("종료 확인", "고친 내용을 프로젝트로 저장하지 않았습니다.\n저장하고 끝낼까요?")
+            if ans is None:
+                return
+            if ans and not self.save():
+                return
+        elif not messagebox.askokcancel("종료 확인", "프로그램을 종료할까요?"):
+            return
+        self.root.destroy()
+
+    # ================================================================ 편성표 보면서 고치기
+    @property
+    def edits(self):
+        return sum(1 for r in self.rows if r.get("edited")) + self.deleted
+
+    def build_form(self, parent):
+        tk, ttk = self.tk, self.ttk
+        self.form_title = tk.Label(parent, text="칸을 고르세요", font=("", 12, "bold"), anchor="w")
+        self.form_title.pack(fill=tk.X, pady=(2, 6))
+        f = tk.Frame(parent)
+        f.pack(fill=tk.X)
+        self.fv = {k: tk.StringVar() for k in ("name", "s", "e", "plan", "age", "rl", "code", "shade_name",
+                                               "hl_name", "fg_name")}
+        self.f_hl = self.f_fg = ""
+        self.fb = {k: tk.BooleanVar() for k in ("uhd", "cc", "sign", "ad", "force_pink", "show_end", "bold")}
+        self.f_shade = ""
+        tk.Label(f, text="프로그램명").grid(row=0, column=0, sticky="w")
+        e_name = tk.Entry(f, textvariable=self.fv["name"], width=34)
+        e_name.grid(row=0, column=1, columnspan=3, sticky="we", pady=2)
+        bind_linebreak(e_name)
+        tk.Label(f, text="줄바꿈: | 또는 Shift+Enter  (예: 특집 다큐|선비의 정신 필암서원)", fg="#777",
+                 font=("", 8)).grid(row=10, column=0, columnspan=4, sticky="w")
+        self.v_name_all = tk.BooleanVar(value=False)
+        tk.Checkbutton(f, text="여러 칸 선택 시 이름도 모두 똑같이", variable=self.v_name_all,
+                       font=("", 8)).grid(row=11, column=0, columnspan=4, sticky="w")
+        tk.Label(f, text="시작").grid(row=1, column=0, sticky="w")
+        self.ent_s = tk.Entry(f, textvariable=self.fv["s"], width=7)
+        self.ent_s.grid(row=1, column=1, sticky="w")
+        tk.Label(f, text="끝").grid(row=1, column=2, sticky="e")
+        self.ent_e = tk.Entry(f, textvariable=self.fv["e"], width=7)
+        self.ent_e.grid(row=1, column=3, sticky="w")
+        tk.Label(f, text="편성안").grid(row=2, column=0, sticky="w")
+        ttk.Combobox(f, textvariable=self.fv["plan"], values=("1안", "2안"), width=6,
+                     state="readonly").grid(row=2, column=1, sticky="w", pady=2)
+        tk.Label(f, text="연령").grid(row=2, column=2, sticky="e")
+        ttk.Combobox(f, textvariable=self.fv["age"], values=("", "00", "07", "12", "15", "19"), width=6,
+                     state="readonly").grid(row=2, column=3, sticky="w")
+        tk.Label(f, text="R/L").grid(row=3, column=0, sticky="w")
+        ttk.Combobox(f, textvariable=self.fv["rl"], values=("", "R", "V", "L"), width=6,
+                     state="readonly").grid(row=3, column=1, sticky="w", pady=2)
+        tk.Label(f, text="코드").grid(row=3, column=2, sticky="e")
+        tk.Entry(f, textvariable=self.fv["code"], width=12).grid(row=3, column=3, sticky="w")
+        cf = tk.Frame(f)
+        cf.grid(row=4, column=0, columnspan=4, sticky="w", pady=2)
+        for k, t in (("uhd", "UHD"), ("cc", "자막"), ("sign", "수어"), ("ad", "화면해설")):
+            tk.Checkbutton(cf, text=t, variable=self.fb[k]).pack(side=tk.LEFT)
+        cf2 = tk.Frame(f)
+        cf2.grid(row=5, column=0, columnspan=4, sticky="w")
+        tk.Checkbutton(cf2, text="분홍", variable=self.fb["force_pink"]).pack(side=tk.LEFT)
+        tk.Checkbutton(cf2, text="끝 시각 표시", variable=self.fb["show_end"]).pack(side=tk.LEFT)
+        tk.Checkbutton(cf2, text="굵게", variable=self.fb["bold"]).pack(side=tk.LEFT)
+        tk.Label(f, text="음영").grid(row=6, column=0, sticky="w")
+        ttk.Combobox(f, textvariable=self.fv["shade_name"], values=list(SHADE_PRESETS), width=10,
+                     state="readonly").grid(row=6, column=1, sticky="w", pady=2)
+        tk.Button(f, text="색 고르기", command=self.form_pick_color).grid(row=6, column=2, columnspan=2, sticky="w")
+        tk.Label(f, text="글자 바탕").grid(row=7, column=0, sticky="w")
+        ttk.Combobox(f, textvariable=self.fv["hl_name"], values=list(HL_PRESETS), width=10,
+                     state="readonly").grid(row=7, column=1, sticky="w", pady=2)
+        tk.Label(f, text="글자색").grid(row=7, column=2, sticky="e")
+        ttk.Combobox(f, textvariable=self.fv["fg_name"], values=list(FG_PRESETS), width=8,
+                     state="readonly").grid(row=7, column=3, sticky="w")
+        tk.Button(f, text="바탕색 고르기", command=lambda: self.form_pick_color("hl")).grid(row=8, column=1, sticky="w")
+        tk.Button(f, text="글자색 고르기", command=lambda: self.form_pick_color("fg")).grid(row=8, column=2, columnspan=2,
+                                                                                    sticky="w")
+        self.form_msg = tk.Label(parent, text="", fg="#c62828", anchor="w")
+        self.form_msg.pack(fill=tk.X)
+        bf = tk.Frame(parent)
+        bf.pack(fill=tk.X, pady=4)
+        tk.Button(bf, text="같은 프로그램 모두에 적용", command=self.apply_same, bg="#e3f2fd").pack(side=tk.LEFT)
+        tk.Button(bf, text="앞뒤 글자 ...", command=self.affix_dialog).pack(side=tk.LEFT, padx=4)
+        tk.Button(bf, text="엑셀 원래대로", command=self.revert_row).pack(side=tk.LEFT, padx=4)
+        bf2 = tk.Frame(parent)
+        bf2.pack(fill=tk.X)
+        tk.Button(bf2, text="뒤에 줄 추가", command=self.add_row).pack(side=tk.LEFT)
+        tk.Button(bf2, text="줄 삭제", command=self.del_row).pack(side=tk.LEFT, padx=4)
+        tk.Button(bf2, text="자세히 고치기", command=lambda: self.edit_row()).pack(side=tk.LEFT)
+        tk.Button(parent, text="로컬 끼워 넣기 ...", command=self.local_dialog, bg="#cfd8dc").pack(fill=tk.X, pady=(6, 0))
+        fh = tk.Frame(parent)
+        fh.pack(fill=tk.X, pady=(10, 2))
+        tk.Label(fh, text="즐겨찾기", font=("", 10, "bold")).pack(side=tk.LEFT)
+        tk.Label(fh, text="☆ 누르면 고른 칸에 이름 넣기", fg="#777", font=("", 8)).pack(side=tk.LEFT)
+        tk.Button(fh, text="+ 추가", command=self.fav_add_dialog).pack(side=tk.RIGHT)
+        tk.Button(fh, text="고른 칸 이름 추가", command=self.fav_add_from_cell).pack(side=tk.RIGHT, padx=2)
+        favf = tk.Frame(parent, relief="sunken", bd=1)
+        favf.pack(fill=tk.BOTH, expand=True)
+        self.fav_cv = tk.Canvas(favf, height=180, highlightthickness=0, bg="#f7f7f7")
+        fsb = tk.Scrollbar(favf, orient=tk.VERTICAL, command=self.fav_cv.yview)
+        self.fav_cv.configure(yscrollcommand=fsb.set)
+        fsb.pack(side=tk.RIGHT, fill=tk.Y)
+        self.fav_cv.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.fav_frame = tk.Frame(self.fav_cv, bg="#f7f7f7")
+        self._fav_win = self.fav_cv.create_window(0, 0, window=self.fav_frame, anchor="nw")
+        self.fav_frame.bind("<Configure>", lambda e: self.fav_cv.configure(scrollregion=self.fav_cv.bbox("all")))
+        self.fav_cv.bind("<Configure>", lambda e: self.fav_cv.itemconfigure(self._fav_win, width=e.width))
+        self.fav_cv.bind("<MouseWheel>", lambda e: self.fav_cv.yview_scroll(int(-e.delta / 120), "units"))
+        self.build_fav_buttons()
+        dh = tk.Frame(parent)
+        dh.pack(fill=tk.X, pady=(10, 2))
+        self.dl_title = tk.Label(dh, text="그날 편성 줄", font=("", 10, "bold"), anchor="w")
+        self.dl_title.pack(side=tk.LEFT)
+        self.dl_btn = tk.Button(dh, text="새 창으로 ⧉", command=self.open_day_window)
+        self.dl_btn.pack(side=tk.RIGHT)
+        self.daylist = ttk.Treeview(parent, columns=("s", "e", "name", "plan"), show="headings", height=14)
+        for k, t, w in (("s", "시작", 48), ("e", "끝", 48), ("name", "프로그램명", 210), ("plan", "안", 36)):
+            self.daylist.heading(k, text=t)
+            self.daylist.column(k, width=w, anchor="w" if k == "name" else "center")
+        self.daylist.tag_configure("edited", foreground="#c62828")
+        self.daylist.pack(fill=tk.BOTH, expand=True)
+        self.daylist.bind("<<TreeviewSelect>>", self.on_daylist_select)
+        for v in list(self.fv.values()) + list(self.fb.values()):
+            v.trace_add("write", lambda *a: self.form_changed())
+
+    def valid_sel(self):
+        return self.sel is not None and 0 <= self.sel < len(self.rows)
+
+    def select(self, i, source=None, keep_multi=False):
+        """줄 하나를 고름: 편성표 테두리, 오른쪽 수정란, 표 선택을 함께 맞춤"""
+        self.sel = i if (i is not None and 0 <= i < len(self.rows)) else None
+        if not keep_multi:
+            self.multi = [self.sel] if self.sel is not None else []
+        self.multi = [k for k in self.multi if 0 <= k < len(self.rows)]
+        if self.sel is not None and self.sel not in self.multi:
+            self.multi.append(self.sel)
+        self.load_form()
+        self.fill_daylist()
+        if source != "tree" and self.valid_sel() and self.tree.exists(str(self.sel)):
+            self._quiet = True
+            self.tree.selection_set([str(k) for k in self.multi if self.tree.exists(str(k))])
+            self.tree.see(str(self.sel))
+            self._quiet = False
+        self.draw_marks()
+
+    def selected_rows(self):
+        """선택한 줄 번호들 (여러 칸 선택이면 전부, 아니면 지금 줄 하나)"""
+        rows = [k for k in self.multi if 0 <= k < len(self.rows)]
+        if not rows and self.valid_sel():
+            rows = [self.sel]
+        return rows
+
+    def clear_selection(self):
+        self.multi = []
+        self.select(None)
+
+    def load_form(self):
+        self._loading = True
+        try:
+            if not self.valid_sel():
+                self.form_title.config(text="칸을 고르세요")
+                for v in self.fv.values():
+                    v.set("")
+                for v in self.fb.values():
+                    v.set(False)
+                return
+            r = self.rows[self.sel]
+            n = len(self.selected_rows())
+            self.form_title.config(text=(f"{n}칸 선택 · 기준: " if n > 1 else "") +
+                                   f"{day_label(r['date'])}  {fmt_t(r['s'])}~{fmt_t(r['e'])}  ({r['plan']})",
+                                   fg="#1565c0" if n > 1 else "black")
+            for k in ("name", "plan", "age", "rl", "code"):
+                self.fv[k].set(r.get(k, "") or "")
+            self.fv["s"].set(fmt_t(r["s"]))
+            self.fv["e"].set(fmt_t(r["e"]))
+            for k in self.fb:
+                self.fb[k].set(bool(r.get(k)))
+            self.fb["force_pink"].set(self.eff_pink(self.sel))
+            self.f_shade = r.get("shade", "") or ""
+            name = next((k for k, c in SHADE_PRESETS.items() if c == self.f_shade), "직접 고른 색")
+            self.fv["shade_name"].set(name)
+            self.f_hl, self.f_fg = r.get("hl", "") or "", r.get("fg", "") or ""
+            self.fv["hl_name"].set(next((k for k, c in HL_PRESETS.items() if c == self.f_hl), "직접 고른 색"))
+            self.fv["fg_name"].set(next((k for k, c in FG_PRESETS.items() if c == self.f_fg), "직접 고른 색"))
+            self.form_msg.config(text="")
+        finally:
+            self._loading = False
+
+    def form_changed(self):
+        if self._loading or not self.valid_sel():
+            return
+        r = self.rows[self.sel]
+        try:
+            s_ = hhmm_to_min(self.fv["s"].get()) - DAY_START_MIN
+            e_ = hhmm_to_min(self.fv["e"].get()) - DAY_START_MIN
+            if e_ <= s_ or not (0 <= s_ < DAY_LEN_MIN and 0 < e_ <= DAY_LEN_MIN):
+                raise ValueError
+        except (ValueError, TypeError):
+            self.form_msg.config(text="시각을 확인하세요 (예: 07:50, 자정 넘으면 25:30)")
+            return
+        name = self.fv["name"].get().strip()
+        if not name:
+            self.form_msg.config(text="프로그램명이 비어 있습니다")
+            return
+        self.form_msg.config(text="")
+        sn = self.fv["shade_name"].get()
+        if sn in SHADE_PRESETS:
+            self.f_shade = SHADE_PRESETS[sn]
+        if self.fv["hl_name"].get() in HL_PRESETS:
+            self.f_hl = HL_PRESETS[self.fv["hl_name"].get()]
+        if self.fv["fg_name"].get() in FG_PRESETS:
+            self.f_fg = FG_PRESETS[self.fv["fg_name"].get()]
+        new = dict(name=name, s=s_, e=e_, plan=self.fv["plan"].get() or "1안", age=self.fv["age"].get(),
+                   rl=self.fv["rl"].get(), code=self.fv["code"].get().strip(), shade=self.f_shade,
+                   hl=self.f_hl, fg=self.f_fg,
+                   **{k: v.get() for k, v in self.fb.items()})
+        fpv = new.pop("force_pink")
+        changed = any((r.get(k) or "") != (v or "") if not isinstance(v, bool) else bool(r.get(k)) != v
+                      for k, v in new.items())
+        if fpv != self.eff_pink(self.sel):
+            new["force_pink"] = fpv
+            changed = True
+        if not changed:
+            return
+        self.push_undo(("form", tuple(self.selected_rows())))  # 같은 칸을 이어서 고치는 동안은 한 번만 기록
+        # 여러 칸 선택: 바뀐 항목 중 아이콘·음영·분홍·끝 시각·굵게·편성안은 고른 칸 모두에,
+        # 프로그램명·시각·코드는 기준 칸(마지막에 누른 칸)에만
+        others = [k for k in self.selected_rows() if k != self.sel]
+        if others:
+            per_row = ("s", "e", "code") if self.v_name_all.get() else ("name", "s", "e", "code")
+            diff = {k: v for k, v in new.items() if k not in per_row and
+                    ((r.get(k) or "") != (v or "") if not isinstance(v, bool) else bool(r.get(k)) != v)}
+            for k in others:
+                x = self.rows[k]
+                x.update(diff)
+                self.mark_edit(x)
+            if "name" not in per_row and name != r["name"]:
+                for k in others:
+                    self.rows[k]["name_edited"] = True
+            if any(new[k] != r.get(k) for k in per_row if k in new) and not self._multi_warned:
+                self.log("[여러 칸] 프로그램명·시각·코드는 기준 칸에만 적용됩니다.")
+                self._multi_warned = True
+        if name != r["name"]:
+            r["name_edited"] = True
+        time_changed = (s_, e_) != (r["s"], r["e"])
+        r.update(new)
+        if time_changed:
+            self.check_overlap(r["date"])
+        self.mark_edit(r)
+        self.load_form_title()
+        self.refresh_tree()
+        self.fill_daylist()
+        self.schedule_redraw()
+
+    def load_form_title(self):
+        if not self.valid_sel():
+            return
+        r = self.rows[self.sel]
+        n = len(self.selected_rows())
+        self.form_title.config(text=(f"{n}칸 선택 · 기준: " if n > 1 else "") +
+                               f"{day_label(r['date'])}  {fmt_t(r['s'])}~{fmt_t(r['e'])}  ({r['plan']})")
+
+    def form_pick_color(self, what="shade"):
+        """what: shade(칸 음영) / hl(글자 바탕) / fg(글자색)"""
+        from tkinter import colorchooser
+        if not self.valid_sel():
+            return
+        attr, var, default = {"shade": ("f_shade", "shade_name", "#d9d9d9"), "hl": ("f_hl", "hl_name", "#a6d8f0"),
+                              "fg": ("f_fg", "fg_name", "#000000")}[what]
+        c = colorchooser.askcolor(color=getattr(self, attr) or default, parent=self.root)[1]
+        if c:
+            setattr(self, attr, c)
+            self._loading = True
+            self.fv[var].set("직접 고른 색")
+            self._loading = False
+            self.form_changed()
+
+    def apply_same(self):
+        """지금 칸의 음영·분홍·끝 시각·아이콘을 이번 주 같은 프로그램 모두에 똑같이"""
+        from tkinter import messagebox
+        if not self.valid_sel():
+            return
+        r = self.rows[self.sel]
+        key = norm_key(split_suffix(r["name"])[0])
+        same = [x for x in self.rows if x is not r and ((r.get("code") and x.get("code") == r.get("code"))
+                                                         or norm_key(split_suffix(x["name"])[0]) == key)]
+        if not same:
+            messagebox.showinfo("알림", "이번 주에 같은 프로그램이 없습니다.")
+            return
+        if not messagebox.askyesno("같은 프로그램 모두", f"'{r['name']}'와 같은 프로그램 {len(same)}줄에\n"
+                                   "음영·분홍·끝 시각 표시·아이콘(UHD·자막·수어·화면해설·연령·R/L)을 똑같이 맞출까요?"):
+            return
+        self.push_undo("same")
+        for x in same:
+            for k in ("shade", "force_pink", "show_end", "uhd", "cc", "sign", "ad", "age", "rl", "hl", "fg", "bold"):
+                x[k] = r.get(k)
+            self.mark_edit(x)
+        self.log(f"[같은 프로그램] '{r['name']}' 설정을 {len(same)}줄에 적용")
+        self.refresh(keep=self.sel)
+
+    def fill_daylist(self):
+        self.fill_day_window()
+        self.daylist.delete(*self.daylist.get_children())
+        if not self.valid_sel():
+            return
+        d = self.rows[self.sel]["date"]
+        idx = sorted((i for i, r in enumerate(self.rows) if r["date"] == d),
+                     key=lambda i: (self.rows[i]["plan"], self.rows[i]["s"]))
+        for i in idx:
+            r = self.rows[i]
+            self.daylist.insert("", self.tk.END, iid=str(i), values=(fmt_t(r["s"]), fmt_t(r["e"]), r["name"], r["plan"]),
+                                tags=("edited",) if r.get("edited") else ())
+        if self.daylist.exists(str(self.sel)):
+            self._quiet = True
+            self.daylist.selection_set(str(self.sel))
+            self.daylist.see(str(self.sel))
+            self._quiet = False
+
+    # ---------- 그날 편성 줄: 새 창
+    def open_day_window(self):
+        tk, ttk = self.tk, self.ttk
+        if getattr(self, "day_win", None) is not None:
+            try:
+                self.day_win.lift()
+                return
+            except Exception:
+                self.day_win = None
+        w = tk.Toplevel(self.root)
+        w.title("그날 편성 줄")
+        w.geometry("760x640")
+        self.day_win = w
+        self.dw_day = tk.StringVar(value=self.rows[self.sel]["date"] if self.valid_sel() else "")
+        bar = tk.Frame(w)
+        bar.pack(fill=tk.X, padx=6, pady=4)
+        for d in sorted({r["date"] for r in self.rows}):
+            tk.Radiobutton(bar, text=day_label(d), value=d, variable=self.dw_day, indicatoron=False, width=10,
+                           command=self.fill_day_window).pack(side=tk.LEFT, padx=1)
+        self.dw_follow = tk.BooleanVar(value=True)
+        tk.Checkbutton(bar, text="편성표에서 고른 요일 따라가기", variable=self.dw_follow).pack(side=tk.LEFT, padx=8)
+        cols = (("s", "시작", 60), ("e", "끝", 60), ("name", "프로그램명", 330), ("plan", "안", 40),
+                ("icons", "아이콘", 110), ("bg", "꾸밈", 90))
+        fr = tk.Frame(w)
+        fr.pack(fill=tk.BOTH, expand=True, padx=6, pady=(0, 6))
+        tv = ttk.Treeview(fr, columns=[c[0] for c in cols], show="headings")
+        for k, t, wd in cols:
+            tv.heading(k, text=t)
+            tv.column(k, width=wd, anchor="w" if k == "name" else "center")
+        tv.tag_configure("edited", foreground="#c62828")
+        tv.tag_configure("pink", background="#ffe1e1")
+        sb = ttk.Scrollbar(fr, orient=tk.VERTICAL, command=tv.yview)
+        tv.configure(yscrollcommand=sb.set)
+        tv.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        sb.pack(side=tk.LEFT, fill=tk.Y)
+        self.dw_tree = tv
+
+        def on_sel(e=None):
+            if self._quiet:
+                return
+            s_ = [int(x) for x in tv.selection()]
+            if not s_ or set(s_) == set(self.selected_rows()):
+                return
+            self.multi = s_
+            self.select(self.sel if self.sel in s_ else s_[-1], source="daywin", keep_multi=True)
+        tv.bind("<<TreeviewSelect>>", on_sel)
+        tv.bind("<Double-1>", lambda e: self.edit_row())
+
+        def close():
+            self.day_win = None
+            w.destroy()
+            self.daylist.pack(fill=tk.BOTH, expand=True)     # 오른쪽 목록 다시 보이기
+            self.dl_title.config(text="그날 편성 줄")
+            self.dl_btn.config(text="새 창으로 ⧉", command=self.open_day_window)
+        w.protocol("WM_DELETE_WINDOW", close)
+        self.daylist.pack_forget()                          # 새 창에서 보는 동안 오른쪽 목록은 숨김
+        self.dl_title.config(text="그날 편성 줄 (새 창에서 보는 중)")
+        self.dl_btn.config(text="여기로 되돌리기", command=close)
+        self.fill_day_window()
+
+    def fill_day_window(self):
+        if getattr(self, "day_win", None) is None:
+            return
+        try:
+            if self.valid_sel() and self.dw_follow.get():
+                self.dw_day.set(self.rows[self.sel]["date"])
+            d = self.dw_day.get()
+            tv = self.dw_tree
+            tv.delete(*tv.get_children())
+            idx = sorted((i for i, r in enumerate(self.rows) if r["date"] == d),
+                         key=lambda i: (self.rows[i]["plan"], self.rows[i]["s"]))
+            for i in idx:
+                r = self.rows[i]
+                deco = []
+                if self.eff_pink(i):
+                    deco.append("분홍")
+                if r.get("shade"):
+                    deco.append("음영")
+                if r.get("hl"):
+                    deco.append("바탕")
+                if r.get("show_end"):
+                    deco.append("끝")
+                tags = (("edited",) if r.get("edited") else ()) + (("pink",) if self.eff_pink(i) else ())
+                tv.insert("", self.tk.END, iid=str(i), tags=tags, values=(
+                    fmt_t(r["s"]), fmt_t(r["e"]), r["name"], r["plan"], icon_text(r), " ".join(deco)))
+            sel = [str(k) for k in self.selected_rows() if tv.exists(str(k))]
+            self._quiet = True
+            tv.selection_set(sel)
+            if sel:
+                tv.see(sel[-1])
+            self._quiet = False
+        except Exception:
+            self.day_win = None
+
+    # ---------- 즐겨찾기 (자주 쓰는 꾸밈을 버튼으로)
+    FAV_KEYS = (("name", "프로그램명 통째로"), ("prefix", "이름 앞에 붙일 글자"), ("suffix", "이름 뒤에 붙일 글자"),
+                ("shade", "칸 음영"), ("hl", "글자 바탕"), ("fg", "글자색"), ("bold", "굵게"),
+                ("show_end", "끝 시각 표시"), ("force_pink", "분홍"))
+
+    def build_fav_buttons(self):
+        """즐겨찾기 목록: [☆ 프로그램명] [X] [배경색] - 미리 만들어 둔 프로그램 이름을 한 번에 넣기"""
+        tk = self.tk
+        for w_ in self.fav_frame.winfo_children():
+            w_.destroy()
+        favs = load_config().get("favorites", [])
+        if not favs:
+            tk.Label(self.fav_frame, text="(없음)  [+ 추가] 로 프로그램 이름을 미리 넣어 두세요.", fg="#999",
+                     bg="#f7f7f7").pack(anchor="w", padx=4, pady=4)
+        for n, fv in enumerate(favs):
+            row = tk.Frame(self.fav_frame, bg="#f7f7f7", bd=1, relief="groove")
+            row.pack(fill=tk.X, padx=2, pady=1)
+            text = fav_display(fv)
+            bg = fv.get("shade") or fv.get("hl") or "#ffffff"
+            b = tk.Button(row, text="☆ " + text, anchor="w", justify="left", relief="flat", bg=bg,
+                          fg=fv.get("fg") or "black", font=("", 9, "bold"), command=lambda fv=fv: self.fav_apply(fv))
+            b.pack(side=tk.LEFT, fill=tk.X, expand=True)
+            b.bind("<Button-3>", lambda e, n=n: self.fav_menu(e, n))
+            tk.Button(row, text="배경색", font=("", 8), command=lambda n=n: self.fav_color(n)).pack(side=tk.RIGHT, padx=1)
+            tk.Button(row, text="X", fg="#d32f2f", font=("", 8, "bold"), relief="flat",
+                      command=lambda n=n: self.fav_delete(n)).pack(side=tk.RIGHT)
+
+    def fav_color(self, n):
+        from tkinter import colorchooser, messagebox
+        favs = load_config().get("favorites", [])
+        if not 0 <= n < len(favs):
+            return
+        c = colorchooser.askcolor(color=favs[n].get("shade") or "#d9d9d9", parent=self.root,
+                                  title="이 즐겨찾기의 칸 배경색 (취소하면 그대로)")[1]
+        if c:
+            favs[n]["shade"] = c
+        elif favs[n].get("shade") and messagebox.askyesno("배경색", "배경색을 없앨까요?"):
+            favs[n]["shade"] = ""
+        else:
+            return
+        save_config_keys({"favorites": favs})
+        self.build_fav_buttons()
+
+    def fav_add_from_cell(self):
+        """지금 고른 칸의 프로그램명(과 음영)을 즐겨찾기에 바로 추가"""
+        if self.need_row() is None:
+            return
+        r = self.rows[self.sel]
+        favs = load_config().get("favorites", [])
+        if any(f.get("name") == r["name"] for f in favs):
+            self.log(f"[즐겨찾기] 이미 있습니다: {r['name']}")
+            return
+        fv = {"name": r["name"]}
+        if r.get("shade"):
+            fv["shade"] = r["shade"]
+        favs.append(fv)
+        save_config_keys({"favorites": favs})
+        self.build_fav_buttons()
+        self.log(f"[즐겨찾기 추가] {r['name']}")
+
+    def fav_menu(self, e, n):
+        m = self.tk.Menu(self.root, tearoff=0)
+        m.add_command(label="고치기 ...", command=lambda: self.fav_add_dialog(edit_index=n))
+        m.add_command(label="위로", command=lambda: self.fav_move(n, -1))
+        m.add_command(label="아래로", command=lambda: self.fav_move(n, 1))
+        m.add_command(label="지우기", command=lambda: self.fav_delete(n))
+        try:
+            m.tk_popup(e.x_root, e.y_root)
+        finally:
+            m.grab_release()
+
+    def fav_delete(self, n):
+        from tkinter import messagebox
+        favs = load_config().get("favorites", [])
+        if 0 <= n < len(favs) and messagebox.askyesno("즐겨찾기",
+                                                      f"'{fav_display(favs[n]).replace(chr(10), ' ')}' 을(를) 지울까요?"):
+            favs.pop(n)
+            save_config_keys({"favorites": favs})
+            self.build_fav_buttons()
+
+    def fav_move(self, n, d):
+        favs = load_config().get("favorites", [])
+        if 0 <= n + d < len(favs):
+            favs[n], favs[n + d] = favs[n + d], favs[n]
+            save_config_keys({"favorites": favs})
+            self.build_fav_buttons()
+
+    def fav_apply(self, fv):
+        from tkinter import messagebox
+        picked = self.selected_rows()
+        if not picked:
+            messagebox.showinfo("알림", "편성표에서 칸을 먼저 고르세요. (Ctrl/Shift+클릭으로 여러 칸)")
+            return
+        self.push_undo(("fav", fav_display(fv)))
+        for k in picked:
+            x = self.rows[k]
+            if "name" in fv and fv["name"]:
+                x["name"], x["name_edited"] = fv["name"], True
+            pre, suf = fv.get("prefix", ""), fv.get("suffix", "")
+            if pre and not x["name"].startswith(pre):
+                x["name"], x["name_edited"] = pre + x["name"], True
+            if suf and not x["name"].endswith(suf):
+                x["name"], x["name_edited"] = x["name"] + suf, True
+            for key in ("shade", "hl", "fg", "bold", "show_end", "force_pink"):
+                if key in fv:
+                    x[key] = fv[key]
+            self.mark_edit(x)
+        self.log(f"[즐겨찾기] '{fav_display(fv).replace(chr(10), ' ')}' -> {len(picked)}칸")
+        self.refresh(keep=self.sel)
+
+    def fav_add_dialog(self, edit_index=None):
+        """즐겨찾기에 프로그램 이름 미리 만들어 넣기 (여러 줄 가능, 칸 배경색 선택)"""
+        tk = self.tk
+        from tkinter import messagebox, colorchooser
+        favs = load_config().get("favorites", [])
+        base = dict(favs[edit_index]) if edit_index is not None else {}
+        top = tk.Toplevel(self.root)
+        top.title("즐겨찾기 고치기" if edit_index is not None else "즐겨찾기 추가")
+        top.transient(self.root)
+        f = tk.Frame(top, padx=14, pady=10)
+        f.pack()
+        tk.Label(f, text="프로그램 이름 (Enter 로 줄바꿈)", font=("", 10, "bold")).grid(row=0, column=0, columnspan=3,
+                                                                                 sticky="w")
+        txt = tk.Text(f, width=34, height=4, font=("", 11))
+        txt.grid(row=1, column=0, columnspan=3, pady=4)
+        txt.insert("1.0", (base.get("name") or "").replace("|", "\n"))
+        txt.focus_set()
+        v_col = tk.StringVar(value=base.get("shade", "") or "")
+        sw = tk.Label(f, text="  배경 없음  " if not v_col.get() else "  배경색  ", bg=v_col.get() or "#ffffff",
+                      relief="solid", bd=1)
+        sw.grid(row=2, column=1, sticky="w")
+
+        def pick():
+            c = colorchooser.askcolor(color=v_col.get() or "#d9d9d9", parent=top)[1]
+            if c:
+                v_col.set(c)
+                sw.config(text="  배경색  ", bg=c)
+
+        def no_col():
+            v_col.set("")
+            sw.config(text="  배경 없음  ", bg="#ffffff")
+        tk.Button(f, text="배경색", command=pick).grid(row=2, column=0, sticky="w")
+        tk.Button(f, text="배경 없음", command=no_col).grid(row=2, column=2, sticky="w")
+        v_bold = tk.BooleanVar(value=bool(base.get("bold")))
+        tk.Checkbutton(f, text="굵게", variable=v_bold).grid(row=3, column=0, sticky="w")
+        tk.Label(f, text="☆ 누르면 고른 칸의 프로그램명이 이 이름으로 바뀝니다.", fg="#777").grid(
+            row=4, column=0, columnspan=3, sticky="w")
+
+        def ok():
+            name = "|".join(x.strip() for x in txt.get("1.0", "end").strip().split("\n") if x.strip())
+            if not name:
+                messagebox.showwarning("입력", "프로그램 이름을 넣으세요.", parent=top)
+                return
+            fv = {k: v for k, v in base.items() if k in ("hl", "fg", "show_end", "force_pink")}
+            fv["name"] = name
+            if v_col.get():
+                fv["shade"] = v_col.get()
+            if v_bold.get():
+                fv["bold"] = True
+            favs2 = load_config().get("favorites", [])
+            if edit_index is not None and edit_index < len(favs2):
+                favs2[edit_index] = fv
+            else:
+                favs2.append(fv)
+            save_config_keys({"favorites": favs2})
+            self.build_fav_buttons()
+            self.log(f"[즐겨찾기 저장] {name}")
+            top.destroy()
+        bf = tk.Frame(f)
+        bf.grid(row=5, column=0, columnspan=3, pady=8)
+        tk.Button(bf, text="저장", command=ok, width=10, bg="#4CAF50").pack(side=tk.LEFT, padx=6)
+        tk.Button(bf, text="취소", command=top.destroy, width=10).pack(side=tk.LEFT, padx=6)
+        top.after(150, lambda: top.grab_set())
+
+    def on_daylist_select(self, e=None):
+        if self._quiet:
+            return
+        s = self.daylist.selection()
+        if not s or int(s[0]) == self.sel or int(s[0]) in self.selected_rows():
+            return      # 프로그램이 다시 고른 것이거나 이미 고른 칸
+        self.select(int(s[0]), source="daylist")
+
+    def on_tree_select(self, e=None):
+        if self._quiet:
+            return
+        s = [int(x) for x in self.tree.selection()]
+        if not s:
+            return
+        # 프로그램이 표를 새로 고치며 다시 고른 것(늦게 오는 신호)이면 무시 -> 고치던 칸이 바뀌지 않게
+        if set(s) == set(self.selected_rows()):
+            return
+        self.multi = s
+        if self.sel in s:
+            base = self.sel
+        else:
+            foc = self.tree.focus()
+            base = int(foc) if foc and int(foc) in s else s[-1]
+        self.select(base, source="tree", keep_multi=True)
+
+    # ---- 편성표 그리기
+    def schedule_redraw(self, delay=500):
+        if self._redraw_id:
+            try:
+                self.root.after_cancel(self._redraw_id)
+            except Exception:
+                pass
+        self._redraw_id = self.root.after(delay, self.redraw)
+
+    def prev_rows_cached(self):
+        p = self.v_prev.get().strip()
+        if p != self._prev_path:
+            self._prev_path = p
+            self._prev_rows = self.prev_rows() if p else None
+        return self._prev_rows
+
+    def redraw(self):
+        import base64
+        self._redraw_id = None
+        if not self.rows:
+            return
+        try:
+            cfg = load_config()
+            cfg.update(self.cfg_over())
+            png, geom, dates = render_live(self.rows, self.prev_rows_cached(), self.zoom, cfg)
+        except Exception as e:
+            self.draw_lbl.config(text=f"그리기 오류: {e}", fg="#c62828")
+            self.log(f"[그리기 오류] {type(e).__name__}: {e}")
+            return
+        self.geom, self.dates = geom, dates
+        self.pink_state = {ri: g["block"]["pink"] for g in geom for ri in g["block"]["_ris"]}
+        self.img = self.tk.PhotoImage(data=base64.b64encode(png).decode("ascii"))
+        self.cv.delete("all")
+        self.cv.create_image(0, 0, image=self.img, anchor="nw", tags=("page",))
+        self.cv.configure(scrollregion=(0, 0, self.img.width(), self.img.height()))
+        self.draw_lbl.config(text=f"{datetime.datetime.now():%H:%M:%S} 다시 그림 · 칸 {len(geom)}개", fg="#555")
+        self.draw_marks()
+
+    def day_x(self, date):
+        try:
+            return X_COLS["days"][self.dates.index(date)]
+        except (ValueError, IndexError):
+            return None
+
+    def draw_marks(self):
+        """선택한 칸(파란 점선)과 원본과 다른 칸(주황 점선) 테두리 - 화면에만 보이고 PDF에는 안 나옴"""
+        self.cv.delete("mark")
+        if not self.show_marks.get():       # 출력 모양 그대로 보기
+            return
+        z = self.zoom
+        for g in self.geom:
+            b = g["block"]
+            if (b["day0"], b["half"], b["s"]) in self.diff_keys:
+                x0, y0, x1, y1 = g["rect"]
+                self.cv.create_rectangle(x0 * z, y0 * z, x1 * z, y1 * z, outline="#ff9800", width=3, dash=(6, 3),
+                                         tags=("mark",))
+        for k in self.selected_rows():
+            r = self.rows[k]
+            dx = self.day_x(r["date"])
+            g = next((g for g in self.geom if k in g["block"]["_ris"]), None)
+            if g is None:
+                continue
+            x0, y0, x1, y1 = g["rect"]
+            if dx:      # 월~금으로 묶인 칸이면 그 요일 부분만
+                x0, x1 = max(x0, dx[0]), min(x1, dx[1])
+            main = k == self.sel
+            self.cv.create_rectangle(x0 * z + 1, y0 * z + 1, x1 * z - 1, y1 * z - 1, outline="#1e88e5",
+                                     width=3 if main else 2, dash=(4, 2) if main else (2, 2), tags=("mark",))
+
+    def hit(self, e):
+        z = self.zoom
+        px, py = self.cv.canvasx(e.x) / z, self.cv.canvasy(e.y) / z
+        for g in self.geom:
+            x0, y0, x1, y1 = g["rect"]
+            if x0 <= px <= x1 and y0 <= py <= y1:
+                b = g["block"]
+                day = next((i for i, (a, c) in enumerate(X_COLS["days"]) if a <= px <= c), b["day0"])
+                date = self.dates[day] if day < len(self.dates) else None
+                for ri in b["_ris"]:
+                    if ri < len(self.rows) and self.rows[ri]["date"] == date:
+                        return ri
+                return b["_ris"][0]
+        return None
+
+    def on_canvas_click(self, e):
+        i = self.hit(e)
+        ctrl, shift = bool(e.state & 0x0004), bool(e.state & 0x0001)
+        if i is None:
+            if not ctrl and not shift:
+                self.clear_selection()
+            return
+        if ctrl:                    # Ctrl+클릭: 칸 하나씩 더하기 / 빼기
+            if i in self.multi and len(self.multi) > 1:
+                self.multi.remove(i)
+                self.select(self.multi[-1], keep_multi=True)
+            else:
+                self.multi.append(i)
+                self.select(i, keep_multi=True)
+        elif shift:                 # Shift+클릭: 월~금으로 묶인 칸의 모든 요일
+            blk = self.block_of(i)
+            for k in (blk["_ris"] if blk else [i]):
+                if k not in self.multi:
+                    self.multi.append(k)
+            self.select(i, keep_multi=True)
+        else:
+            self.select(i)
+
+    def block_of(self, i):
+        return next((g["block"] for g in self.geom if i in g["block"]["_ris"]), None)
+
+    def on_canvas_menu(self, e):
+        i = self.hit(e)
+        if i is None:
+            return
+        self.select(i)
+        r = self.rows[i]
+        m = self.tk.Menu(self.root, tearoff=0)
+        m.add_command(label=f"{day_label(r['date'])} {fmt_t(r['s'])} {r['name']}", state="disabled")
+        m.add_separator()
+        m.add_command(label="음영 넣기 / 빼기 ...", command=self.shade_dialog)
+        m.add_command(label=("분홍 끄기" if self.eff_pink(i) else "분홍 켜기"), command=self.toggle_pink)
+        m.add_command(label=("끝 시각 표시 끄기" if r.get("show_end") else "끝 시각 표시 켜기"), command=self.toggle_end)
+        m.add_separator()
+        favs = load_config().get("favorites", [])
+        if favs:
+            fm = self.tk.Menu(m, tearoff=0)
+            for fv in favs:
+                fm.add_command(label=fav_display(fv).replace("\n", " "), command=lambda fv=fv: self.fav_apply(fv))
+            m.add_cascade(label="즐겨찾기 적용", menu=fm)
+        m.add_command(label="즐겨찾기에 추가 ...", command=self.fav_add_dialog)
+        m.add_command(label="이름 앞뒤에 글자 붙이기 ...", command=self.affix_dialog)
+        m.add_command(label="로컬 끼워 넣기 ...", command=self.local_dialog)
+        m.add_command(label="자세히 고치기 ...", command=lambda: self.edit_row())
+        m.add_command(label="이 칸 뒤에 줄 추가 ...", command=self.add_row)
+        m.add_command(label="줄 삭제", command=self.del_row)
+        m.add_command(label="엑셀 원래대로", command=self.revert_row)
+        try:
+            m.tk_popup(e.x_root, e.y_root)
+        finally:
+            m.grab_release()
+
+    def on_wheel(self, e):
+        if e.state & 0x0004:        # Ctrl + 휠 = 확대/축소
+            self.set_zoom(self.zoom * (1.1 if e.delta > 0 else 1 / 1.1))
+        else:
+            self.cv.yview_scroll(int(-e.delta / 120), "units")
+
+    def set_zoom(self, z):
+        self.zoom = max(0.6, min(4.0, z))
+        self.zoom_lbl.config(text=f"{int(self.zoom * 100)}%")
+        self.schedule_redraw(100)
+
+    def zoom_fit(self):
+        h = self.cv.winfo_height() or 700
+        self.set_zoom((h - 4) / PAGE_H)
+
+    def icon_color_dialog(self):
+        """아이콘(U·자·수·해·R·L·연령) 배경색과 글자색 바꾸기 - 바로 편성표에 반영, 설정에 저장"""
+        tk = self.tk
+        from tkinter import colorchooser
+        cfg = load_config()
+        colors = dict(cfg.get("icon_colors", {}) or {})
+        dark = set(cfg.get("icon_dark_text", ["U"]))
+        top = tk.Toplevel(self.root)
+        top.title("아이콘 색")
+        top.transient(self.root)
+        f = tk.Frame(top, padx=14, pady=10)
+        f.pack()
+        to_hex = lambda rgb: "#%02x%02x%02x" % tuple(int(round(c * 255)) for c in rgb)
+        sw = {}
+
+        def cur_bg(k):
+            return colors.get(k) or to_hex(tuple(c / 255 for c in ICON_COLORS[k]))
+
+        def paint(k):
+            sw[k].config(bg=cur_bg(k), fg="#1a1a1a" if k in dark else "#ffffff")
+
+        def save():
+            save_config_keys({"icon_colors": colors, "icon_dark_text": sorted(dark)})
+            self.schedule_redraw(50)
+
+        def pick(k):
+            c = colorchooser.askcolor(color=cur_bg(k), parent=top)[1]
+            if c:
+                colors[k] = c
+                paint(k)
+                save()
+
+        def flip(k):
+            dark.symmetric_difference_update({k})
+            paint(k)
+            save()
+
+        def reset(k, original=False):
+            colors.pop(k, None)
+            if original and ICON_ORIGINAL[k] != ICON_COLORS[k]:
+                colors[k] = to_hex(tuple(c / 255 for c in ICON_ORIGINAL[k]))
+            paint(k)
+            save()
+
+        for row, (k, name) in enumerate(ICON_NAMES):
+            label = "12" if k == "AGE" else k
+            sw[k] = tk.Label(f, text=label, width=3, font=("", 11, "bold"), relief="solid", bd=1)
+            sw[k].grid(row=row, column=0, pady=2)
+            paint(k)
+            tk.Label(f, text=name, width=10, anchor="w").grid(row=row, column=1)
+            tk.Button(f, text="배경색", command=lambda k=k: pick(k)).grid(row=row, column=2, padx=2)
+            tk.Button(f, text="글자 흰/검정", command=lambda k=k: flip(k)).grid(row=row, column=3, padx=2)
+            tk.Button(f, text="기본값", command=lambda k=k: reset(k)).grid(row=row, column=4, padx=2)
+            if ICON_ORIGINAL[k] != ICON_COLORS[k]:
+                tk.Button(f, text="원본 PDF 색", command=lambda k=k: reset(k, True)).grid(row=row, column=5, padx=2)
+        tk.Label(f, text="바꾸면 바로 편성표·범례에 반영되고 다음에도 그대로 씁니다.", fg="#777").grid(
+            row=10, column=0, columnspan=6, sticky="w", pady=(8, 0))
+        tk.Button(f, text="닫기", command=top.destroy, width=10).grid(row=11, column=0, columnspan=6, pady=6)
+
+    # ---------- 되돌리기 / 다시 하기
+    def snapshot(self):
+        return (json.dumps(self.rows, ensure_ascii=False), self.deleted, self.sel)
+
+    def push_undo(self, tag=None):
+        """바꾸기 직전 상태를 기록. 같은 칸을 2초 안에 이어서 고치면(글자 입력 등) 한 번으로 묶음"""
+        import time
+        now = time.time()
+        if tag is not None and tag == self._last_tag and now - self._last_t < 2.0 and self.undo_stack:
+            self._last_t = now
+            return
+        self._last_tag, self._last_t = tag, now
+        self.undo_stack.append(self.snapshot())
+        del self.undo_stack[:-100]          # 최대 100단계
+        self.redo_stack.clear()
+        self.update_undo_buttons()
+
+    def restore(self, snap):
+        rows, deleted, sel = snap
+        self.rows = json.loads(rows)
+        self.deleted = deleted
+        self.saved = False
+        self._last_tag = None
+        self.pink_state = {}
+        self.multi = []
+        self.refresh(keep=sel if sel is not None else -1)
+
+    def undo(self):
+        if not self.undo_stack:
+            return
+        self.redo_stack.append(self.snapshot())
+        self.restore(self.undo_stack.pop())
+        self.log(f"[되돌리기] (남은 {len(self.undo_stack)}단계)")
+        self.update_undo_buttons()
+
+    def redo(self):
+        if not self.redo_stack:
+            return
+        self.undo_stack.append(self.snapshot())
+        self.restore(self.redo_stack.pop())
+        self.log(f"[다시 하기] (남은 {len(self.redo_stack)}단계)")
+        self.update_undo_buttons()
+
+    def update_undo_buttons(self):
+        n, m = len(self.undo_stack), len(self.redo_stack)
+        self.btn_undo.config(text=f"↶ 되돌리기 ({n})" if n else "↶ 되돌리기",
+                             state=self.tk.NORMAL if n else self.tk.DISABLED)
+        self.btn_redo.config(text=f"↷ 다시 하기 ({m})" if m else "↷ 다시 하기",
+                             state=self.tk.NORMAL if m else self.tk.DISABLED)
+
+    def clear_all_pink(self):
+        """지금 분홍인 칸을 모두 흰색으로 (2안·지난주 비교로 자동 칠해진 것 포함). 되돌리기 가능"""
+        from tkinter import messagebox
+        if not self.ready():
+            return
+        pinks = [i for i in range(len(self.rows)) if self.eff_pink(i)]
+        if not pinks:
+            messagebox.showinfo("알림", "분홍 칸이 없습니다.")
+            return
+        if not messagebox.askyesno("분홍 모두 지우기", f"분홍 칸 {len(pinks)}줄을 모두 흰색으로 바꿀까요?\n"
+                                   "(되돌리기로 다시 살릴 수 있습니다)"):
+            return
+        self.push_undo("clear_pink")
+        for i in pinks:
+            self.rows[i]["force_pink"] = False
+            self.mark_edit(self.rows[i])
+        self.log(f"[분홍 모두 지우기] {len(pinks)}줄")
+        self.refresh(keep=self.sel)
+
+    # ---------- 첫 화면 / 작업 화면
+    def show_start(self):
+        """엑셀을 열기 전: 맨 위 줄과 안내 화면만"""
+        for w_ in (self.act, self.head, self.nb, self.logbox):
+            w_.pack_forget()
+        self.placeholder.pack(fill=self.tk.BOTH, expand=True)
+        self.main_shown = False
+
+    def show_main(self):
+        """엑셀을 연 뒤: 실행 버튼 줄, 편성표·수정란, 기록 창"""
+        if self.main_shown:
+            return
+        tk = self.tk
+        self.placeholder.pack_forget()
+        self.act.pack(fill=tk.X, padx=8, pady=(0, 4), after=self.topbar)
+        last = self.act
+        if self.head_visible:
+            self.head.pack(fill=tk.X, padx=8, pady=(0, 4), after=self.act)
+            last = self.head
+        self.nb.pack(fill=tk.BOTH, expand=True, padx=8, pady=2, after=last)
+        self.logbox.pack(fill=tk.BOTH, padx=8, pady=(0, 8), after=self.nb)
+        self.main_shown = True
+
+    def toggle_head(self):
+        """⚙ 설정: 제목·날짜·아이콘 색 줄을 보이기/숨기기"""
+        tk = self.tk
+        self.head_visible = not self.head_visible
+        if self.head_visible:
+            anchor = self.act if self.main_shown else self.topbar
+            self.head.pack(fill=tk.X, padx=8, pady=(0, 4), after=anchor)
+        else:
+            self.head.pack_forget()
+
+    def cfg_over(self):
+        return {"_query_date": getattr(self, "query_date", "")}
+
+    def head_changed(self):
+        """제목·날짜 입력이 바뀌면 0.6초 뒤 설정에 저장하고 다시 그림"""
+        if self._head_id:
+            try:
+                self.root.after_cancel(self._head_id)
+            except Exception:
+                pass
+
+        def apply():
+            self._head_id = None
+            try:
+                size = float(self.v_tsize.get())
+            except ValueError:
+                size = 22
+            if self.v_smode.get() == "직접 입력" and not self.v_stext.get().strip() and self.rows:
+                self._loading = True
+                self.v_stext.set(make_stamp({"stamp_mode": "저장 시각"}, datetime.datetime.now(), self.dates))
+                self._loading = False
+            save_config_keys({"title_text": self.v_title.get(), "title_size": size,
+                              "title_bold": self.v_tbold.get(), "stamp_mode": self.v_smode.get(),
+                              "stamp_text": self.v_stext.get()})
+            self.schedule_redraw(50)
+        self._head_id = self.root.after(600, apply)
+
+    def clear_diff(self):
+        self.diff_keys = set()
+        self.draw_marks()
+
+    def run(self):
+        self.root.mainloop()
+
+
+def bind_linebreak(entry):
+    """프로그램명 입력칸에서 Shift+Enter / Ctrl+Enter 를 누르면 줄바꿈 표시 '|' 를 넣음"""
+    def ins(e):
+        entry.insert("insert", "|")
+        return "break"
+    entry.bind("<Shift-Return>", ins)
+    entry.bind("<Control-Return>", ins)
+
+
+def fav_display(fv):
+    """즐겨찾기 목록에 보일 글자: 프로그램명(줄바꿈 그대로), 없으면 예전 방식 이름표"""
+    if fv.get("name"):
+        return fv["name"].replace("|", "\n")
+    if fv.get("prefix") or fv.get("suffix"):
+        return f"{fv.get('prefix', '')}(이름){fv.get('suffix', '')}"
+    return fv.get("label", "?")
+
+
+def open_file(path):
+    try:
+        os.startfile(path)      # 윈도우
+    except AttributeError:
+        import subprocess
+        subprocess.Popen(["xdg-open", path])
+
+
+def run_gui():
+    App().run()
+
+
+if __name__ == "__main__":
+    args = sys.argv[1:]
+    if not args:
+        run_gui()
+    else:
+        out = prev = None
+        if "-o" in args:
+            i = args.index("-o"); out = args[i + 1]; del args[i:i + 2]
+        if "--prev" in args:
+            i = args.index("--prev"); prev = args[i + 1]; del args[i:i + 2]
+        if "--compare" in args:  # python tv_schedule_maker.py --compare 기준.pdf 비교.pdf
+            i = args.index("--compare"); compare_pdfs(args[i + 1], args[i + 2]); sys.exit(0)
+        if "--learn" in args:   # python tv_schedule_maker.py 주간.xlsx --learn 같은주_원본.pdf
+            i = args.index("--learn"); learn_names(args[0], args[i + 1]); sys.exit(0)
+        make_pdf(args[0], out, prev)
