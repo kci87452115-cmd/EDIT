@@ -25,7 +25,7 @@ except ImportError:
     except ImportError:
         fitz = None
 
-APP_VERSION = "2.14.2"
+APP_VERSION = "2.14.3"
 APP_TITLE = f"운행표 데이터 편집기 v{APP_VERSION}"
 APP_MUTEX = "RunSheetEditor_Running"      # 설치 프로그램이 '실행 중'을 알아보는 이름 (setup.iss 의 AppMutex 와 같아야 함)
 RUN_BY_LAUNCHER = bool(os.environ.get("RADIO_LAUNCHER"))   # 편집 프로그램 런처로 실행됨 -> 업데이트는 런처가 한다
@@ -1408,7 +1408,6 @@ setInterval(()=>{if(cur==='P'&&!document.hidden)previews()},30000);
 const opt=(sel,list)=>{for(const t of list){const o=document.createElement('option');o.textContent=t;sel.appendChild(o)}};
 (async()=>{drawTabs();
  try{info=await (await fetch('api/info')).json();
-  $('who').textContent='편집기: '+info.name+' · v'+info.version;document.title+=' — '+info.name;
   for(const g of info.groups){const o=document.createElement('option');o.value=g;$('grps').appendChild(o)}
   opt($('target'),info.targets);opt($('sby'),['묶지 않음'].concat(info.by));$('sby').options[0].value='묶지 않음';$('sby').options[0].textContent='전체 내역 (묶지 않음)';opt($('qby'),['묶지 않음'].concat(info.by));
   $('target').value='광고주만';$('sby').value='광고주별';}catch(e){}
