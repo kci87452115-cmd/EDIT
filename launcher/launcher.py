@@ -28,7 +28,7 @@ import tempfile
 import time
 import zipfile
 
-LAUNCHER_VERSION = "1.2.2"
+LAUNCHER_VERSION = "1.2.3"
 RUNTIME = 1                         # 공용 실행 환경 세대. 필요한 부품이 바뀌면 올린다 (앱의 runtime 값과 비교)
 EXE_NAME = "EditLauncher.exe"
 MUTEX = "EditLauncher_Running"      # 설치 프로그램(setup)이 '실행 중'을 알아보는 이름
@@ -831,7 +831,7 @@ class LauncherApp:
         self.tk, self.ttk = tk, ttk
         self.root = root
         root.title(f"편집 프로그램  (런처 v{LAUNCHER_VERSION})")
-        root.geometry("780x520")
+        root.geometry("780x640")
         root.minsize(640, 400)
         self.settings = load_settings()
         self.cat = None
@@ -855,12 +855,27 @@ class LauncherApp:
         self.banner.pack(side="right", padx=12)
         self.banner.bind("<Button-1>", lambda e: self.update_launcher())
 
-        self.nb = ttk.Notebook(self.root)
-        self.nb.pack(fill="both", expand=True, padx=10, pady=(8, 0))
+        self.nb = ttk.Notebook(self.root)       # 아래 버튼 줄을 먼저 붙인 뒤에 붙인다 (창이 작아도 버튼이 가려지지 않게)
         self.tabs = {}
+        try:
+            bg = ttk.Style().lookup("TFrame", "background") or "#f0f0f0"
+        except Exception:
+            bg = "#f0f0f0"
         for g, title in GROUPS.items():
-            fr = ttk.Frame(self.nb, padding=(10, 8))
-            self.nb.add(fr, text=f"   {title}   ")
+            # 프로그램이 많아져도 볼 수 있게: 탭 안을 위아래로 굴리는 목록으로
+            outer = ttk.Frame(self.nb)
+            self.nb.add(outer, text=f"   {title}   ")
+            cv = tk.Canvas(outer, highlightthickness=0, background=bg)
+            sb = ttk.Scrollbar(outer, orient="vertical", command=cv.yview)
+            cv.configure(yscrollcommand=sb.set)
+            sb.pack(side="right", fill="y")
+            cv.pack(side="left", fill="both", expand=True)
+            fr = ttk.Frame(cv, padding=(10, 8))
+            win = cv.create_window(0, 0, window=fr, anchor="nw")
+            fr.bind("<Configure>", lambda e, cv=cv: cv.configure(scrollregion=cv.bbox("all")))
+            cv.bind("<Configure>", lambda e, cv=cv, win=win: cv.itemconfigure(win, width=e.width))
+            cv.bind("<Enter>", lambda e, cv=cv: cv.bind_all("<MouseWheel>", lambda ev: self._wheel(cv, ev)))
+            cv.bind("<Leave>", lambda e, cv=cv: cv.unbind_all("<MouseWheel>"))
             self.tabs[g] = fr
         try:
             last = self.settings.get("last_tab", "radio")
@@ -869,22 +884,24 @@ class LauncherApp:
             pass
         self.nb.bind("<<NotebookTabChanged>>", lambda e: self._remember_tab())
 
+        # 아래쪽 줄들은 아래에서부터 붙인다: 상태 -> 업데이트 위치 -> 버튼 (창이 작아져도 늘 보임)
+        self.status = ttk.Label(self.root, text="", foreground="#555", padding=(14, 0, 14, 8))
+        self.status.pack(fill="x", side="bottom")
         bot = ttk.Frame(self.root, padding=(14, 6))
-        bot.pack(fill="x")
         ttk.Button(bot, text="🔄 다시 확인", command=self.refresh).pack(side="left")
         ttk.Button(bot, text="⬆ 모두 업데이트", command=self.update_all).pack(side="left", padx=6)
         ttk.Button(bot, text="📦 업데이트 파일 가져오기 (USB 등)", command=self.import_package).pack(side="left")
         ttk.Button(bot, text="📁 폴더 열기", command=lambda: self._open_folder(group_root(self._cur_group()))).pack(side="right")
 
         src = ttk.Frame(self.root, padding=(14, 0, 14, 10))
-        src.pack(fill="x")
+        src.pack(fill="x", side="bottom")
+        bot.pack(fill="x", side="bottom")
+        self.nb.pack(fill="both", expand=True, padx=10, pady=(8, 0))
         ttk.Label(src, text="업데이트 위치 (폴더 또는 GitHub 주소):").pack(side="left")
         self.src_var = tk.StringVar(value=self.settings["update_dir"])
         ttk.Entry(src, textvariable=self.src_var).pack(side="left", fill="x", expand=True, padx=4)
         ttk.Button(src, text="폴더 선택", command=self._pick_src).pack(side="left")
         ttk.Button(src, text="저장", command=self._save_src).pack(side="left", padx=(4, 0))
-        self.status = ttk.Label(self.root, text="", foreground="#555", padding=(14, 0, 14, 8))
-        self.status.pack(fill="x")
         self.view_lbl = tk.Label(self.root, text="", fg="#1e3a8a", font=(self.font, 9, "bold"), anchor="w", padx=14, pady=4, cursor="hand2")
         self.view_lbl.bind("<Button-1>", lambda e: self._copy_view_addr())
         self.discovery = Discovery()
@@ -895,6 +912,13 @@ class LauncherApp:
         self.tv_lbl.bind("<Button-1>", lambda e: self._copy_addr(self.tv_lbl))
         self.root.after(1500, self._view_tick)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)          # X: 바로 닫지 않고 물어본다
+
+    def _wheel(self, cv, ev):
+        try:
+            if cv.bbox("all") and cv.bbox("all")[3] > cv.winfo_height():
+                cv.yview_scroll(int(-ev.delta / 120) or (-1 if ev.delta > 0 else 1), "units")
+        except Exception:
+            pass
 
     def _tv_view_config(self):
         """TV 편성표 편집기 ⚙️ 설정의 '다른 PC에서 보기'(미리보기\\view.json)를 따른다.
@@ -916,7 +940,7 @@ class LauncherApp:
             if txt:
                 self.tv_lbl.config(text=txt + ("   (눌러서 주소 복사)" if txt.startswith("📺") else ""))
                 if not self.tv_lbl.winfo_ismapped():
-                    self.tv_lbl.pack(fill="x", before=self.status)
+                    self.tv_lbl.pack(fill="x", side="bottom", after=self.status)
             elif self.tv_lbl.winfo_ismapped():
                 self.tv_lbl.pack_forget()
         except Exception:
@@ -965,7 +989,7 @@ class LauncherApp:
             if txt:
                 self.view_lbl.config(text=txt + ("   (눌러서 주소 복사)" if txt.startswith("🌐") else ""))
                 if not self.view_lbl.winfo_ismapped():
-                    self.view_lbl.pack(fill="x", before=self.status)
+                    self.view_lbl.pack(fill="x", side="bottom", after=self.status)
             elif self.view_lbl.winfo_ismapped():
                 self.view_lbl.pack_forget()
         except Exception:
