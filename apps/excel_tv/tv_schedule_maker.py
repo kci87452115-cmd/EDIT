@@ -29,7 +29,7 @@ try:
 except Exception:
     pass
 
-APP_VERSION = "1.0.9"
+APP_VERSION = "1.0.10"
 VERSION = f"v{APP_VERSION} (시험판)"
 APP_NAME = "엑셀 TV 편성표 편집기"
 # 프로그램 파일이 있는 곳 (런처로 실행해도 이 파일 위치 - 런처 exe 위치가 아님)
@@ -87,7 +87,6 @@ DEFAULT_CONFIG = {
     "_끝시각_설명": "끝 시각 표시: 칸 왼쪽 아래에 끝나는 분을 표시. end_label_rules 에 프로그램명(일부)을 넣으면 매주 자동",
     "end_label_rules": [],
     "end_label_format": "{mm}",
-    "end_label_color": "#d32f2f",
     "_아이콘_설명": "icon_colors: 아이콘 배경색 바꾸기 (예: {\"해\": \"#c2185b\"}). icon_dark_text: 글자를 진회색으로 할 아이콘",
     "icon_colors": {},
     "icon_dark_text": ["U"],
@@ -1051,7 +1050,7 @@ def draw_schedule(dates, blocks, cfg, out_path=None, printed_at=None):
         if b.get("show_end") and h >= msz * 2:      # 끝 시각: 칸 왼쪽 아래
             em = b["e"] + DAY_START_MIN
             et = cfg.get("end_label_format", "{mm}").format(hh=f"{em // 60:02d}", mm=f"{em % 60:02d}")
-            p.text(x0 + 0.3, y1 - 0.7, et, msz, hex_to_rgb(cfg.get("end_label_color")) or (0, 0, 0))
+            p.text(x0 + 0.3, y1 - 0.7, et, msz, (0, 0, 0))      # 끝 시각은 시작 분처럼 검정
         icons = icon_list(b)
         isc = 1.0 if h >= ICON else max(0.5, h / ICON)
         iw = draw_icons(p, x1, y0, icons, scale=isc) if icons else 0
