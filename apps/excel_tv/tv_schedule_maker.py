@@ -29,7 +29,7 @@ try:
 except Exception:
     pass
 
-APP_VERSION = "1.1.2"
+APP_VERSION = "1.1.8"
 VERSION = f"v{APP_VERSION} (시험판)"
 APP_NAME = "엑셀 TV 편성표 편집기"
 # 프로그램 파일이 있는 곳 (런처로 실행해도 이 파일 위치 - 런처 exe 위치가 아님)
@@ -818,6 +818,29 @@ def icon_list(b):
     return out
 
 
+# ---------------------------------------------------------------- DMB 변환 (같은 편성, 출력 모양만 다르게)
+# 빼는 것: 키 -> 이름. 기본은 연령·분홍만 남기고 나머지 아이콘·글자색·음영은 뺌
+DMB_HIDE_ITEMS = (("uhd", "UHD"), ("cc", "자막"), ("sign", "수어"), ("ad", "화면해설"), ("rl", "R/L"),
+                  ("age", "연령"), ("hl", "글자 바탕색"), ("fg", "글자색"), ("bold", "글자 굵기"), ("shade", "음영"),
+                  ("pink", "분홍"))
+DMB_HIDE_DEFAULT = ("uhd", "cc", "sign", "ad", "rl", "hl", "fg", "bold", "shade")
+ICON_KEY_OF = {"U": "uhd", "자": "cc", "수": "sign", "해": "ad", "R": "rl", "L": "rl", "AGE": "age"}
+
+
+def dmb_title_auto(tv_title):
+    """TV 제목에서 DMB 제목 제안: '광주MBC주간편성표[11월2주]' -> '광주 MYMBC 주간편성표[11월2주]'"""
+    t = re.sub(r"(?<![A-Za-z])MBC\s*", "MYMBC ", tv_title or "MBC 주간편성표", count=1)
+    return re.sub(r"(\S)MYMBC", r"\1 MYMBC", t).replace("  ", " ").strip()
+
+
+def dmb_hidden(cfg):
+    """DMB 로 그릴 때 뺄 것 (DMB 가 아니면 빈 집합)"""
+    d = cfg.get("_dmb")
+    if not d:
+        return set()
+    return set(d.get("hide", DMB_HIDE_DEFAULT))
+
+
 def draw_icons(p, x1, top, icons, scale=1.0):
     s = ICON * scale
     x = x1 - s * len(icons)
@@ -953,7 +976,9 @@ def draw_schedule(dates, blocks, cfg, out_path=None, printed_at=None):
     printed_at = printed_at or datetime.datetime.now()
 
     # 제목
-    logo = cfg.get("logo_file")
+    hide = dmb_hidden(cfg)
+    dmb_title = (cfg.get("_dmb") or {}).get("title", "").strip()
+    logo = None if dmb_title else cfg.get("logo_file")
     if logo and not os.path.isabs(logo):
         logo = next((os.path.join(d, logo) for d in (DATA_DIR, APP_DIR) if os.path.isfile(os.path.join(d, logo))), "")
     if logo and os.path.isfile(logo):
@@ -964,7 +989,7 @@ def draw_schedule(dates, blocks, cfg, out_path=None, printed_at=None):
             tsz = max(8.0, min(40.0, float(cfg.get("title_size", 22))))
         except (TypeError, ValueError):
             tsz = 22.0
-        p.text_center(PAGE_W / 2, 56, cfg.get("title_text", "MBC 주간편성표"), tsz, (0.17, 0.24, 0.33))
+        p.text_center(PAGE_W / 2, 56, dmb_title or cfg.get("title_text", "MBC 주간편성표"), tsz, (0.17, 0.24, 0.33))
         p.bold = False
 
     # 범례 줄
@@ -972,13 +997,16 @@ def draw_schedule(dates, blocks, cfg, out_path=None, printed_at=None):
     x = 40
     for key, label, name in (("U", "U", "UHD"), ("자", "자", "자막"), ("수", "수", "한국수어"), ("해", "해", "화면해설"),
                              ("R", "R", "전국릴레이"), ("L", "L", "부분로컬")):
+        if ICON_KEY_OF[key] in hide:        # DMB: 뺀 아이콘은 범례에서도 뺌
+            continue
         draw_icons(p, x + 6.5, 89.3, [(key, label)], scale=6.5 / ICON)
         p.text(x + 8, 94.8, name, 5.8)
         x += 10 + p.width(name, 5.8) + 6
-    for lab in ("A", "7", "12", "15", "19"):
-        draw_icons(p, x + 6.5, 89.3, [("AGE", lab)], scale=6.5 / ICON)
-        x += 7.6
-    p.text(x + 1, 94.8, "연령", 5.8)
+    if "age" not in hide:
+        for lab in ("A", "7", "12", "15", "19"):
+            draw_icons(p, x + 6.5, 89.3, [("AGE", lab)], scale=6.5 / ICON)
+            x += 7.6
+        p.text(x + 1, 94.8, "연령", 5.8)
     stamp = make_stamp(cfg, printed_at, dates)
     if stamp:
         p.text(567.7 - p.width(stamp, 8.7), 95.5, stamp, 8.7, (0.2, 0.2, 0.2))
@@ -1020,9 +1048,13 @@ def draw_schedule(dates, blocks, cfg, out_path=None, printed_at=None):
         p.rect(x0, body, x1, TABLE_BOTTOM, fill=(1, 1, 1), stroke=LINE)
 
     # 프로그램 칸
+    hide_all = hide
+    own_keep = hide_all and (cfg.get("_dmb") or {}).get("keep_own", True)
     for b in sorted(blocks, key=lambda b: (b["day0"], b["s"])):
         if b["day0"] > 6:
             continue
+        # DMB: 'DMB만' 칸은 직접 넣은 꾸밈(음영·굵기·글자색·글자 바탕)을 그대로
+        hide = hide_all - {"shade", "bold", "fg", "hl"} if own_keep and b.get("show") == "dmb" else hide_all
         x0 = X_COLS["days"][b["day0"]][0]
         x1 = X_COLS["days"][min(b["day1"], 6)][1]
         if b["half"] == "L":
@@ -1037,13 +1069,14 @@ def draw_schedule(dates, blocks, cfg, out_path=None, printed_at=None):
             dash_lines.append((x0, y0, x1))
         if b.get("bottom_dash"):
             dash_lines.append((x0, y1, x1))
-        fill = hex_to_rgb(b.get("shade")) or (PINK if b["pink"] else None) or hex_to_rgb(b.get("rule_shade")) \
-            or (1, 1, 1)
+        fill = (None if "shade" in hide else hex_to_rgb(b.get("shade"))) \
+            or (PINK if b["pink"] and "pink" not in hide else None) \
+            or (None if "shade" in hide else hex_to_rgb(b.get("rule_shade"))) or (1, 1, 1)
         p.rect(x0, y0, x1, y1, fill=fill, stroke=LINE)
         h = y1 - y0
         mm = f"{(b['s'] + DAY_START_MIN) % 60:02d}"
         msz = 4.4 if h >= 4.6 else max(2.2, h * 0.9)
-        p.bold = bool(b.get("bold"))
+        p.bold = bool(b.get("bold")) and "bold" not in hide
         if b.get("local") and h >= 9:
             p.text(x0 + 1.0, y0 + h / 2 + 2.2, mm, 6.0, (0.3, 0.3, 0.3))   # 로컬은 분 표시를 크게
         else:
@@ -1052,7 +1085,7 @@ def draw_schedule(dates, blocks, cfg, out_path=None, printed_at=None):
             em = b["e"] + DAY_START_MIN
             et = cfg.get("end_label_format", "{mm}").format(hh=f"{em // 60:02d}", mm=f"{em % 60:02d}")
             p.text(x0 + 0.3, y1 - 0.7, et, msz, (0, 0, 0))      # 끝 시각은 시작 분처럼 검정
-        icons = icon_list(b)
+        icons = [ic for ic in icon_list(b) if ICON_KEY_OF.get(ic[0] if isinstance(ic, tuple) else ic) not in hide]
         isc = 1.0 if h >= ICON else max(0.5, h / ICON)
         iw = draw_icons(p, x1, y0, icons, scale=isc) if icons else 0
         if b["half"] and cfg.get("plan_label") and h >= 8:
@@ -1068,8 +1101,8 @@ def draw_schedule(dates, blocks, cfg, out_path=None, printed_at=None):
             tx0, tx1, ty0, ty1 = x0 + 1.5, x1 - 1.5, y0 + min(ICON, h * 0.15), y1
         items, total = layout_label(p, b["label"], tx1 - tx0, ty1 - ty0)
         cy = (ty0 + ty1) / 2 - total / 2
-        fg = hex_to_rgb(b.get("fg")) or (0, 0, 0)
-        hl = hex_to_rgb(b.get("hl"))
+        fg = (None if "fg" in hide else hex_to_rgb(b.get("fg"))) or (0, 0, 0)
+        hl = None if "hl" in hide else hex_to_rgb(b.get("hl"))
         for it in items:
             size = it[1]
             lh = size * 1.18
@@ -1126,10 +1159,104 @@ def save_pdf(doc, out_path, subset=True):
     return True
 
 
+SHOW_LABELS = {"": "모두", "tv": "TV만", "dmb": "DMB만"}
+SHOW_KEYS = {v: k for k, v in SHOW_LABELS.items()}
+
+
+def restore_under(rows, orig, i):
+    """rows[i] 를 'DMB만'으로 바꿨을 때: 이 칸 때문에 잘려 나간 TV 편성을 엑셀(orig) 그대로 되살림.
+    잘린 조각들은 다시 한 줄로 이어 붙임. 반환: 되살린 줄 수"""
+    r = rows[i]
+    d, plan = r["date"], r["plan"]
+    visible = [x for k, x in enumerate(rows) if k != i and x["date"] == d and x["plan"] == plan
+               and (x.get("show") or "") != "dmb"]
+    n = 0
+    for o in orig:
+        if o["date"] != d or o["plan"] != plan or not (o["s"] < r["e"] and o["e"] > r["s"]):
+            continue
+        gaps = [(o["s"], o["e"])]
+        for x in visible:
+            nxt = []
+            for a, b in gaps:
+                if x["s"] < b and x["e"] > a:
+                    if a < x["s"]:
+                        nxt.append((a, x["s"]))
+                    if b > x["e"]:
+                        nxt.append((x["e"], b))
+                else:
+                    nxt.append((a, b))
+            gaps = nxt
+        for a, b in gaps:
+            if b > a:
+                rows.append(dict(o, s=a, e=b, **({"cut": True} if (a, b) != (o["s"], o["e"]) else {})))
+                n += 1
+    # 같은 프로그램의 잘린 조각이 이어져 있으면 한 줄로
+    same = lambda x, y: all(x.get(k) == y.get(k) for k in ("date", "plan", "code", "name")) and x.get("cut") \
+        and y.get("cut") and not x.get("local") and (x.get("show") or "") == (y.get("show") or "")
+    changed = True
+    while changed:
+        changed = False
+        for x in rows:
+            y = next((y for y in rows if y is not x and same(x, y) and y["s"] == x["e"]), None)
+            if y:
+                x["e"] = y["e"]
+                rows.remove(y)
+                o = next((o for o in orig if o["date"] == x["date"] and o["plan"] == x["plan"]
+                          and o.get("code") == x.get("code") and (o["s"], o["e"]) == (x["s"], x["e"])), None)
+                if o:
+                    x.pop("cut", None)
+                changed = True
+                break
+    return n
+
+
+def show_prefix(r):
+    return {"tv": "[TV만] ", "dmb": "[DMB만] "}.get(r.get("show") or "", "")
+
+
+def output_rows(rows, dmb=False):
+    """출력용 줄 (원본은 그대로):
+      TV  = 'DMB만' 칸은 뺌
+      DMB = 'TV만' 칸은 빼고, 'DMB만' 칸이 덮는 시간은 다른 칸에서 잘라냄 (TV 편성은 건드리지 않음)
+    줄마다 _src = rows 의 원래 번호 (화면에서 칸을 누르면 원래 줄을 고르도록)"""
+    other = "tv" if dmb else "dmb"
+    overlays = [r for r in rows if r.get("show") == "dmb"] if dmb else []
+    out = []
+    for i, r in enumerate(rows):
+        sh = r.get("show") or ""
+        if sh == other:
+            continue
+        pieces = [(r["s"], r["e"])]
+        if sh != "dmb":
+            for ov in overlays:
+                if ov["date"] != r["date"] or ov["plan"] != r["plan"]:
+                    continue
+                nxt = []
+                for a, b in pieces:
+                    if ov["s"] < b and ov["e"] > a:
+                        if a < ov["s"]:
+                            nxt.append((a, ov["s"]))
+                        if b > ov["e"]:
+                            nxt.append((ov["e"], b))
+                    else:
+                        nxt.append((a, b))
+                pieces = nxt
+        for a, b in pieces:
+            if b > a:
+                x = dict(r, s=a, e=b, _src=i)
+                if (a, b) != (r["s"], r["e"]):
+                    x["cut"] = True
+                out.append(x)
+    return out
+
+
 def compose(rows, prev_rows=None, cfg=None, printed_at=None, log=lambda s: None):
     """화면 보기·미리보기·PDF 저장이 모두 쓰는 단 하나의 그리기 함수"""
     cfg = cfg or load_config()
-    dates, blocks = build_blocks(rows, cfg, prev_rows, log)
+    orows = output_rows(rows, bool(cfg.get("_dmb")))
+    dates, blocks = build_blocks(orows, cfg, prev_rows, log)
+    for b in blocks:            # 칸 -> 원래 줄 번호
+        b["_ris"] = sorted({orows[i]["_src"] for i in b["_ris"]})
     if not dates:
         raise ValueError("편성 줄이 없습니다.")
     doc, geom = draw_schedule(dates, blocks, cfg, None, printed_at)
@@ -1229,11 +1356,20 @@ def insert_local(rows, dates, name, s, e, shade="#d9d9d9", bold=True, code=None,
     return added
 
 
+def clash(a, b):
+    """두 줄이 같은 출력(TV/DMB)에서 시간이 겹치는지. 'DMB만' 칸은 다른 칸을 덮는 것이라 'DMB만'끼리만 겹침"""
+    if a["date"] != b["date"] or a["plan"] != b["plan"] or not (a["s"] < b["e"] and a["e"] > b["s"]):
+        return False
+    sa, sb = a.get("show") or "", b.get("show") or ""
+    if "dmb" in (sa, sb):
+        return sa == sb == "dmb"
+    return True
+
+
 def find_overlaps(rows, i):
     """rows[i] 와 같은 날·같은 안에서 시간이 겹치는 줄 번호들"""
     r = rows[i]
-    return [k for k, x in enumerate(rows) if k != i and x["date"] == r["date"] and x["plan"] == r["plan"]
-            and x["s"] < r["e"] and x["e"] > r["s"]]
+    return [k for k, x in enumerate(rows) if k != i and clash(r, x)]
 
 
 def overlap_plan(rows, i):
@@ -1420,8 +1556,8 @@ def merge_new_version(cur_rows, old_orig, new_rows):
     for d in sorted({r["date"] for r in merged}):
         for plan in ("1안", "2안"):
             day = sorted([r for r in merged if r["date"] == d and r["plan"] == plan], key=lambda r: (r["s"], r["e"]))
-            for a, b in zip(day, day[1:]):
-                if b["s"] < a["e"]:
+            for a, b in ((a, b) for n, a in enumerate(day) for b in day[n + 1:]):
+                if clash(a, b):
                     for x, y in ((a, b), (b, a)):
                         if not x.get("_check"):
                             x["_check"], x["_ovl"] = True, True
@@ -1433,6 +1569,30 @@ def merge_new_version(cur_rows, old_orig, new_rows):
               "removed": removed, "kept": kept, "locals": [r for r in merged if r.get("_ver") == "local"],
               "added": [r for r in merged if r.get("_ver") == "added"], "checks": checks, "dropped": dropped}
     return merged, report
+
+
+def merge_keep_past(cur_rows, old_orig, new_rows, keep_before=None):
+    """merge_new_version + 지난 날(keep_before 'YYYYMMDD' 앞 날짜)은 예전 판 작업 그대로.
+    반환: (합친 줄, 보고서, 새 orig)  보고서['past'] = 지난 날이라 반영하지 않은 변경"""
+    import copy
+    merged, rep = merge_new_version(cur_rows, old_orig, new_rows)
+    if not keep_before:
+        rep["past"] = []
+        return merged, rep, copy.deepcopy(new_rows)
+    past = lambda r: r["date"] < keep_before
+    kinds = (("new", "새로 생김"), ("changed", "바뀜"), ("removed", "없어짐"), ("checks", "확인"),
+             ("dropped", "지운 줄"))
+    rep["past"] = [(t, r) for k, t in kinds for r in rep[k] if past(r)]
+    for k in ("same", "changed", "new", "removed", "locals", "added", "checks", "dropped"):
+        rep[k] = [r for r in rep[k] if not past(r)]
+    rep["kept"] = [(n, mv) for n, mv in rep["kept"] if not past(n)]
+    keep = [copy.deepcopy(r) for r in cur_rows if past(r)]
+    for r in keep:
+        for k in ("_ver", "_check", "_note", "_was", "_ovl"):
+            r.pop(k, None)
+    merged = keep + [r for r in merged if not past(r)]
+    orig = [copy.deepcopy(r) for r in old_orig if past(r)] + [copy.deepcopy(r) for r in new_rows if not past(r)]
+    return merged, rep, orig
 
 
 def apply_local_rules(rows, cfg, log=print):
@@ -1632,6 +1792,35 @@ class App:
         abtn("설정 파일 열기", self.open_config)
         abtn("큰 창 미리보기", self.preview, "#bbdefb")
         abtn("새 판 반영", self.new_version, "#ffe0b2")
+        self.dmb_on = False
+        self.btn_dmb = tk.Button(act, text="DMB 변환", command=self.toggle_dmb, bg="#e1bee7")
+        self.btn_dmb.pack(side=tk.LEFT, padx=(10, 2))
+        # DMB 줄 (DMB 변환을 누르면 보임): 뺄 것 체크, DMB 제목, DMB PDF 저장 - 설정은 TV 와 따로 저장
+        cfgd = load_config()
+        self.dmbbar = dbar = tk.Frame(root, bg="#f3e5f5")
+        tk.Label(dbar, text="DMB에서 빼기:", bg="#f3e5f5", font=("", 9, "bold")).pack(side=tk.LEFT, padx=(4, 2))
+        hide0 = set(cfgd.get("dmb_hide", DMB_HIDE_DEFAULT))
+        if not cfgd.get("dmb_shade_off"):       # 1.1.5: DMB 는 음영도 기본으로 뺌 (이전에 저장한 설정에도 한 번 적용)
+            hide0.add("shade")
+            save_config_keys({"dmb_hide": sorted(hide0), "dmb_shade_off": True})
+        if not cfgd.get("dmb_bold_off"):        # 1.1.7: 글자 굵기도 기본으로 뺌 (한 번만)
+            hide0.add("bold")
+            save_config_keys({"dmb_hide": sorted(hide0), "dmb_bold_off": True})
+        self.v_dmb_hide = {}
+        for k, t in DMB_HIDE_ITEMS:
+            v = tk.BooleanVar(value=k in hide0)
+            v.trace_add("write", lambda *a: self.dmb_changed())
+            self.v_dmb_hide[k] = v
+            tk.Checkbutton(dbar, text=t, variable=v, bg="#f3e5f5").pack(side=tk.LEFT)
+        self.v_dmb_keep = tk.BooleanVar(value=bool(cfgd.get("dmb_keep_own", True)))
+        self.v_dmb_keep.trace_add("write", lambda *a: self.dmb_changed())
+        tk.Checkbutton(dbar, text="| DMB만 칸은 음영·굵기 그대로", variable=self.v_dmb_keep, bg="#f3e5f5",
+                       fg="#6a1b9a").pack(side=tk.LEFT, padx=(6, 0))
+        tk.Label(dbar, text="  DMB 제목", bg="#f3e5f5").pack(side=tk.LEFT)
+        self.v_dmb_title = tk.StringVar(value=cfgd.get("dmb_title", ""))
+        self.v_dmb_title.trace_add("write", lambda *a: self.dmb_changed())
+        tk.Entry(dbar, textvariable=self.v_dmb_title, width=30).pack(side=tk.LEFT, padx=2)
+        tk.Button(dbar, text="DMB PDF 저장", command=self.make_dmb, bg="#ce93d8").pack(side=tk.LEFT, padx=6)
 
         # 제목 · 날짜 (바꾸면 바로 편성표에 반영, 설정에 저장되어 다음 주에도 그대로)
         cfg0 = load_config()
@@ -1698,6 +1887,8 @@ class App:
         self.cv.bind("<Button-1>", self.on_canvas_click)
         self.cv.bind("<Button-3>", self.on_canvas_menu)
         self.cv.bind("<Double-1>", lambda e: self.edit_row())
+        self.cv.bind("<Motion>", self.on_canvas_motion)
+        self.cv.bind("<Leave>", lambda e: (self.cv.delete("tip"), setattr(self, "_tip_row", -1)))
         self.cv.bind("<MouseWheel>", self.on_wheel)
         self.cv.bind("<Button-4>", lambda e: self.cv.yview_scroll(-3, "units"))
         self.cv.bind("<Button-5>", lambda e: self.cv.yview_scroll(3, "units"))
@@ -1914,7 +2105,7 @@ class App:
             if r.get("edited"):
                 tags.append("edited")
             self.tree.insert("", self.tk.END, iid=str(i), tags=tags, values=(
-                day_label(r["date"]), fmt_t(r["s"]), fmt_t(r["e"]), r["name"], r["plan"], icon_text(r),
+                day_label(r["date"]), fmt_t(r["s"]), fmt_t(r["e"]), show_prefix(r) + r["name"], r["plan"], icon_text(r),
                 ("음영" if r.get("shade") else
                  ("분홍(직접)" if r.get("force_pink") is True else "분홍") if self.eff_pink(i) else
                  "분홍 끔" if r.get("force_pink") is False else "음영(자동)" if shade else ""),
@@ -2043,7 +2234,7 @@ class App:
         top.bind("<Return>", lambda e: ok())
         top.after(150, lambda: top.grab_set())
 
-    def ask_overlap(self, i=None):
+    def ask_overlap(self, i=None, force=False):
         """시간을 바꾼 칸이 다른 칸과 겹치면: 겹치는 칸을 지우거나 줄일지 물음 (아니오면 그대로 두고 기록에 주의)"""
         from tkinter import messagebox
         if getattr(self, "_ovl_id", None):
@@ -2062,7 +2253,7 @@ class App:
         r = self.rows[i]
         plan = overlap_plan(self.rows, i)
         key = (r["date"], r["plan"], r["s"], r["e"], r["name"])
-        if not plan or key == getattr(self, "_ovl_no", None):
+        if not plan or (key == getattr(self, "_ovl_no", None) and not force):
             return
         self._ovl_busy = True
         try:
@@ -2083,6 +2274,86 @@ class App:
             self.log(f"[겹침 정리] {day_label(r['date'])} {t}")
         self.multi = []
         self.refresh(keep=ni)
+
+    def set_show(self, k):
+        """고른 칸들의 보이는 곳: '' 모두 / tv TV만 / dmb DMB만"""
+        rows = self.selected_rows()
+        if not rows:
+            return
+        self.push_undo("show")
+        targets = [self.rows[i] for i in rows]
+        cur = self.rows[self.sel] if self.valid_sel() else None
+        for x in targets:
+            old = x.get("show") or ""
+            x["show"] = k
+            self.mark_edit(x)
+            self.after_show_change(x, old)
+        self.log(f"[보이는 곳] {len(targets)}칸 -> {SHOW_LABELS[k]}")
+        self.multi = []
+        self.refresh(keep=next((n for n, x in enumerate(self.rows) if x is cur), -1))
+
+    def after_show_change(self, x, old):
+        """'DMB만'으로 바꾼 칸이 TV 편성을 잘라 두었으면(로컬 끼워 넣기) TV 쪽은 엑셀 원래대로 되살림"""
+        if (x.get("show") or "") != "dmb" or old == "dmb":
+            return
+        n = restore_under(self.rows, self.orig, self.rows.index(x))
+        if n:
+            self.log(f"[DMB만] '{x['name']}' 때문에 잘렸던 TV 편성 {n}칸을 엑셀 원래대로 되살렸습니다.")
+
+    def row_reason(self, i):
+        """이 칸에 붙은 표시의 이유 한 줄: (글, 색, 겹침 정리 버튼을 보일지)"""
+        if i is None or not (0 <= i < len(self.rows)):
+            return "", "", False
+        r = self.rows[i]
+        ov = find_overlaps(self.rows, i)
+        if ov:
+            x = self.rows[ov[0]]
+            a, b = max(r["s"], x["s"]), min(r["e"], x["e"])
+            more = f" 외 {len(ov) - 1}칸" if len(ov) > 1 else ""
+            return (f"🔴 겹침: {x['name']}({fmt_t(x['s'])}~{fmt_t(x['e'])}){more}과 {fmt_t(a)}~{fmt_t(b)} 겹침",
+                    "#c62828", True)
+        if r.get("_check") and r.get("_note"):
+            return "🔴 확인: " + r["_note"], "#c62828", False
+        if r.get("_ver") == "changed":
+            return f"🟠 새 판에서 바뀜: 예전 {r.get('_was', '')} → 지금 {fmt_t(r['s'])}~{fmt_t(r['e'])}", "#e65100", False
+        if r.get("_ver") == "new":
+            return "🟠 새 판에서 새로 생김", "#e65100", False
+        if r.get("show") == "dmb":
+            return "🟣 DMB에서만 보이는 칸 (TV에는 안 나옴)", "#8e24aa", False
+        if r.get("show") == "tv":
+            return "🟣 TV에서만 보이는 칸 (DMB에는 안 나옴)", "#8e24aa", False
+        return "", "", False
+
+    def update_reason(self):
+        txt, color, btn = self.row_reason(self.sel)
+        if not txt:
+            self.reason_bar.pack_forget()
+            return
+        self.reason_lbl.config(text=txt, fg=color)
+        if btn:
+            self.reason_btn.pack(side=self.tk.RIGHT, padx=2)
+        else:
+            self.reason_btn.pack_forget()
+        self.reason_bar.pack(fill=self.tk.X, pady=(0, 4), after=self.form_title)
+
+    def on_canvas_motion(self, e):
+        """칸 위에 마우스: 표시 이유를 작은 말풍선으로"""
+        i = self.hit(e)
+        if i == getattr(self, "_tip_row", -1):
+            return
+        self._tip_row = i
+        self.cv.delete("tip")
+        txt, color, _ = self.row_reason(i)
+        if not txt:
+            return
+        x, y = self.cv.canvasx(e.x) + 14, self.cv.canvasy(e.y) + 16
+        t = self.cv.create_text(x + 4, y + 3, text=txt, anchor="nw", fill=color, font=("", 9, "bold"),
+                                width=360, tags=("tip",))
+        bb = self.cv.bbox(t)
+        if bb:
+            r = self.cv.create_rectangle(bb[0] - 4, bb[1] - 3, bb[2] + 4, bb[3] + 3, fill="#fffde7",
+                                         outline=color, tags=("tip",))
+            self.cv.tag_lower(r, t)
 
     def check_overlap(self, date):
         for plan in ("1안", "2안"):
@@ -2107,6 +2378,8 @@ class App:
         r = {"date": date, "code": "", "name": "새 프로그램", "s": s_, "e": min(DAY_LEN_MIN, s_ + 30),
              "uhd": False, "cc": True, "ad": False, "sign": False, "age": "", "rl": "L", "rerun": False,
              "plan": plan}
+        if self.dmb_on:         # DMB 로 보는 중에 넣는 줄은 DMB에서만
+            r["show"] = "dmb"
         self.rows.append(r)
         self.refresh(keep=len(self.rows) - 1)
         self.edit_row(len(self.rows) - 1, new=True)
@@ -2258,7 +2531,7 @@ class App:
             return
         base = self.rows[i]
         top = tk.Toplevel(self.root)
-        top.title("로컬 끼워 넣기")
+        top.title("DMB만 칸 넣기 (TV 편성은 그대로)" if self.dmb_on else "로컬 끼워 넣기")
         top.transient(self.root)
         f = tk.Frame(top, padx=14, pady=10)
         f.pack()
@@ -2314,8 +2587,20 @@ class App:
                 return
             shade = SHADE_PRESETS.get(v_shade.get(), "#d9d9d9")
             self.push_undo("local")
-            added = insert_local(self.rows, [wd_of[k] for k in days], name, s_, e_, shade, v_bold.get(),
-                                 extra={"cc": v_cc.get()}, log=self.log)
+            if self.dmb_on:     # DMB 로 보는 중: TV 편성은 그대로 두고 DMB에서만 덮는 칸
+                added = []
+                for d in [wd_of[k] for k in days]:
+                    x = {"date": d, "code": "DMB-" + norm_key(name), "name": name, "s": s_, "e": e_, "uhd": False,
+                         "cc": v_cc.get(), "ad": False, "sign": False, "age": "", "rl": "", "rerun": False,
+                         "plan": "1안", "shade": shade or "", "bold": bool(v_bold.get()), "local": True,
+                         "edited": True, "show": "dmb"}
+                    self.rows.append(x)
+                    added.append(x)
+                self.log(f"[DMB만] '{name}' {fmt_t(s_)}~{fmt_t(e_)} {len(added)}칸 - TV에는 안 보입니다.")
+                v_rule.set(False)
+            else:
+                added = insert_local(self.rows, [wd_of[k] for k in days], name, s_, e_, shade, v_bold.get(),
+                                     extra={"cc": v_cc.get()}, log=self.log)
             spec = "".join(WEEKDAYS[k] for k in days)
             if v_rule.get():
                 add_local_rule({"name": name, "days": ",".join(WEEKDAYS[k] for k in days),
@@ -2446,6 +2731,8 @@ class App:
         from tkinter import filedialog, messagebox
         if not self.ready():
             return
+        if self.dmb_on:         # DMB 로 보는 중이면 DMB PDF
+            return self.make_dmb()
         base = os.path.splitext(self.default_proj_path())[0]          # 저장하는 지금 시분
         out = filedialog.asksaveasfilename(defaultextension=".pdf", filetypes=[("PDF", "*.pdf")],
                                            initialfile=os.path.basename(base) + ".pdf",
@@ -2672,11 +2959,18 @@ class App:
     def build_form(self, parent):
         tk, ttk = self.tk, self.ttk
         self.form_title = tk.Label(parent, text="칸을 고르세요", font=("", 12, "bold"), anchor="w")
-        self.form_title.pack(fill=tk.X, pady=(2, 6))
+        self.form_title.pack(fill=tk.X, pady=(2, 2))
+        # 주황·빨강 표시가 있는 칸: 이유 한 줄 + [겹침 정리]
+        self.reason_bar = tk.Frame(parent)
+        self.reason_lbl = tk.Label(self.reason_bar, text="", anchor="w", justify="left", wraplength=380,
+                                   font=("", 9, "bold"))
+        self.reason_lbl.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.reason_btn = tk.Button(self.reason_bar, text="겹침 정리", bg="#ffcdd2",
+                                    command=lambda: self.ask_overlap(self.sel, force=True))
         f = tk.Frame(parent)
         f.pack(fill=tk.X)
         self.fv = {k: tk.StringVar() for k in ("name", "s", "e", "plan", "age", "rl", "code", "shade_name",
-                                               "hl_name", "fg_name")}
+                                               "hl_name", "fg_name", "show")}
         self.f_hl = self.f_fg = ""
         self.fb = {k: tk.BooleanVar() for k in ("uhd", "cc", "sign", "ad", "force_pink", "show_end", "bold",
                                                 "top_dash", "bottom_dash")}
@@ -2690,6 +2984,12 @@ class App:
         self.v_name_all = tk.BooleanVar(value=False)
         tk.Checkbutton(f, text="여러 칸 선택 시 이름도 모두 똑같이", variable=self.v_name_all,
                        font=("", 8)).grid(row=11, column=0, columnspan=4, sticky="w")
+        sf = tk.Frame(f)
+        sf.grid(row=12, column=0, columnspan=4, sticky="w", pady=(2, 0))
+        tk.Label(sf, text="보이는 곳").pack(side=tk.LEFT)
+        ttk.Combobox(sf, textvariable=self.fv["show"], values=tuple(SHOW_LABELS.values()), width=7,
+                     state="readonly").pack(side=tk.LEFT, padx=4)
+        tk.Label(sf, text="(DMB만: TV에는 안 보이고 DMB에서 그 시간을 덮음)", fg="#777", font=("", 8)).pack(side=tk.LEFT)
         tk.Label(f, text="시작").grid(row=1, column=0, sticky="w")
         self.ent_s = tk.Entry(f, textvariable=self.fv["s"], width=7)
         self.ent_s.grid(row=1, column=1, sticky="w")
@@ -2841,6 +3141,7 @@ class App:
                                    fg="#1565c0" if n > 1 else "black")
             for k in ("name", "plan", "age", "rl", "code"):
                 self.fv[k].set(r.get(k, "") or "")
+            self.fv["show"].set(SHOW_LABELS.get(r.get("show") or "", "모두"))
             self.fv["s"].set(fmt_t(r["s"]))
             self.fv["e"].set(fmt_t(r["e"]))
             for k in self.fb:
@@ -2882,7 +3183,7 @@ class App:
             self.f_fg = FG_PRESETS[self.fv["fg_name"].get()]
         new = dict(name=name, s=s_, e=e_, plan=self.fv["plan"].get() or "1안", age=self.fv["age"].get(),
                    rl=self.fv["rl"].get(), code=self.fv["code"].get().strip(), shade=self.f_shade,
-                   hl=self.f_hl, fg=self.f_fg,
+                   hl=self.f_hl, fg=self.f_fg, show=SHOW_KEYS.get(self.fv["show"].get(), ""),
                    **{k: v.get() for k, v in self.fb.items()})
         fpv = new.pop("force_pink")
         changed = any((r.get(k) or "") != (v or "") if not isinstance(v, bool) else bool(r.get(k)) != v
@@ -2893,6 +3194,7 @@ class App:
         if not changed:
             return
         self.push_undo(("form", tuple(self.selected_rows())))  # 같은 칸을 이어서 고치는 동안은 한 번만 기록
+        old_shows = {id(self.rows[k]): self.rows[k].get("show") or "" for k in self.selected_rows()}
         # 여러 칸 선택: 바뀐 항목 중 아이콘·음영·분홍·끝 시각·굵게·편성안은 고른 칸 모두에,
         # 프로그램명·시각·코드는 기준 칸(마지막에 누른 칸)에만
         others = [k for k in self.selected_rows() if k != self.sel]
@@ -2914,6 +3216,13 @@ class App:
             r["name_edited"] = True
         time_changed = (s_, e_) != (r["s"], r["e"])
         r.update(new)
+        if any((x.get("show") or "") != old_shows.get(id(x), "") for x in [r] + [self.rows[k] for k in others]):
+            for x in [r] + [self.rows[k] for k in others]:
+                self.after_show_change(x, old_shows.get(id(x), ""))
+            self.sel = self.rows.index(r)
+            self.multi = []
+            self.refresh(keep=self.sel)
+            return
         if time_changed:        # 입력이 끝나면(잠깐 멈추거나 Enter) 겹치는 칸 정리를 물음
             if getattr(self, "_ovl_id", None):
                 self.root.after_cancel(self._ovl_id)
@@ -2981,7 +3290,8 @@ class App:
                      key=lambda i: (self.rows[i]["plan"], self.rows[i]["s"]))
         for i in idx:
             r = self.rows[i]
-            self.daylist.insert("", self.tk.END, iid=str(i), values=(fmt_t(r["s"]), fmt_t(r["e"]), r["name"], r["plan"]),
+            self.daylist.insert("", self.tk.END, iid=str(i), values=(fmt_t(r["s"]), fmt_t(r["e"]), show_prefix(r) + r["name"],
+                                                                     r["plan"]),
                                 tags=("edited",) if r.get("edited") else ())
         if self.daylist.exists(str(self.sel)):
             self._quiet = True
@@ -3330,9 +3640,12 @@ class App:
         self.pink_state = {ri: g["block"]["pink"] for g in geom for ri in g["block"]["_ris"]}
         self.img = self.tk.PhotoImage(data=base64.b64encode(png).decode("ascii"))
         self.cv.delete("all")
+        self._tip_row = -1
         self.cv.create_image(0, 0, image=self.img, anchor="nw", tags=("page",))
         self.cv.configure(scrollregion=(0, 0, self.img.width(), self.img.height()))
-        self.draw_lbl.config(text=f"{datetime.datetime.now():%H:%M:%S} 다시 그림 · 칸 {len(geom)}개", fg="#555")
+        self.draw_lbl.config(text=("[DMB 보기] " if self.dmb_on else "") +
+                             f"{datetime.datetime.now():%H:%M:%S} 다시 그림 · 칸 {len(geom)}개",
+                             fg="#8e24aa" if self.dmb_on else "#555")
         self.draw_marks()
 
     def day_x(self, date):
@@ -3344,6 +3657,7 @@ class App:
     def draw_marks(self):
         """선택한 칸(파란 점선)과 원본과 다른 칸(주황 점선) 테두리 - 화면에만 보이고 PDF에는 안 나옴"""
         self.cv.delete("mark")
+        self.update_reason()
         if not self.show_marks.get():       # 출력 모양 그대로 보기
             return
         z = self.zoom
@@ -3446,7 +3760,12 @@ class App:
             m.add_cascade(label="즐겨찾기 적용", menu=fm)
         m.add_command(label="즐겨찾기에 추가 ...", command=self.fav_add_dialog)
         m.add_command(label="이름 앞뒤에 글자 붙이기 ...", command=self.affix_dialog)
-        m.add_command(label="로컬 끼워 넣기 ...", command=self.local_dialog)
+        m.add_command(label=("DMB만 칸 넣기 ..." if self.dmb_on else "로컬 끼워 넣기 ..."), command=self.local_dialog)
+        sm = self.tk.Menu(m, tearoff=0)
+        for k, t in SHOW_LABELS.items():
+            sm.add_command(label=("● " if (r.get("show") or "") == k else "   ") + t,
+                           command=lambda k=k: self.set_show(k))
+        m.add_cascade(label="보이는 곳 (모두 / TV만 / DMB만)", menu=sm)
         m.add_command(label="자세히 고치기 ...", command=lambda: self.edit_row())
         m.add_command(label="이 칸 뒤에 줄 추가 ...", command=self.add_row)
         if r.get("_check") or r.get("_ver") in ("changed", "new"):
@@ -3560,12 +3879,10 @@ class App:
                                        "같은 주의 다른 판이 아닌 것 같습니다. 그래도 반영할까요?"):
                 return
         cur = [{k: v for k, v in r.items() if k not in ("_ver", "_check", "_note", "_was", "_ovl")} for r in self.rows]
-        try:
-            merged, rep = merge_new_version(cur, self.orig, new)
-        except Exception as e:
-            self.error("새 판 반영 오류", e)
-            return
-        self.show_version_report(f, new, merged, rep)
+        # 기준 날짜: 새 엑셀 조회일 (그 앞 날은 이미 방송이 끝난 '지난 날')
+        qd = read_query_date(f)
+        base = qd if qd and nd and nd[0] < qd <= nd[-1] else None
+        self.show_version_report(f, new, cur, base)
 
     def version_entries(self, rep):
         """보고 창 목록: (구분, 줄, 비고, 편성표에 있는 줄인지)"""
@@ -3575,19 +3892,33 @@ class App:
         ent += [("⚠ 확인", r, r.get("_note", ""), True) for r in rep["checks"]]
         ent += [("× 지운 줄", r, "예전 판에서 지운 줄이라 새 판에서도 뺌", False) for r in rep["dropped"]]
         ent += [("● 옮김", n, "고친 것 그대로: " + ", ".join(mv), True) for n, mv in rep["kept"]]
+        ent += [("· 지난 날", r, f"반영 안 함 (새 판: {t})", False) for t, r in rep.get("past", [])]
         return sorted(ent, key=lambda e: (e[1]["date"], e[1]["s"], e[0]))
 
-    def show_version_report(self, path, new, merged, rep):
+    def show_version_report(self, path, new, cur, base=None):
         tk, ttk = self.tk, self.ttk
         self.close_version_window()
         w = tk.Toplevel(self.root)
         self.ver_win = w
         w.title(f"새 판 반영 - {os.path.basename(path)}")
-        w.geometry("920x560")
-        summ = (f"그대로 {len(rep['same'])}줄 · 바뀜 {len(rep['changed'])} · 새로 {len(rep['new'])} · "
-                f"없어짐 {len(rep['removed'])} · 고친 것 옮김 {len(rep['kept'])}줄 · 로컬 {len(rep['locals'])}칸 · "
-                f"직접 추가 {len(rep['added'])}줄 · 확인 필요 {len(rep['checks'])}")
-        tk.Label(w, text=summ, anchor="w", font=("맑은 고딕", 10, "bold")).pack(fill=tk.X, padx=8, pady=(8, 2))
+        w.geometry("940x600")
+        self.ver_summ = tk.Label(w, anchor="w", font=("맑은 고딕", 10, "bold"))
+        self.ver_summ.pack(fill=tk.X, padx=8, pady=(8, 2))
+        # 지난 날은 그대로
+        dates = sorted({r["date"] for r in new})
+        opt = tk.Frame(w)
+        opt.pack(fill=tk.X, padx=8, pady=2)
+        self.v_keep_past = tk.BooleanVar(value=bool(base))
+        labels = [day_label(d) for d in dates[1:]]
+        self.v_keep_base = tk.StringVar(value=day_label(base) if base else (labels[0] if labels else ""))
+        tk.Checkbutton(opt, text="지난 날은 예전 판 그대로 두기 -", variable=self.v_keep_past,
+                       command=lambda: self.version_recalc()).pack(side=tk.LEFT)
+        cb = ttk.Combobox(opt, textvariable=self.v_keep_base, values=labels, width=11, state="readonly")
+        cb.pack(side=tk.LEFT, padx=2)
+        cb.bind("<<ComboboxSelected>>", lambda e: (self.v_keep_past.set(True), self.version_recalc()))
+        tk.Label(opt, text="부터 새 판 반영", fg="#333").pack(side=tk.LEFT)
+        self.ver_keep_lbl = tk.Label(opt, fg="#777")
+        self.ver_keep_lbl.pack(side=tk.LEFT, padx=8)
         self.ver_hint = tk.Label(w, anchor="w", fg="#555", justify="left",
                                  text="[반영]을 누르면 편성표가 새 판으로 바뀝니다. 바뀐 칸은 주황, 확인할 칸은 빨간 테두리"
                                       "(화면에만 보이고 PDF에는 안 나옴). 마음에 안 들면 [되돌리기].")
@@ -3604,38 +3935,67 @@ class App:
         tv.configure(yscrollcommand=sb.set)
         sb.pack(side=tk.RIGHT, fill=tk.Y)
         tv.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        for tag, color in (("new", "#ef6c00"), ("del", "#757575"), ("chk", "#c62828"), ("keep", "#2e7d32")):
+        for tag, color in (("new", "#ef6c00"), ("del", "#757575"), ("chk", "#c62828"), ("keep", "#2e7d32"),
+                           ("past", "#9e9e9e")):
             tv.tag_configure(tag, foreground=color)
-        tagof = {"+": "new", "~": "new", "-": "del", "⚠": "chk", "×": "del", "●": "keep"}
+        self.ver_tree = tv
+        tv.bind("<<TreeviewSelect>>", lambda e: self.on_version_pick())
+        self.ver_bar = bar = tk.Frame(w)
+        bar.pack(fill=tk.X, padx=8, pady=(0, 8))
+        tk.Button(bar, text="반영", width=12, bg="#ffb74d", command=self.apply_new_version).pack(side=tk.RIGHT, padx=2)
+        tk.Button(bar, text="취소", width=10, command=self.close_version_window).pack(side=tk.RIGHT, padx=2)
+        w.protocol("WM_DELETE_WINDOW", self.close_version_window)
+        self.ver_applied = False
+        self.ver_src = (path, new, cur, dates)
+        self.version_recalc()
+
+    def version_recalc(self):
+        """지난 날 기준을 바꾸면 다시 계산해서 목록을 새로"""
+        if self.ver_applied:        # 반영한 뒤에는 바꾸지 않음 (되돌리기 후 다시 [새 판 반영])
+            return
+        path, new, cur, dates = self.ver_src
+        base = None
+        if self.v_keep_past.get():
+            base = next((d for d in dates if day_label(d) == self.v_keep_base.get()), None)
+        try:
+            merged, rep, orig = merge_keep_past(cur, self.orig, new, base)
+        except Exception as e:
+            self.error("새 판 반영 오류", e)
+            return
+        self.ver_result = (path, new, merged, rep, orig, base)
+        past_days = [day_label(d) for d in dates if base and d < base]
+        self.ver_keep_lbl.config(text=("그대로: " + ", ".join(past_days)) if past_days else "모든 날 새 판 반영")
+        self.ver_summ.config(text=f"그대로 {len(rep['same'])}줄 · 바뀜 {len(rep['changed'])} · 새로 {len(rep['new'])} · "
+                                  f"없어짐 {len(rep['removed'])} · 고친 것 옮김 {len(rep['kept'])}줄 · "
+                                  f"로컬 {len(rep['locals'])}칸 · 직접 추가 {len(rep['added'])}줄 · "
+                                  f"확인 필요 {len(rep['checks'])}" +
+                                  (f" · 지난 날 반영 안 함 {len(rep['past'])}" if rep["past"] else ""))
+        tv = self.ver_tree
+        tv.delete(*tv.get_children())
+        tagof = {"+": "new", "~": "new", "-": "del", "⚠": "chk", "×": "del", "●": "keep", "·": "past"}
         self.ver_entries = ent = self.version_entries(rep)
         for i, (kind, r, note, _live) in enumerate(ent):
             tv.insert("", "end", iid=str(i), tags=(tagof[kind[0]],),
                       values=(kind, day_label(r["date"]), f"{fmt_t(r['s'])}~{fmt_t(r['e'])}",
                               r["name"].replace("\n", " ") + (" (2안)" if r["plan"] == "2안" else ""), note))
-        self.ver_tree = tv
-        tv.bind("<<TreeviewSelect>>", lambda e: self.on_version_pick())
-        self.ver_bar = bar = tk.Frame(w)
-        bar.pack(fill=tk.X, padx=8, pady=(0, 8))
-        tk.Button(bar, text="반영", width=12, bg="#ffb74d",
-                  command=lambda: self.apply_new_version(path, new, merged, rep)).pack(side=tk.RIGHT, padx=2)
-        tk.Button(bar, text="취소", width=10, command=self.close_version_window).pack(side=tk.RIGHT, padx=2)
-        w.protocol("WM_DELETE_WINDOW", self.close_version_window)
-        self.ver_applied = False
 
-    def apply_new_version(self, path, new, merged, rep):
+    def apply_new_version(self):
         tk = self.tk
+        path, new, merged, rep, orig, base = self.ver_result
         self.push_undo()
         old_name = os.path.basename(self.proj_path or self.xlsx or "")
         self.proj_dir = os.path.dirname(self.proj_path or "") or self.proj_dir or os.path.dirname(self.xlsx or "")
         self.rows = merged
-        self.orig = json.loads(json.dumps(new, ensure_ascii=False))
+        self.orig = orig
         self.xlsx = path
         self.v_x.set(path)
         self.query_date = read_query_date(path)
         self.proj_path = None               # 저장하면 새 판 이름으로 (예: ..(3)_편성표1710.tvproj)
         self.history = list(self.history) + [{
             "from": old_name, "to": os.path.basename(path), "at": datetime.datetime.now().isoformat(timespec="seconds"),
-            "summary": {k: len(rep[k]) for k in ("changed", "new", "removed", "kept", "locals", "added", "checks")}}]
+            "keep_before": base or "",
+            "summary": {k: len(rep[k]) for k in ("changed", "new", "removed", "kept", "locals", "added", "checks",
+                                                  "past")}}]
         self.sel, self.multi, self.diff_keys = None, [], set()
         self.pink_state = {}
         self.saved = False
@@ -3644,7 +4004,8 @@ class App:
         self.root.title(f"{APP_NAME} {VERSION} - {os.path.basename(path)} (새 판 반영, 저장 전)")
         self.log(f"[새 판 반영] {old_name} -> {os.path.basename(path)}  바뀜 {len(rep['changed'])} · 새로 "
                  f"{len(rep['new'])} · 없어짐 {len(rep['removed'])} · 고친 것 옮김 {len(rep['kept'])} · "
-                 f"로컬 {len(rep['locals'])} · 확인 필요 {len(rep['checks'])}")
+                 f"로컬 {len(rep['locals'])} · 확인 필요 {len(rep['checks'])}" +
+                 (f" · {day_label(base)} 앞은 예전 판 그대로 (반영 안 한 변경 {len(rep['past'])})" if base else ""))
         for r in rep["checks"]:
             self.log(f"   ⚠ {day_label(r['date'])} {fmt_t(r['s'])}~{fmt_t(r['e'])} {r['name']} - {r.get('_note', '')}")
         self.ver_applied = True
@@ -3811,7 +4172,66 @@ class App:
             self.head.pack_forget()
 
     def cfg_over(self):
-        return {"_query_date": getattr(self, "query_date", "")}
+        o = {"_query_date": getattr(self, "query_date", "")}
+        if getattr(self, "dmb_on", False):
+            o["_dmb"] = {"hide": [k for k, v in self.v_dmb_hide.items() if v.get()],
+                         "keep_own": bool(self.v_dmb_keep.get()),
+                         "title": self.v_dmb_title.get().strip() or dmb_title_auto(self.v_title.get())}
+        return o
+
+    # ---------- DMB 변환 (같은 작업을 DMB 모양으로 보기·저장. 나중에 DMB 편집기로 따로 만들 예정)
+    def toggle_dmb(self):
+        self.dmb_on = not self.dmb_on
+        if self.dmb_on:
+            cur = self.v_dmb_title.get().strip()
+            if not cur or cur == getattr(self, "_dmb_auto", None):     # 직접 쓴 제목이 아니면 TV 제목을 따라감
+                self._dmb_auto = dmb_title_auto(self.v_title.get())
+                self._loading = True
+                self.v_dmb_title.set(self._dmb_auto)
+                self._loading = False
+            self.dmbbar.pack(fill=self.tk.X, padx=8, pady=(0, 4), after=self.act)
+            self.btn_dmb.config(text="TV로 돌아가기", bg="#ab47bc", fg="white")
+            self.log("[DMB 변환] DMB 모양으로 봅니다. 고치는 것은 TV와 같은 작업에 그대로 들어갑니다.")
+        else:
+            self.dmbbar.pack_forget()
+            self.btn_dmb.config(text="DMB 변환", bg="#e1bee7", fg="black")
+            self.log("[DMB 변환] TV 모양으로 돌아왔습니다.")
+        self.schedule_redraw(50)
+
+    def dmb_changed(self):
+        if self._loading:
+            return
+        save_config_keys({"dmb_hide": [k for k, v in self.v_dmb_hide.items() if v.get()],
+                          "dmb_title": self.v_dmb_title.get(), "dmb_keep_own": bool(self.v_dmb_keep.get())})
+        if self.dmb_on:
+            self.schedule_redraw(300)
+
+    def make_dmb(self):
+        """DMB PDF 저장: DMB_엑셀이름_편성표시분.pdf (프로젝트는 TV 와 같은 것을 씀)"""
+        from tkinter import filedialog, messagebox
+        if not self.ready():
+            return
+        was = self.dmb_on
+        self.dmb_on = True
+        try:
+            base = os.path.splitext(self.default_proj_path())[0]
+            name = "DMB_" + re.sub(r"^DMB_", "", os.path.basename(base)) + ".pdf"
+            out = filedialog.asksaveasfilename(title="DMB PDF 저장", defaultextension=".pdf",
+                                               filetypes=[("PDF", "*.pdf")], initialfile=name,
+                                               initialdir=os.path.dirname(base) or None)
+            if not out:
+                return
+            if not out.lower().endswith(".pdf"):
+                out = os.path.splitext(out)[0] + ".pdf"
+            generate(self.rows, out, self.prev_rows_cached(), self.log, cfg_over=self.cfg_over())
+        except Exception as e:
+            self.error("DMB PDF 만들기 오류", e)
+            return
+        finally:
+            self.dmb_on = was
+        self.log(f"[DMB 저장] {out}" + ("" if self.saved else "  (고친 내용은 [프로젝트 저장]으로 따로 저장하세요)"))
+        if messagebox.askyesno("완료", "DMB PDF를 만들었습니다. 열어 볼까요?"):
+            open_file(out)
 
     def head_changed(self):
         """제목·날짜 입력이 바뀌면 0.6초 뒤 설정에 저장하고 다시 그림"""
