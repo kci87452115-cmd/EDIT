@@ -29,7 +29,7 @@ try:
 except Exception:
     pass
 
-APP_VERSION = "1.2.2"
+APP_VERSION = "1.2.4"
 VERSION = f"v{APP_VERSION} (시험판)"
 
 
@@ -85,6 +85,9 @@ DEFAULT_CONFIG = {
     "_날짜_설명": "stamp_mode: 저장 시각 / 엑셀 조회일 / 주간 범위 / 직접 입력 / 표시 안 함",
     "stamp_mode": "저장 시각",
     "stamp_text": "",
+    "_프로젝트_정리_설명": "프로젝트는 데이터\\프로젝트\\주 폴더에. 한 주에 최근 몇 개를 남길지(PDF 로 낸 것은 늘 남김), 며칠 지난 주를 백업으로 옮길지",
+    "proj_keep_per_week": 10,
+    "proj_archive_days": 60,
     "grade_weekday": [["05:00", "07:00", "C"], ["07:00", "08:30", "B"], ["08:30", "09:30", "A"],
                       ["09:30", "12:00", "B"], ["12:00", "18:00", "C"], ["18:00", "19:00", "B"],
                       ["19:00", "19:30", "A"], ["19:30", "23:30", "SA"], ["23:30", "24:00", "A"],
@@ -1658,6 +1661,12 @@ def add_local_rule(rule):
 
 
 # ---------------------------------------------------------------- 프로젝트 파일 (.tvproj)
+# 프로젝트는 늘 데이터 폴더의 주 폴더에: C:\EDIT\TV\데이터\엑셀편성표\프로젝트\2026-11-16 (11월 3주)\
+# (PDF 는 고른 곳에). 오래된 주는 C:\EDIT\TV\백업\엑셀편성표 로 압축해 옮김
+PROJ_DIR = os.path.join(DATA_DIR, "프로젝트")
+BACKUP_DIR = os.path.join(os.environ["RADIO_HOME"], "백업", "엑셀편성표") if os.environ.get("RADIO_HOME") \
+    else os.path.join(DATA_DIR, "백업")
+RECENT_TV_PATH = os.path.join(DATA_DIR, "recent_projects.json")       # DMB 편집기가 TV 최근 목록을 볼 때
 TV_PROJ_EXT = ".tvproj"
 DMB_PROJ_EXT = ".dmbproj"
 PROJ_EXT = DMB_PROJ_EXT if IS_DMB else TV_PROJ_EXT
@@ -1671,6 +1680,7 @@ def save_project(path, data):
     data = dict(data, format="dmb_schedule_project" if path.lower().endswith(DMB_PROJ_EXT) else "tv_schedule_project",
                 version=VERSION, app=APP_NAME,
                 saved=datetime.datetime.now().isoformat(timespec="seconds"))
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False)
@@ -1765,6 +1775,131 @@ def refresh_from_tv(dmb_rows, old_tv, new_tv):
     return merged, rep
 
 
+def week_name(dates):
+    """편성 날짜들 -> 주 폴더 이름 '2026-11-16 (11월 3주)' (월요일 기준)"""
+    if not dates:
+        return "날짜 없음"
+    d = datetime.datetime.strptime(min(dates), "%Y%m%d")
+    return f"{d:%Y-%m-%d} ({d.month}월 {(d.day - 1) // 7 + 1}주)"
+
+
+def week_label(dates):
+    if not dates:
+        return ""
+    d = datetime.datetime.strptime(min(dates), "%Y%m%d")
+    return f"{d.month}월 {(d.day - 1) // 7 + 1}주"
+
+
+def week_dir(rows):
+    return os.path.join(PROJ_DIR, week_name(sorted({r["date"] for r in rows})))
+
+
+def tidy_projects(cfg=None, log=print):
+    """프로젝트 정리 (켤 때·저장할 때):
+      ① 데이터 폴더 바로 아래·프로젝트 폴더 바로 아래 흩어진 프로젝트 -> 주 폴더로
+      ② 주 폴더마다 TV·DMB 각각 최근 N개만 (PDF 로 낸 프로젝트 kept 는 늘 남김)
+      ③ 며칠 지난 주 폴더 -> 백업 폴더에 zip 으로 옮김"""
+    import glob
+    import shutil
+    import zipfile
+    cfg = cfg or load_config()
+    keep_n = int(cfg.get("proj_keep_per_week", 10) or 10)
+    days = int(cfg.get("proj_archive_days", 60) or 60)
+    os.makedirs(PROJ_DIR, exist_ok=True)
+    moved = removed = archived = 0
+    for f in glob.glob(os.path.join(DATA_DIR, "*.tvproj")) + glob.glob(os.path.join(DATA_DIR, "*.dmbproj")) + \
+            glob.glob(os.path.join(PROJ_DIR, "*.tvproj")) + glob.glob(os.path.join(PROJ_DIR, "*.dmbproj")):
+        try:
+            with open(f, "r", encoding="utf-8") as fh:
+                d = json.load(fh)
+            wd = os.path.join(PROJ_DIR, week_name(sorted({r["date"] for r in d.get("rows", [])})))
+            os.makedirs(wd, exist_ok=True)
+            dst = os.path.join(wd, os.path.basename(f))
+            if not os.path.exists(dst):
+                shutil.move(f, dst)
+                moved += 1
+                _fix_recent(f, dst)
+        except Exception:
+            pass
+    today = datetime.date.today()
+    for wd in sorted(glob.glob(os.path.join(PROJ_DIR, "*"))):
+        if not os.path.isdir(wd):
+            continue
+        m = re.match(r"(\d{4})-(\d{2})-(\d{2})", os.path.basename(wd))
+        if m and (today - datetime.date(*map(int, m.groups()))).days > days:
+            try:
+                os.makedirs(BACKUP_DIR, exist_ok=True)
+                zp = os.path.join(BACKUP_DIR, os.path.basename(wd) + ".zip")
+                with zipfile.ZipFile(zp, "a", zipfile.ZIP_DEFLATED) as z:
+                    have = set(z.namelist())
+                    for f in os.listdir(wd):
+                        if f not in have:
+                            z.write(os.path.join(wd, f), f)
+                shutil.rmtree(wd)
+                archived += 1
+            except Exception as e:
+                log(f"[프로젝트 정리] 백업으로 옮기지 못함: {os.path.basename(wd)} ({e})")
+            continue
+        for ext in ("*.tvproj", "*.dmbproj"):
+            files = sorted(glob.glob(os.path.join(wd, ext)), key=os.path.getmtime, reverse=True)
+            normal = []
+            for f in files:
+                try:
+                    with open(f, "r", encoding="utf-8") as fh:
+                        if json.load(fh).get("kept"):
+                            continue
+                except Exception:
+                    continue
+                normal.append(f)
+            for f in normal[keep_n:]:
+                try:
+                    os.remove(f)
+                    removed += 1
+                except Exception:
+                    pass
+    if moved or removed or archived:
+        log(f"[프로젝트 정리] 주 폴더로 옮김 {moved} · 오래된 저장 지움 {removed} · "
+            f"{days}일 지난 주 {archived}개 -> 백업({BACKUP_DIR})")
+    return moved, removed, archived
+
+
+def _fix_recent(old, new):
+    for rp in {RECENT_PATH, RECENT_TV_PATH}:
+        try:
+            with open(rp, "r", encoding="utf-8") as f:
+                lst = json.load(f)
+            lst = [new if os.path.abspath(p) == os.path.abspath(old) else p for p in lst]
+            with open(rp, "w", encoding="utf-8") as f:
+                json.dump(lst, f, ensure_ascii=False, indent=1)
+        except Exception:
+            pass
+
+
+def tv_project_choices(limit=12):
+    """DMB 편집기: 고를 TV 프로젝트 (TV 편집기의 최근 목록 + 주 폴더의 새 것, 새 것이 위)"""
+    import glob
+    lst = []
+    try:
+        with open(RECENT_TV_PATH, "r", encoding="utf-8") as f:
+            lst = [p for p in json.load(f) if os.path.isfile(p) and p.lower().endswith(TV_PROJ_EXT)]
+    except Exception:
+        pass
+    lst += glob.glob(os.path.join(PROJ_DIR, "*", "*" + TV_PROJ_EXT))
+    seen, out = set(), []
+    for p in sorted(lst, key=lambda p: os.path.getmtime(p) if os.path.exists(p) else 0, reverse=True):
+        a = os.path.abspath(p)
+        if a not in seen:
+            seen.add(a)
+            out.append(p)
+    return out[:limit]
+
+
+def latest_week_dir():
+    import glob
+    ds = sorted(d for d in glob.glob(os.path.join(PROJ_DIR, "*")) if os.path.isdir(d))
+    return ds[-1] if ds else PROJ_DIR
+
+
 def recent_projects():
     try:
         with open(RECENT_PATH, "r", encoding="utf-8") as f:
@@ -1792,7 +1927,9 @@ def project_info(path):
             d = json.load(f)
         dates = sorted({r["date"] for r in d.get("rows", [])})
         wk = f"{day_label(dates[0])}~{day_label(dates[-1])}" if dates else ""
-        return f"{os.path.basename(path)}   ({wk} · 저장 {d.get('saved', '')[:16].replace('T', ' ')})"
+        tag = f"[{week_label(dates)}] " if dates else ""
+        pdf = " · PDF" if d.get("kept") else ""
+        return f"{tag}{os.path.basename(path)}   ({wk} · 저장 {d.get('saved', '')[:16].replace('T', ' ')}{pdf})"
     except Exception:
         return os.path.basename(path)
 
@@ -1868,7 +2005,10 @@ class App:
         top.pack(fill=tk.X, padx=8, pady=6)
         self.topbar = top
         if IS_DMB:      # DMB 편집기: TV 프로젝트(.tvproj)로 시작, DMB 작업은 .dmbproj 로 따로
-            tk.Button(top, text="TV 프로젝트 불러오기", bg="#e1bee7", command=lambda: self.import_tv()).pack(side=tk.LEFT)
+            mb_tv = tk.Menubutton(top, text="TV 프로젝트 불러오기 ▼", relief="raised", bg="#e1bee7")
+            mb_tv.pack(side=tk.LEFT)
+            m_tv = tk.Menu(mb_tv, tearoff=0, postcommand=lambda: self.fill_tv_menu(m_tv, self.import_tv))
+            mb_tv.config(menu=m_tv)
             tk.Button(top, text="DMB 프로젝트 열기", command=lambda: self.open_project()).pack(side=tk.LEFT,
                                                                                          padx=(6, 0))
         else:
@@ -1908,7 +2048,10 @@ class App:
         abtn("설정 파일 열기", self.open_config)
         abtn("큰 창 미리보기", self.preview, "#bbdefb")
         if IS_DMB:
-            abtn("TV 다시 가져오기", self.refresh_tv, "#e1bee7")
+            mb_rf = tk.Menubutton(act, text="TV 다시 가져오기 ▼", relief="raised", bg="#e1bee7")
+            mb_rf.pack(side=tk.LEFT, padx=2)
+            m_rf = tk.Menu(mb_rf, tearoff=0, postcommand=lambda: self.fill_tv_menu(m_rf, self.refresh_tv))
+            mb_rf.config(menu=m_rf)
         else:
             abtn("새 판 반영", self.new_version, "#ffe0b2")
         self.tv_path = ""           # DMB: 불러온 TV 프로젝트
@@ -2068,6 +2211,10 @@ class App:
                  bg="#e4e6ea", fg="#9a9a9a", font=("", 10)).pack(pady=(14, 0))
         self.recent_box = tk.Frame(inner, bg="#e4e6ea")
         self.recent_box.pack(pady=(26, 0))
+        try:
+            tidy_projects(log=self.log)
+        except Exception as e:
+            self.log(f"[프로젝트 정리] 건너뜀: {e}")
         self.build_recent()
         self.main_shown = True
         self.show_start()
@@ -2901,9 +3048,11 @@ class App:
         if not self.ready():
             return
         base = os.path.splitext(self.default_proj_path())[0]          # 저장하는 지금 시분
+        pdf_dir = os.path.dirname(getattr(self, "last_pdf", "") or "") or \
+            (os.path.dirname(self.xlsx or "") if (self.xlsx or "").lower().endswith(".xlsx") else "")
         out = filedialog.asksaveasfilename(defaultextension=".pdf", filetypes=[("PDF", "*.pdf")],
                                            initialfile=os.path.basename(base) + ".pdf",
-                                           initialdir=os.path.dirname(base) or None)
+                                           initialdir=pdf_dir if pdf_dir and os.path.isdir(pdf_dir) else None)
         if not out:
             return
         try:
@@ -2912,8 +3061,9 @@ class App:
             self.error("PDF 만들기 오류", e)
             return
         self.last_pdf = out
-        # PDF 옆에 같은 이름의 프로젝트도 함께 저장 -> 나중에 다시 열어 고칠 수 있음
-        self.save(path=os.path.splitext(out)[0] + PROJ_EXT)
+        # 같은 이름의 프로젝트도 데이터 폴더에 함께 저장 -> 나중에 다시 열어 고칠 수 있음
+        self.save(path=os.path.join(week_dir(self.rows), os.path.splitext(os.path.basename(out))[0] + PROJ_EXT),
+                  kept=True)
         self.log(f"[작업 기록] 불러온 뒤 {self.elapsed()} 걸림 · 고친 줄 {self.edits}개 "
                  f"(프로젝트도 함께 저장: {os.path.basename(self.proj_path or '')})")
         if messagebox.askyesno("완료", "PDF를 만들었습니다. 열어 볼까요?"):
@@ -2972,25 +3122,22 @@ class App:
 
     def default_proj_path(self):
         """저장 이름: 엑셀이름_편성표 + 저장하는 지금 시분  (예: MBC_11월_3주(2)_편성표1605.tvproj)
-        폴더는 지금 프로젝트가 있는 곳(없으면 엑셀이 있는 곳)"""
+        폴더는 늘 데이터 폴더(PROJ_DIR, 런처: C:\\EDIT\\TV\\데이터\\엑셀편성표)"""
         name = os.path.splitext(os.path.basename(self.proj_path or self.xlsx or "편성표"))[0]
         name = re.sub(r"_편성표\d{0,4}$", "", name)       # 예전 시분은 떼고 지금 시분으로
         if IS_DMB:          # DMB: DMB_MBC_11월_3주(3)_편성표1830.dmbproj
             name = "DMB_" + re.sub(r"^DMB_", "", name)
-        folder = os.path.dirname(self.proj_path or "") or self.proj_dir or os.path.dirname(self.xlsx or "")
-        if folder and not os.path.isdir(folder):
-            folder = ""
-        return os.path.join(folder, name + "_편성표" + datetime.datetime.now().strftime("%H%M") + PROJ_EXT)
+        return os.path.join(week_dir(self.rows), name + "_편성표" + datetime.datetime.now().strftime("%H%M") + PROJ_EXT)
 
-    def save(self, ask=False, path=None):
+    def save(self, ask=False, path=None, kept=False):
         """프로젝트 저장 (Ctrl+S): 지금 시분이 붙은 새 이름으로 저장 (예전 것은 기록으로 남음).
         처음 저장이거나 '다른 이름으로'면 저장 위치를 물음"""
         from tkinter import filedialog
         if not self.ready():
             return False
         p = path
-        if not p and not ask and self.proj_path and os.path.isdir(os.path.dirname(self.proj_path) or "."):
-            p = self.default_proj_path()        # 같은 폴더, 지금 시분 (같은 분이면 덮어씀)
+        if not p and not ask:
+            p = self.default_proj_path()        # 데이터 폴더, 지금 시분 (같은 분이면 덮어씀)
         if not p:
             d = self.default_proj_path()
             p = filedialog.asksaveasfilename(defaultextension=PROJ_EXT, filetypes=[("편성표 프로젝트", "*" + PROJ_EXT)],
@@ -2999,14 +3146,24 @@ class App:
                 return False
         if not p.lower().endswith(PROJ_EXT):        # 엑셀·PDF 위에 덮어쓰지 않도록
             p = os.path.splitext(p)[0] + PROJ_EXT
+        if not kept and os.path.exists(p):           # PDF 로 낸 프로젝트를 같은 이름으로 덮으면 '남김' 표시는 그대로
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    kept = bool(json.load(f).get("kept"))
+            except Exception:
+                pass
         try:
-            save_project(p, self.project_data())
+            save_project(p, dict(self.project_data(), kept=True) if kept else self.project_data())
         except Exception as e:
             self.error("프로젝트 저장 오류", e)
             return False
         self.proj_path = p
         self.saved = True
         self.root.title(f"{APP_NAME} {VERSION} - {os.path.basename(p)}")
+        try:
+            tidy_projects(log=self.log)
+        except Exception:
+            pass
         self.build_recent()
         self.log(f"[프로젝트 저장] {p}")
         return True
@@ -3020,7 +3177,8 @@ class App:
                 return
         if not path:
             path = filedialog.askopenfilename(filetypes=[("편성표 프로젝트", "*" + PROJ_EXT)] +
-                                              ([("TV 프로젝트", "*" + TV_PROJ_EXT)] if IS_DMB else []))
+                                              ([("TV 프로젝트", "*" + TV_PROJ_EXT)] if IS_DMB else []),
+                                              initialdir=latest_week_dir())
             if not path:
                 return
         if IS_DMB and path.lower().endswith(TV_PROJ_EXT):
@@ -3081,7 +3239,7 @@ class App:
         if not path:
             path = filedialog.askopenfilename(title="TV 프로젝트 (엑셀 TV 편성표 편집기에서 저장한 .tvproj)",
                                               filetypes=[("TV 프로젝트", "*" + TV_PROJ_EXT)],
-                                              initialdir=os.path.dirname(self.tv_path or "") or None)
+                                              initialdir=latest_week_dir())
             if not path:
                 return
         try:
@@ -3127,16 +3285,28 @@ class App:
         self.log(f"[TV 프로젝트 불러오기] {os.path.basename(path)}  편성 {len(self.rows)}줄 - "
                  f"TV 프로젝트는 그대로 두고, DMB 작업은 [프로젝트 저장] 때 {DMB_PROJ_EXT} 로 따로 저장합니다.")
 
-    def refresh_tv(self):
+    def fill_tv_menu(self, menu, action):
+        """TV 프로젝트 고르기 메뉴: 최근 TV 프로젝트(새 것이 위) + 다른 파일 찾기"""
+        menu.delete(0, "end")
+        lst = tv_project_choices()
+        for p in lst:
+            menu.add_command(label=project_info(p), command=lambda p=p: action(p))
+        if not lst:
+            menu.add_command(label="(TV 프로젝트가 없습니다 - 엑셀 TV 편성표 편집기에서 저장하세요)", state="disabled")
+        menu.add_separator()
+        menu.add_command(label="다른 파일 찾기 …", command=lambda: action(None))
+
+    def refresh_tv(self, path=None):
         """TV 프로젝트가 바뀐 뒤(새 판 반영 등): DMB 에서 고친 것은 두고 바뀐 TV 편성만 다시 가져오기"""
         from tkinter import filedialog, messagebox
         if not self.ready():
             return
-        path = filedialog.askopenfilename(title="다시 가져올 TV 프로젝트 (.tvproj)",
-                                          filetypes=[("TV 프로젝트", "*" + TV_PROJ_EXT)],
-                                          initialdir=os.path.dirname(self.tv_path or "") or None)
         if not path:
-            return
+            path = filedialog.askopenfilename(title="다시 가져올 TV 프로젝트 (.tvproj)",
+                                              filetypes=[("TV 프로젝트", "*" + TV_PROJ_EXT)],
+                                              initialdir=latest_week_dir())
+            if not path:
+                return
         try:
             d = load_project(path, recent=False)
         except Exception as e:
