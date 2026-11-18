@@ -29,7 +29,7 @@ try:
 except Exception:
     pass
 
-APP_VERSION = "1.0.8"
+APP_VERSION = "1.0.9"
 VERSION = f"v{APP_VERSION} (시험판)"
 APP_NAME = "엑셀 TV 편성표 편집기"
 # 프로그램 파일이 있는 곳 (런처로 실행해도 이 파일 위치 - 런처 exe 위치가 아님)
@@ -2502,6 +2502,11 @@ class App:
         tk.Button(fh, text="창으로 ⧉", command=self.open_fav_window).pack(side=tk.RIGHT, padx=2)
         favf = tk.Frame(tab_fav, relief="sunken", bd=1)
         favf.pack(fill=tk.BOTH, expand=True)
+        self.favf = favf
+        # 즐겨찾기를 창으로 열면 여기 목록은 숨기고 안내만 (목록이 두 군데 나오지 않게)
+        self.fav_note = tk.Frame(tab_fav)
+        tk.Label(self.fav_note, text="즐겨찾기를 따로 창에서 보는 중입니다.", fg="#666").pack(pady=(20, 6))
+        tk.Button(self.fav_note, text="여기로 되돌리기", command=self.close_fav_window).pack()
         self.fav_cv = tk.Canvas(favf, height=180, highlightthickness=0, bg="#f7f7f7")
         fsb = tk.Scrollbar(favf, orient=tk.VERTICAL, command=self.fav_cv.yview)
         self.fav_cv.configure(yscrollcommand=fsb.set)
@@ -2727,7 +2732,7 @@ class App:
         """즐겨찾기 목록: [☆ 프로그램명] [X] [배경색] - 오른쪽 탭과 즐겨찾기 창(열려 있으면) 둘 다"""
         targets = [(self.fav_frame, 9)]
         if getattr(self, "fav_win", None) is not None:
-            targets.append((self.fav_win_frame, 11))
+            targets = [(self.fav_win_frame, 11)]     # 창에서 보는 동안 탭 목록은 숨겨져 있음
         for frame, fsize in targets:
             try:
                 self._fill_fav_list(frame, fsize)
@@ -2771,10 +2776,21 @@ class App:
         cv.bind("<Configure>", lambda e: cv.itemconfigure(win, width=e.width))
         w.bind("<MouseWheel>", lambda e: cv.yview_scroll(int(-e.delta / 120), "units"))
 
-        def close():
-            self.fav_win = None
-            w.destroy()
-        w.protocol("WM_DELETE_WINDOW", close)
+        w.protocol("WM_DELETE_WINDOW", self.close_fav_window)
+        self.favf.pack_forget()                     # 오른쪽 탭 목록은 숨김
+        self.fav_note.pack(fill=tk.BOTH, expand=True)
+        self.build_fav_buttons()
+
+    def close_fav_window(self):
+        """즐겨찾기 창을 닫고 오른쪽 탭에 목록을 다시 보이기"""
+        w, self.fav_win = getattr(self, "fav_win", None), None
+        if w is not None:
+            try:
+                w.destroy()
+            except Exception:
+                pass
+        self.fav_note.pack_forget()
+        self.favf.pack(fill=self.tk.BOTH, expand=True)
         self.build_fav_buttons()
 
     def _fill_fav_list(self, frame, fsize=9):
