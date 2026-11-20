@@ -30,7 +30,7 @@ try:
 except Exception:
     pass
 
-APP_VERSION = "1.3.4"
+APP_VERSION = "1.3.5"
 VERSION = f"v{APP_VERSION} (시험판)"
 
 
@@ -2168,7 +2168,6 @@ class App:
             root.bind_all(k, lambda e: (self.redo(), "break")[1])
         abtn("프로젝트 저장", self.save, "#c8e6c9")
         abtn("다른 이름으로", lambda: self.save(ask=True))
-        abtn("설정 파일 열기", self.open_config)
         abtn("큰 창 미리보기", self.preview, "#bbdefb")
         if IS_DMB:
             mb_rf = tk.Menubutton(act, text="TV 다시 가져오기 ▼", relief="raised", bg="#e1bee7")
@@ -3742,10 +3741,11 @@ class App:
         except Exception as e:
             self.error("이름 배우기 오류", e)
 
-    def open_config(self):
+    def open_config_folder(self):
+        """설정 파일이 있는 폴더를 탐색기로 (백업·복사할 때)"""
         load_config()
-        open_file(CONFIG_PATH)
-        self.log(f"[설정 파일] {CONFIG_PATH}  (고친 뒤 저장하면 다음 PDF부터 적용)")
+        open_file(os.path.dirname(CONFIG_PATH))
+        self.log(f"[설정 폴더] {os.path.dirname(CONFIG_PATH)}")
 
     def on_close(self):
         from tkinter import messagebox
@@ -5338,7 +5338,10 @@ class App:
                 pass
             self.settings_win = None
             w.destroy()
-        tk.Button(f, text="닫기", width=10, command=close).grid(row=7, column=0, columnspan=4, pady=(10, 0))
+        bf = tk.Frame(f)
+        bf.grid(row=7, column=0, columnspan=4, sticky="we", pady=(10, 0))
+        tk.Button(bf, text="설정 폴더 열기", command=self.open_config_folder).pack(side=tk.LEFT)
+        tk.Button(bf, text="닫기", width=10, command=close).pack(side=tk.RIGHT)
         w.protocol("WM_DELETE_WINDOW", close)
         w.bind("<Escape>", lambda e: close())
 
