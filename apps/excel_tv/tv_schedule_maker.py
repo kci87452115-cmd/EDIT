@@ -30,7 +30,7 @@ try:
 except Exception:
     pass
 
-APP_VERSION = "1.3.2"
+APP_VERSION = "1.3.3"
 VERSION = f"v{APP_VERSION} (시험판)"
 
 
@@ -807,6 +807,20 @@ TABLE_TOP, HEAD_H, TABLE_BOTTOM = 107.5, 13.1, 766.6
 BLUE = (0.7216, 0.8, 0.8941)
 PINK = (1.0, 0.8824, 0.8824)
 LINE = (0.62, 0.62, 0.62)
+LINE_HEX = "#9e9e9e"            # 칸 테두리 기본 색 (회색)
+CELL_LINE_W = 0.3               # 칸 테두리 기본 굵기 (pt)
+FRAME_LINE_W = 0.6              # 바깥 테두리 기본 굵기 (pt)
+CELL_LINE_WS = ("0.2", "0.3", "0.4", "0.5", "0.75", "1.0")
+FRAME_LINE_WS = ("0.6", "0.8", "1.0", "1.5")
+
+
+def line_width(v, default):
+    """설정의 선 굵기 (0.1~3pt, 이상하면 기본값)"""
+    try:
+        v = float(v)
+        return v if 0.1 <= v <= 3 else default
+    except (TypeError, ValueError):
+        return default
 DARK = (0.15, 0.15, 0.15)
 ICON_COLORS = {"U": (233, 208, 35), "자": (117, 148, 204), "수": (249, 86, 35), "해": (194, 24, 91),
                "R": (36, 144, 64), "L": (198, 148, 122), "AGE": (0, 0, 0)}
@@ -1064,6 +1078,10 @@ def draw_schedule(dates, blocks, cfg, out_path=None, printed_at=None):
     page = doc.new_page(width=PAGE_W, height=PAGE_H)
     p = Painter(page, find_font(cfg))
     p.icon_pal = icon_palette(cfg)
+    # 선 (⚙ 설정): 칸 테두리 굵기·색, 바깥 테두리 굵기
+    cell_w = line_width(cfg.get("cell_line_w"), CELL_LINE_W)
+    cell_c = hex_to_rgb(cfg.get("cell_line_color")) or LINE
+    frame_w = line_width(cfg.get("frame_line_w"), FRAME_LINE_W)
     y_of = time_scale(blocks)
     printed_at = printed_at or datetime.datetime.now()
 
@@ -1137,7 +1155,7 @@ def draw_schedule(dates, blocks, cfg, out_path=None, printed_at=None):
     # 날짜 칸 바탕 (편성 없는 시간은 흰 칸)
     for i in range(min(7, len(dates))):
         x0, x1 = X_COLS["days"][i]
-        p.rect(x0, body, x1, TABLE_BOTTOM, fill=(1, 1, 1), stroke=LINE)
+        p.rect(x0, body, x1, TABLE_BOTTOM, fill=(1, 1, 1), stroke=cell_c, width=cell_w)
 
     # 프로그램 칸
     hide_all = hide
@@ -1169,7 +1187,7 @@ def draw_schedule(dates, blocks, cfg, out_path=None, printed_at=None):
         fill = (None if "shade" in hide else hex_to_rgb(b.get("shade"))) \
             or (PINK if b["pink"] and "pink" not in hide else None) \
             or (None if "shade" in hide else hex_to_rgb(b.get("rule_shade"))) or (1, 1, 1)
-        p.rect(x0, y0, x1, y1, fill=fill, stroke=LINE)
+        p.rect(x0, y0, x1, y1, fill=fill, stroke=cell_c, width=cell_w)
         h = y1 - y0
         mm = f"{(b['s'] + DAY_START_MIN) % 60:02d}"
         msz = 4.4 if h >= 4.6 else max(2.2, h * 0.9)
@@ -1224,7 +1242,7 @@ def draw_schedule(dates, blocks, cfg, out_path=None, printed_at=None):
     for lx0, ly, lx1 in dash_lines:
         p.line(lx0 + 0.2, ly, lx1 - 0.2, ly, (1, 1, 1), 0.55)
         p.line(lx0, ly, lx1, ly, (0.45, 0.45, 0.45), 0.4, "[1.4 1.1] 0")
-    p.rect(29.0, TABLE_TOP, 567.7, TABLE_BOTTOM, fill=None, stroke=DARK, width=0.6)
+    p.rect(29.0, TABLE_TOP, 567.7, TABLE_BOTTOM, fill=None, stroke=DARK, width=frame_w)
     p.finish()
     doc.set_metadata({"title": "주간편성표", "creator": f"{APP_NAME} {VERSION}"})
     if not out_path:
@@ -5248,9 +5266,69 @@ class App:
         tk.Button(g3, text="아이콘 색 ...", command=self.icon_color_dialog).grid(row=0, column=0, sticky="w")
         tk.Label(g3, text="UHD·자막·연령 등 아이콘 바탕색", fg="#777").grid(row=0, column=1, sticky="w", padx=6)
 
+        # 선 (칸 테두리)
+        cfg_l = load_config()
+        g5 = tk.LabelFrame(f, text=" 선 (칸 테두리) ", padx=10, pady=6)
+        g5.grid(row=5, column=0, columnspan=4, sticky="we", pady=4)
+        v_cw = tk.StringVar(value=f"{line_width(cfg_l.get('cell_line_w'), CELL_LINE_W):g}")
+        v_fw = tk.StringVar(value=f"{line_width(cfg_l.get('frame_line_w'), FRAME_LINE_W):g}")
+        col = {"c": cfg_l.get("cell_line_color") or LINE_HEX}
+        tk.Label(g5, text="칸 테두리 굵기").grid(row=0, column=0, sticky="w")
+        ttk.Combobox(g5, textvariable=v_cw, values=CELL_LINE_WS, width=6).grid(row=0, column=1, sticky="w", padx=4)
+        tk.Label(g5, text="pt   색").grid(row=0, column=2, sticky="w")
+        sw = tk.Label(g5, text="      ", bg=col["c"], relief="solid", bd=1)
+        sw.grid(row=0, column=3, sticky="w", padx=4)
+        tk.Label(g5, text="바깥 테두리 굵기").grid(row=1, column=0, sticky="w", pady=(4, 0))
+        ttk.Combobox(g5, textvariable=v_fw, values=FRAME_LINE_WS, width=6).grid(row=1, column=1, sticky="w",
+                                                                             padx=4, pady=(4, 0))
+        tk.Label(g5, text="pt").grid(row=1, column=2, sticky="w", pady=(4, 0))
+        pv = tk.Canvas(g5, width=200, height=56, bg="white", highlightthickness=0)
+        pv.grid(row=2, column=0, columnspan=5, sticky="w", pady=(6, 2))
+        tk.Label(g5, text="(4배 확대 미리보기)", fg="#777").grid(row=2, column=4, sticky="e")
+
+        def draw_pv():
+            pv.delete("all")
+            cw = line_width(v_cw.get(), CELL_LINE_W)
+            fw = line_width(v_fw.get(), FRAME_LINE_W)
+            k = 4                   # 미리보기는 4배로
+            pv.create_rectangle(8, 8, 192, 50, outline="#262626", width=max(1, fw * k))
+            for x in (8 + 184 / 3, 8 + 184 * 2 / 3):
+                pv.create_line(x, 8, x, 50, fill=col["c"], width=max(1, cw * k))
+            pv.create_line(8, 29, 8 + 184 / 3, 29, fill=col["c"], width=max(1, cw * k))
+
+        def save_lines(*a):
+            cw = line_width(v_cw.get(), None)
+            fw = line_width(v_fw.get(), None)
+            if cw is None or fw is None:
+                return
+            save_config_keys({"cell_line_w": cw, "frame_line_w": fw, "cell_line_color": col["c"]})
+            draw_pv()
+            self.schedule_redraw(50)
+
+        def pick_color():
+            from tkinter import colorchooser
+            c = colorchooser.askcolor(color=col["c"], parent=w, title="칸 테두리 색")[1]
+            if c:
+                col["c"] = c.lower()
+                sw.config(bg=col["c"])
+                save_lines()
+
+        def reset_lines():
+            col["c"] = LINE_HEX
+            sw.config(bg=LINE_HEX)
+            v_cw.set(f"{CELL_LINE_W:g}")
+            v_fw.set(f"{FRAME_LINE_W:g}")
+            save_lines()
+        tk.Button(g5, text="색 고르기", command=pick_color).grid(row=0, column=4, sticky="w", padx=4)
+        tk.Button(g5, text="기본값으로", command=reset_lines).grid(row=3, column=0, sticky="w", pady=(2, 0))
+        tk.Label(g5, text=f"(기본: 칸 {CELL_LINE_W:g}pt 회색 · 바깥 {FRAME_LINE_W:g}pt)", fg="#777").grid(
+            row=3, column=1, columnspan=4, sticky="w", pady=(2, 0))
+        line_tids = [(v_cw, v_cw.trace_add("write", save_lines)), (v_fw, v_fw.trace_add("write", save_lines))]
+        draw_pv()
+
         # 서버로 보내기
         g4 = tk.LabelFrame(f, text=" 📺 서버로 보내기 (다른 PC에서 보기) ", padx=10, pady=6)
-        g4.grid(row=5, column=0, columnspan=4, sticky="we", pady=4)
+        g4.grid(row=6, column=0, columnspan=4, sticky="we", pady=4)
         if tv_preview_dir():
             def view_toggle():
                 if not save_tv_view_config(self.v_view_on.get()):
@@ -5272,7 +5350,7 @@ class App:
                 pass
             self.settings_win = None
             w.destroy()
-        tk.Button(f, text="닫기", width=10, command=close).grid(row=6, column=0, columnspan=4, pady=(10, 0))
+        tk.Button(f, text="닫기", width=10, command=close).grid(row=7, column=0, columnspan=4, pady=(10, 0))
         w.protocol("WM_DELETE_WINDOW", close)
         w.bind("<Escape>", lambda e: close())
 
