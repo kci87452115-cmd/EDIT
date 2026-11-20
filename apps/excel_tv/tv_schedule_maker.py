@@ -29,7 +29,7 @@ try:
 except Exception:
     pass
 
-APP_VERSION = "1.2.13"
+APP_VERSION = "1.2.14"
 VERSION = f"v{APP_VERSION} (시험판)"
 
 
@@ -2164,6 +2164,7 @@ class App:
         self.zoom_lbl.pack(side=tk.LEFT)
         tk.Button(zbar, text="＋", width=3, command=lambda: self.set_zoom(self.zoom * 1.2)).pack(side=tk.LEFT)
         tk.Button(zbar, text="한 장 맞춤", command=self.zoom_fit).pack(side=tk.LEFT, padx=4)
+        tk.Button(zbar, text="폭 맞춤", command=self.zoom_fit_width).pack(side=tk.LEFT)
         self.show_marks = tk.BooleanVar(value=True)
         tk.Checkbutton(zbar, text="선택·차이 테두리 보기 (끄면 출력물 모양 그대로)", variable=self.show_marks,
                        command=self.draw_marks).pack(side=tk.LEFT, padx=6)
@@ -4673,11 +4674,16 @@ class App:
         self.zoom = max(0.6, min(4.0, z))
         self.zoom_lbl.config(text=f"{int(self.zoom * 100)}%")
         self.schedule_redraw(100)
-        self.remember_zoom("fit" if pref == "fit" else round(self.zoom, 3))
+        self.remember_zoom(pref if pref in ("fit", "fitw") else round(self.zoom, 3))
 
     def zoom_fit(self):
         h = self.cv.winfo_height() or 700
         self.set_zoom((h - 4) / PAGE_H, pref="fit")
+
+    def zoom_fit_width(self):
+        """폭 맞춤: 편성표 가로가 창 너비에 꽉 차게 (세로는 스크롤)"""
+        w = self.cv.winfo_width() or 900
+        self.set_zoom((w - 24) / PAGE_W, pref="fitw")
 
     def remember_zoom(self, pref):
         """마지막 보기 크기를 설정 파일에 기억 (1초 동안 더 안 바뀌면 저장)"""
@@ -4704,6 +4710,8 @@ class App:
         pref = load_config().get("view_zoom", "fit")
         if isinstance(pref, (int, float)) and not isinstance(pref, bool):
             self.set_zoom(float(pref))
+        elif pref == "fitw":
+            self.zoom_fit_width()
         else:
             self.zoom_fit()
 
