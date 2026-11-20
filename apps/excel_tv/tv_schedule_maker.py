@@ -29,7 +29,7 @@ try:
 except Exception:
     pass
 
-APP_VERSION = "1.2.4"
+APP_VERSION = "1.2.11"
 VERSION = f"v{APP_VERSION} (시험판)"
 
 
@@ -1388,6 +1388,35 @@ def insert_local(rows, dates, name, s, e, shade="#d9d9d9", bold=True, code=None,
     return added
 
 
+# 묶인 한 칸(월~금)을 고칠 때 요일마다 똑같이 맞추는 항목 (날짜는 빼고)
+BLOCK_SYNC_KEYS = ("name", "s", "e", "plan", "age", "rl", "code", "shade", "uhd", "cc", "sign", "ad", "show_end",
+                   "force_pink", "bold", "top_dash", "bottom_dash", "hl", "fg", "name_edited", "show")
+STYLE_COPY_KEYS = ("shade", "hl", "fg", "bold", "top_dash", "bottom_dash")     # 꾸밈 복사/붙여넣기 항목
+SHARE_CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"     # 헷갈리는 0·O·1·I 는 뺌
+
+
+def share_code(rows, targets):
+    """여러 칸에 같은 새 이름을 줄 때 옆 날짜와 한 칸으로 묶이도록 같은 코드(6자리)를 새로 만들어 붙임.
+    이미 모두 같은 코드면 그대로. 엑셀의 원래 코드는 code_orig 에 남김(새 판 반영·되돌리기용).
+    반환: 새 코드 (안 바꿨으면 None)"""
+    import random
+    if len(targets) < 2:
+        return None
+    codes = {x.get("code") or "" for x in targets}
+    if len(codes) == 1 and "" not in codes:
+        return None
+    used = {r.get("code") for r in rows} | {r.get("code_orig") for r in rows}
+    while True:
+        code = "".join(random.choice(SHARE_CODE_CHARS) for _ in range(6))
+        if code not in used:
+            break
+    for x in targets:
+        if not x.get("local") and not x.get("code_orig") and x.get("code"):
+            x["code_orig"] = x["code"]
+        x["code"] = code
+    return code
+
+
 def clash(a, b):
     """두 줄이 같은 출력(TV/DMB)에서 시간이 겹치는지. 'DMB만' 칸은 다른 칸을 덮는 것이라 'DMB만'끼리만 겹침"""
     if a["date"] != b["date"] or a["plan"] != b["plan"] or not (a["s"] < b["e"] and a["e"] > b["s"]):
@@ -1465,6 +1494,8 @@ def merge_new_version(cur_rows, old_orig, new_rows):
       보고서: same/changed/new/removed/kept_edits/locals/checks 목록"""
     import copy
     new_rows = copy.deepcopy(new_rows)
+    # 묶으려고 새로 붙인 코드(share_code)는 엑셀 원래 코드로 짝을 찾고, 끝에 다시 붙임
+    cur_rows = [dict(c, code=c["code_orig"], _share=c["code"]) if c.get("code_orig") else c for c in cur_rows]
     old_exact = {_exact_key(r) for r in old_orig}
     new_exact = {_exact_key(r) for r in new_rows}
     # 1) 새 판 줄마다: 예전 판의 어느 줄과 같은지 (똑같은 줄이 있는 예전 줄은 짝 후보에서 뺌)
@@ -1540,6 +1571,8 @@ def merge_new_version(cur_rows, old_orig, new_rows):
                 n["_note"] = (f"예전 판에서 시간을 {fmt_t(c['s'])}~{fmt_t(c['e'])}(으)로 바꿨던 칸인데 "
                               f"새 판에서 편성이 바뀜 - 시간 확인")
                 time_checks.append(n)
+        if c.get("_share"):
+            n["code_orig"], n["code"] = n.get("code"), c["_share"]
         if moved:
             n["edited"] = True
             kept.append((n, moved))
@@ -1576,6 +1609,9 @@ def merge_new_version(cur_rows, old_orig, new_rows):
                 checks.append(r)
     for c in added:
         r = copy.deepcopy(c)
+        if r.get("_share"):
+            r["code"] = r.pop("_share")
+            r.pop("code_orig", None)
         r["_ver"] = "added"
         if hits(c["date"], c["s"], c["e"]):
             r["_check"], r["_note"] = True, note(c["date"], c["s"], c["e"])
@@ -1993,6 +2029,8 @@ class App:
         self.history = []           # 새 판 반영 기록
         self.ver_win = None
         self.multi = []             # 여러 칸 선택 (Ctrl+클릭 / Shift+클릭)
+        self.style_clip = None      # 꾸밈 복사: {shade, hl, fg, bold, top_dash, bottom_dash} + 원본 이름
+        self.empty_slot = None      # 편성 없는 빈 시간을 누름: {date, s, e, plan, rect} - 이름을 넣으면 새 줄
         self._multi_warned = False
         self._last_tag, self._last_t = None, 0.0
         self.saved = True
@@ -2143,7 +2181,7 @@ class App:
         self.cv.pack(fill=tk.BOTH, expand=True)
         self.cv.bind("<Button-1>", self.on_canvas_click)
         self.cv.bind("<Button-3>", self.on_canvas_menu)
-        self.cv.bind("<Double-1>", lambda e: self.edit_row())
+        self.cv.bind("<Double-1>", lambda e: self.edit_row() if self.valid_sel() else self.add_at_slot())
         self.cv.bind("<Motion>", self.on_canvas_motion)
         self.cv.bind("<Leave>", lambda e: (self.cv.delete("tip"), setattr(self, "_tip_row", -1)))
         self.cv.bind("<MouseWheel>", self.on_wheel)
@@ -2523,6 +2561,7 @@ class App:
                 messagebox.showwarning("입력 오류", "프로그램명을 입력하세요.", parent=top)
                 return
             self.push_undo("edit")
+            mates = [k for k in (self.whole_block() or []) if k != i] if i == self.sel else []
             if v["name"].get().strip() != r["name"]:
                 r["name_edited"] = True        # 이름을 바꾼 줄은 옆 날짜와 묶지 않음
             r.update(name=v["name"].get().strip(), s=s_, e=e_, plan=v["plan"].get(), age=v["age"].get(),
@@ -2532,6 +2571,10 @@ class App:
                 r["force_pink"] = b["force_pink"].get()
             r.update(extra)                             # 즐겨찾기에서 고른 굵게·점선·글자 바탕·글자색
             self.mark_edit(r)
+            for k in mates:             # 월~금으로 묶인 한 칸을 고쳤으면 묶인 요일 모두 똑같이
+                x = self.rows[k]
+                x.update({kk: r.get(kk) for kk in BLOCK_SYNC_KEYS if kk in r})
+                self.mark_edit(x)
             self.log(f"[고침] {day_label(r['date'])} {fmt_t(s_)}~{fmt_t(e_)} {r['name']} ({r['plan']})")
             top.destroy()
             self.refresh(keep=i)
@@ -2935,6 +2978,197 @@ class App:
         ent.icursor(tk.END)
         top.after(150, lambda: top.grab_set())
 
+    def copy_style(self, i):
+        """이 칸의 꾸밈(음영·글자 바탕·글자색·굵게·위/아래 점선)을 복사. 아이콘은 프로그램마다 달라서 뺌"""
+        r = self.rows[i]
+        self.style_clip = {k: r.get(k) or ("" if k in ("shade", "hl", "fg") else False) for k in STYLE_COPY_KEYS}
+        self.style_clip["_from"] = r["name"].replace("|", " ")[:16]
+        self.log(f"[꾸밈 복사] {day_label(r['date'])} {fmt_t(r['s'])} {r['name']} - "
+                 f"음영 {self.style_clip['shade'] or '없음'}, 굵게 {'예' if self.style_clip['bold'] else '아니오'}")
+
+    def paste_style(self):
+        """복사해 둔 꾸밈을 고른 칸(여러 칸이면 모두)에 똑같이"""
+        if not self.style_clip:
+            return
+        sel = self.selected_rows()
+        if not sel:
+            return
+        self.push_undo("paste_style")
+        for k in sel:
+            x = self.rows[k]
+            for key in STYLE_COPY_KEYS:
+                x[key] = self.style_clip[key]
+            self.mark_edit(x)
+        self.saved = False
+        self.log(f"[꾸밈 붙여넣기] '{self.style_clip['_from']}' 꾸밈 -> {len(sel)}칸")
+        self.refresh(keep=self.sel)
+
+    def plan2_dialog(self, i):
+        """1안 칸과 같은 시간에 2안 프로그램 넣기 -> 그날은 1안(왼쪽 반) / 2안(오른쪽 반)으로 나뉨"""
+        tk, ttk = self.tk, self.ttk
+        from tkinter import messagebox
+        base = self.rows[i]
+        top = tk.Toplevel(self.root)
+        top.title("2안 넣기")
+        top.transient(self.root)
+        f = tk.Frame(top, padx=14, pady=10)
+        f.pack()
+        tk.Label(f, text=f"기준(1안): {day_label(base['date'])} {fmt_t(base['s'])}~{fmt_t(base['e'])} "
+                         f"{base['name'].replace('|', ' ')}", font=("", 10, "bold")).grid(
+            row=0, column=0, columnspan=8, sticky="w")
+        v_name = tk.StringVar(value="")
+        v_s, v_e = tk.StringVar(value=fmt_t(base["s"])), tk.StringVar(value=fmt_t(base["e"]))
+        tk.Label(f, text="2안 프로그램명").grid(row=1, column=0, sticky="w")
+        ent = tk.Entry(f, textvariable=v_name, width=36)
+        ent.grid(row=1, column=1, columnspan=7, sticky="w", pady=3)
+        bind_linebreak(ent)
+        # ★ 즐겨찾기: 고르면 이름 + 저장해 둔 옵션(음영·아이콘 등)
+        favs = [fv for fv in load_config().get("favorites", []) if isinstance(fv, dict)]
+        fav_items = [(fav_display(fv).replace("\n", " "), fv) for fv in favs]
+        picked_fav = {}
+        tk.Label(f, text="★ 즐겨찾기", fg="#b26a00").grid(row=2, column=0, sticky="w")
+        v_fav = tk.StringVar(value="")
+        fav_cb = ttk.Combobox(f, textvariable=v_fav, values=[t for t, _ in fav_items], width=34, state="readonly")
+        fav_cb.grid(row=2, column=1, columnspan=7, sticky="w", pady=3)
+
+        def fav_pick(e=None):
+            fv = next((fv for t, fv in fav_items if t == v_fav.get()), None)
+            if not fv:
+                return
+            name = fv.get("name") or v_name.get()
+            pre, suf = fv.get("prefix", ""), fv.get("suffix", "")
+            if pre and not name.startswith(pre):
+                name = pre + name
+            if suf and not name.endswith(suf):
+                name = name + suf
+            v_name.set(name)
+            picked_fav.clear()
+            picked_fav.update({k: fv[k] for k in FAV_OPT_KEYS if k in fv})
+            if "force_pink" in fv:
+                v_pink.set(bool(fv["force_pink"]))
+            ent.focus_set()
+            ent.icursor(tk.END)
+        fav_cb.bind("<<ComboboxSelected>>", fav_pick)
+        tk.Label(f, text="시작").grid(row=3, column=0, sticky="w")
+        tk.Entry(f, textvariable=v_s, width=7).grid(row=3, column=1, sticky="w")
+        tk.Label(f, text="끝").grid(row=3, column=2, sticky="e")
+        tk.Entry(f, textvariable=v_e, width=7).grid(row=3, column=3, sticky="w")
+        tk.Label(f, text="요일").grid(row=4, column=0, sticky="w")
+        dates = sorted({r["date"] for r in self.rows})
+        wd_of = {datetime.datetime.strptime(d, "%Y%m%d").weekday(): d for d in dates}
+        base_wd = datetime.datetime.strptime(base["date"], "%Y%m%d").weekday()
+        v_days = {}
+        for k in range(7):
+            v_days[k] = tk.BooleanVar(value=(k == base_wd))
+            tk.Checkbutton(f, text=WEEKDAYS[k], variable=v_days[k],
+                           state="normal" if k in wd_of else "disabled").grid(row=4, column=1 + k, sticky="w")
+        tk.Label(f, text="(오른쪽 클릭한 요일만 미리 골라 둠 - 다른 요일도 같이 넣으려면 체크)", fg="#777").grid(
+            row=5, column=0, columnspan=8, sticky="w")
+        v_pink = tk.BooleanVar(value=bool(load_config().get("pink_plan2", True)))
+        v_cc = tk.BooleanVar(value=True)
+        tk.Checkbutton(f, text="분홍", variable=v_pink).grid(row=6, column=1, sticky="w")
+        tk.Checkbutton(f, text="자막", variable=v_cc).grid(row=6, column=2, columnspan=2, sticky="w")
+
+        def ok():
+            name = v_name.get().strip()
+            try:
+                s_ = hhmm_to_min(v_s.get()) - DAY_START_MIN
+                e_ = hhmm_to_min(v_e.get()) - DAY_START_MIN
+                if e_ <= s_ or not (0 <= s_ < DAY_LEN_MIN and 0 < e_ <= DAY_LEN_MIN):
+                    raise ValueError
+            except (ValueError, TypeError):
+                messagebox.showwarning("입력 오류", "시각을 확인하세요. (예: 07:20 ~ 07:50)", parent=top)
+                return
+            days = [wd_of[k] for k in range(7) if v_days[k].get() and k in wd_of]
+            if not name or not days:
+                messagebox.showwarning("입력 오류", "2안 프로그램명과 요일을 고르세요.", parent=top)
+                return
+            busy = [d for d in days if any(r["date"] == d and r["plan"] == "2안" and r["s"] < e_ and r["e"] > s_
+                                           and (r.get("show") or "") == ("dmb" if self.dmb_on else "")
+                                           for r in self.rows)]
+            if busy and not messagebox.askyesno(
+                    "2안 넣기", "이미 2안이 있는 요일: " + ", ".join(day_label(d) for d in busy) +
+                    "\n그 요일은 빼고 넣을까요?", parent=top):
+                return
+            days = [d for d in days if d not in busy]
+            if not days:
+                top.destroy()
+                return
+            self.push_undo("plan2")
+            added = []
+            for d in days:
+                x = {"date": d, "code": "", "name": name, "s": s_, "e": e_, "uhd": False, "cc": v_cc.get(),
+                     "ad": False, "sign": False, "age": "", "rl": "", "rerun": False, "plan": "2안", "edited": True}
+                x.update(picked_fav)
+                x["cc"] = v_cc.get() if "cc" not in picked_fav else picked_fav["cc"]
+                if v_pink.get() != bool(load_config().get("pink_plan2", True)):
+                    x["force_pink"] = v_pink.get()     # 설정과 다르게 고른 경우만 직접 값
+                else:
+                    x.pop("force_pink", None)
+                if self.dmb_on:
+                    x["show"] = "dmb"
+                self.rows.append(x)
+                added.append(x)
+            self.saved = False
+            self.log(f"[2안 넣기] '{name.replace('|', ' ')}' {fmt_t(s_)}~{fmt_t(e_)} "
+                     + ", ".join(day_label(d) for d in days))
+            top.destroy()
+            self.refresh(keep=self.rows.index(added[0]))
+        bf = tk.Frame(f)
+        bf.grid(row=7, column=0, columnspan=8, pady=8)
+        tk.Button(bf, text="넣기", command=ok, width=10, bg="#4CAF50").pack(side=tk.LEFT, padx=6)
+        tk.Button(bf, text="취소", command=top.destroy, width=10).pack(side=tk.LEFT, padx=6)
+        ent.focus_set()
+        top.after(150, lambda: top.grab_set())
+
+    def del_plan2(self, i):
+        """2안 칸 지우기 -> 그날 그 시간은 다시 1안 전체 칸 (조건이 같으면 옆 날짜와 다시 묶임)"""
+        from tkinter import messagebox
+        targets = [k for k in self.selected_rows() if self.rows[k]["plan"] == "2안"] or [i]
+        names = ", ".join(f"{day_label(self.rows[k]['date'])} {self.rows[k]['name'].replace('|', ' ')}"
+                          for k in targets[:3]) + (" ..." if len(targets) > 3 else "")
+        if not messagebox.askyesno("2안 지우기", f"2안 {len(targets)}칸을 지우고 1안만 남길까요?\n{names}"):
+            return
+        self.push_undo("del2")
+        for k in sorted(targets, reverse=True):
+            x = self.rows.pop(k)
+            self.deleted += 1
+            self.log(f"[2안 지움] {day_label(x['date'])} {fmt_t(x['s'])} {x['name']}")
+        self.saved = False
+        self.multi = []
+        self.refresh(keep=-1)
+
+    def plan_partners(self, i):
+        """rows[i] 의 짝: 같은 날, 시간이 겹치는 다른 편성안(1안<->2안) 줄 번호들 (TV/DMB 같은 출력끼리)"""
+        r = self.rows[i]
+        other = "1안" if r["plan"] == "2안" else "2안"
+        return [k for k, x in enumerate(self.rows) if k != i and x["date"] == r["date"] and x["plan"] == other
+                and x["s"] < r["e"] and x["e"] > r["s"] and (x.get("show") or "") == (r.get("show") or "")]
+
+    def swap_plan(self, i):
+        """1안 <-> 2안 서로 바꾸기: 누른 칸과 짝(같은 날·겹치는 시간의 다른 편성안)을 함께 바꿈.
+        여러 칸을 골랐으면 고른 칸마다 짝까지. 짝이 없는 칸은 바꾸지 않음"""
+        base = self.selected_rows()
+        if i not in base:
+            base = [i]
+        sel = set()
+        for k in base:
+            ps = self.plan_partners(k)
+            if ps:
+                sel.add(k)
+                sel.update(ps)
+        if not sel:
+            return
+        self.push_undo("swap")
+        for k in sorted(sel):
+            x = self.rows[k]
+            x["plan"] = "1안" if x["plan"] == "2안" else "2안"
+            x.pop("force_pink", None)          # 분홍은 바뀐 편성안에 맞게 다시 자동으로
+            self.mark_edit(x)
+            self.log(f"[편성안 바꿈] {day_label(x['date'])} {fmt_t(x['s'])} {x['name']} -> {x['plan']}")
+        self.saved = False
+        self.refresh(keep=self.sel)
+
     def shade_dialog(self):
         """고른 프로그램에 음영(배경색) 넣기: 이 줄만 / 이번 주 같은 프로그램 모두 / 매주 자동"""
         tk, ttk = self.tk, self.ttk
@@ -3008,7 +3242,8 @@ class App:
         if i is None:
             return
         r = self.rows[i]
-        o = next((o for o in self.orig if o["date"] == r["date"] and o.get("code") == r.get("code")
+        o = next((o for o in self.orig if o["date"] == r["date"]
+                  and o.get("code") in {r.get("code"), r.get("code_orig")}
                   and o["plan"] == r["plan"] and (o["s"] == r["s"] or o["name"] == r["name"])), None)
         if o is None:
             messagebox.showinfo("알림", "엑셀에서 같은 줄을 찾지 못했습니다. (새로 추가한 줄이면 [줄 삭제]를 쓰세요)")
@@ -3411,6 +3646,16 @@ class App:
         tk, ttk = self.tk, self.ttk
         self.form_title = tk.Label(parent, text="칸을 고르세요", font=("", 12, "bold"), anchor="w")
         self.form_title.pack(fill=tk.X, pady=(2, 2))
+        # 묶인 칸(월~금): 지금 고치는 범위 [묶음 전체] / [이 요일만] - 묶인 칸을 골랐을 때만 보임
+        self.scope_bar = tk.Frame(parent)
+        self.scope_all_btn = tk.Button(self.scope_bar, text="묶음 전체", width=10,
+                                       command=lambda: self.valid_sel() and self.select_block(self.sel))
+        self.scope_all_btn.pack(side=tk.LEFT, padx=(0, 4))
+        self.scope_one_btn = tk.Button(self.scope_bar, text="이 요일만", width=10,
+                                       command=lambda: self.valid_sel() and self.select(self.sel))
+        self.scope_one_btn.pack(side=tk.LEFT)
+        tk.Label(self.scope_bar, text="(같은 칸을 한 번 더 누르면 그 요일만)", fg="#777").pack(side=tk.LEFT, padx=6)
+        self._btn_bg = self.scope_all_btn.cget("bg")
         # 주황·빨강 표시가 있는 칸: 이유 한 줄 + [겹침 정리]
         self.reason_bar = tk.Frame(parent)
         self.reason_lbl = tk.Label(self.reason_bar, text="", anchor="w", justify="left", wraplength=380,
@@ -3545,6 +3790,7 @@ class App:
     def select(self, i, source=None, keep_multi=False):
         """줄 하나를 고름: 편성표 테두리, 오른쪽 수정란, 표 선택을 함께 맞춤"""
         self.sel = i if (i is not None and 0 <= i < len(self.rows)) else None
+        self.empty_slot = None
         if not keep_multi:
             self.multi = [self.sel] if self.sel is not None else []
         self.multi = [k for k in self.multi if 0 <= k < len(self.rows)]
@@ -3558,6 +3804,25 @@ class App:
             self.tree.see(str(self.sel))
             self._quiet = False
         self.draw_marks()
+
+    def whole_block(self):
+        """지금 고른 칸들이 월~금(주말)으로 묶인 한 칸 전체이면 그 줄 번호들, 아니면 None"""
+        sel = set(self.selected_rows())
+        if len(sel) < 2 or not self.valid_sel():
+            return None
+        blk = self.block_of(self.sel)
+        if blk and set(blk["_ris"]) == sel:
+            return sorted(sel)
+        return None
+
+    def select_block(self, i):
+        """칸 하나를 누름: 월~금으로 묶인 칸이면 묶인 요일 전체를 한 칸처럼 고름"""
+        blk = self.block_of(i)
+        if blk and len(blk["_ris"]) > 1:
+            self.multi = [k for k in blk["_ris"] if 0 <= k < len(self.rows)]
+            self.select(i, keep_multi=True)
+        else:
+            self.select(i)
 
     def selected_rows(self):
         """선택한 줄 번호들 (여러 칸 선택이면 전부, 아니면 지금 줄 하나)"""
@@ -3574,17 +3839,15 @@ class App:
         self._loading = True
         try:
             if not self.valid_sel():
-                self.form_title.config(text="칸을 고르세요")
+                self.form_title.config(text="칸을 고르세요", fg="black")
+                self.update_scope_bar()
                 for v in self.fv.values():
                     v.set("")
                 for v in self.fb.values():
                     v.set(False)
                 return
             r = self.rows[self.sel]
-            n = len(self.selected_rows())
-            self.form_title.config(text=(f"{n}칸 선택 · 기준: " if n > 1 else "") +
-                                   f"{day_label(r['date'])}  {fmt_t(r['s'])}~{fmt_t(r['e'])}  ({r['plan']})",
-                                   fg="#1565c0" if n > 1 else "black")
+            self.load_form_title()
             for k in ("name", "plan", "age", "rl", "code"):
                 self.fv[k].set(r.get(k, "") or "")
             self.fv["show"].set(SHOW_LABELS.get(r.get("show") or "", "모두"))
@@ -3604,8 +3867,12 @@ class App:
             self._loading = False
 
     def form_changed(self):
-        if self._loading or not self.valid_sel():
+        if self._loading:
             return
+        if not self.valid_sel():
+            name = self.fv["name"].get().strip()
+            if not (self.empty_slot and name) or self.new_row_at_slot(name) is None:
+                return
         r = self.rows[self.sel]
         try:
             s_ = hhmm_to_min(self.fv["s"].get()) - DAY_START_MIN
@@ -3646,6 +3913,8 @@ class App:
         others = [k for k in self.selected_rows() if k != self.sel]
         if others:
             per_row = ("s", "e", "code") if self.v_name_all.get() else ("name", "s", "e", "code")
+            if self.whole_block():      # 묶인 한 칸: 이름·시각·코드도 묶인 요일 모두 똑같이
+                per_row = ()
             diff = {k: v for k, v in new.items() if k not in per_row and
                     ((r.get(k) or "") != (v or "") if not isinstance(v, bool) else bool(r.get(k)) != v)}
             for k in others:
@@ -3662,6 +3931,13 @@ class App:
             r["name_edited"] = True
         time_changed = (s_, e_) != (r["s"], r["e"])
         r.update(new)
+        if others and self.v_name_all.get():     # 여러 칸에 같은 이름 -> 같은 코드로 한 칸에 묶이게
+            code = share_code(self.rows, [r] + [self.rows[k] for k in others])
+            if code:
+                self._loading = True
+                self.fv["code"].set(code)
+                self._loading = False
+                self.log(f"[묶음 코드] {len(others) + 1}칸에 같은 코드 {code} 붙임")
         if any((x.get("show") or "") != old_shows.get(id(x), "") for x in [r] + [self.rows[k] for k in others]):
             for x in [r] + [self.rows[k] for k in others]:
                 self.after_show_change(x, old_shows.get(id(x), ""))
@@ -3685,8 +3961,35 @@ class App:
             return
         r = self.rows[self.sel]
         n = len(self.selected_rows())
+        wb = self.whole_block()
+        self.update_scope_bar(wb)
+        if wb:
+            ds = sorted({self.rows[k]["date"] for k in wb})
+            self.form_title.config(text=f"묶인 칸 {len(wb)}일 ({day_label(ds[0])}~{day_label(ds[-1])})  "
+                                        f"{fmt_t(r['s'])}~{fmt_t(r['e'])}  ({r['plan']})", fg="#1565c0")
+            return
+        if n == 1 and len((self.block_of(self.sel) or {}).get("_ris", [])) > 1:
+            self.form_title.config(text=f"{day_label(r['date'])}만 (묶인 칸 중)  {fmt_t(r['s'])}~{fmt_t(r['e'])}"
+                                        f"  ({r['plan']})", fg="#c62828")
+            return
         self.form_title.config(text=(f"{n}칸 선택 · 기준: " if n > 1 else "") +
-                               f"{day_label(r['date'])}  {fmt_t(r['s'])}~{fmt_t(r['e'])}  ({r['plan']})")
+                               f"{day_label(r['date'])}  {fmt_t(r['s'])}~{fmt_t(r['e'])}  ({r['plan']})",
+                               fg="#1565c0" if n > 1 else "black")
+
+    def update_scope_bar(self, wb=None):
+        """묶인 칸을 골랐을 때만 [묶음 전체]/[이 요일만] 을 보이고, 지금 범위 버튼을 눌린 모양으로"""
+        bar = getattr(self, "scope_bar", None)
+        if bar is None:
+            return
+        blk = self.block_of(self.sel) if self.valid_sel() else None
+        if not blk or len(blk["_ris"]) < 2:
+            bar.pack_forget()
+            return
+        if not bar.winfo_ismapped():
+            bar.pack(fill="x", pady=(0, 4), after=self.form_title)
+        on, off = dict(relief="sunken", bg="#bbdefb"), dict(relief="raised", bg=self._btn_bg)
+        self.scope_all_btn.config(**(on if wb else off))
+        self.scope_one_btn.config(**(off if wb else on))
 
     def form_pick_color(self, what="shade"):
         """what: shade(칸 음영) / hl(글자 바탕) / fg(글자색)"""
@@ -3931,6 +4234,10 @@ class App:
                 if key in fv:
                     x[key] = fv[key]
             self.mark_edit(x)
+        if fv.get("name"):          # 여러 칸에 같은 이름 -> 같은 코드로 한 칸에 묶이게
+            code = share_code(self.rows, [self.rows[k] for k in picked])
+            if code:
+                self.log(f"[묶음 코드] {len(picked)}칸에 같은 코드 {code} 붙임")
         self.log(f"[즐겨찾기] '{fav_display(fv).replace(chr(10), ' ')}' -> {len(picked)}칸")
         self.refresh(keep=self.sel)
 
@@ -4130,7 +4437,23 @@ class App:
                 x0, x1 = max(x0, dx[0]), min(x1, dx[1])
             self.cv.create_rectangle(x0 * z + 2, y0 * z + 2, x1 * z - 2, y1 * z - 2,
                                      outline="#e53935" if r.get("_check") else "#fb8c00", width=3, tags=("mark",))
+        if self.empty_slot:         # 빈 시간: 초록 점선
+            x0, y0, x1, y1 = self.empty_slot["rect"]
+            self.cv.create_rectangle(x0 * z + 1, y0 * z + 1, x1 * z - 1, y1 * z - 1, outline="#2e7d32",
+                                     width=3, dash=(4, 2), tags=("mark",))
+        picked = set(self.selected_rows())
+        drawn = set()
+        for g in self.geom:        # 묶인 칸의 요일이 모두 골라졌으면 칸 전체에 테두리 하나
+            ris = g["block"]["_ris"]
+            if len(ris) > 1 and set(ris) <= picked:
+                x0, y0, x1, y1 = g["rect"]
+                main = self.sel in ris
+                self.cv.create_rectangle(x0 * z + 1, y0 * z + 1, x1 * z - 1, y1 * z - 1, outline="#1e88e5",
+                                         width=3 if main else 2, dash=(4, 2) if main else (2, 2), tags=("mark",))
+                drawn.update(ris)
         for k in self.selected_rows():
+            if k in drawn:
+                continue
             r = self.rows[k]
             dx = self.day_x(r["date"])
             g = next((g for g in self.geom if k in g["block"]["_ris"]), None)
@@ -4165,6 +4488,7 @@ class App:
         if i is None:
             if not ctrl and not shift:
                 self.clear_selection()
+                self.pick_empty_slot(e)
             return
         if ctrl:                    # Ctrl+클릭: 칸 하나씩 더하기 / 빼기
             if i in self.multi and len(self.multi) > 1:
@@ -4179,8 +4503,91 @@ class App:
                 if k not in self.multi:
                     self.multi.append(k)
             self.select(i, keep_multi=True)
-        else:
+        elif e.state & (0x20000 if sys.platform == "win32" else 0x0008):    # Alt+클릭: 묶인 칸에서 그 요일만
             self.select(i)
+        elif self.whole_block() and i in self.selected_rows():     # 묶음 전체를 고른 채 한 번 더: 그 요일만
+            self.select(i)
+        else:                       # 그냥 클릭: 묶인 칸이면 한 칸으로 통째로
+            self.select_block(i)
+
+    def empty_slot_at(self, e):
+        """누른 곳이 편성 없는 빈 시간이면 {date, s, e, plan, rect}. 위·아래 칸 사이 시간, 옆이 2안(1안)이면 반쪽"""
+        z = self.zoom
+        px, py = self.cv.canvasx(e.x) / z, self.cv.canvasy(e.y) / z
+        top, bottom = TABLE_TOP + HEAD_H, TABLE_BOTTOM
+        if not (top <= py <= bottom):
+            return None
+        day = next((k for k, (a, c) in enumerate(X_COLS["days"]) if a <= px <= c), None)
+        if day is None or day >= len(self.dates):
+            return None
+        cx0, cx1 = X_COLS["days"][day]
+        mid = (cx0 + cx1) / 2
+        col = [g for g in self.geom if g["rect"][0] <= px <= g["rect"][2]]
+        up = max((g for g in col if g["rect"][3] <= py + 0.01), key=lambda g: g["rect"][3], default=None)
+        lo = min((g for g in col if g["rect"][1] >= py - 0.01), key=lambda g: g["rect"][1], default=None)
+        s_ = up["block"]["e"] if up else 0
+        e_ = lo["block"]["s"] if lo else DAY_LEN_MIN
+        if e_ <= s_:
+            return None
+        y0 = up["rect"][3] if up else top
+        y1 = lo["rect"][1] if lo else bottom
+        # 같은 날 같은 시간에 반쪽(1안/2안) 칸이 있으면 비어 있는 쪽 반만
+        side = {g["block"]["half"] for g in self.geom if g["block"]["half"] and g["rect"][0] < cx1 and g["rect"][2] > cx0
+                and g["block"]["s"] < e_ and g["block"]["e"] > s_}
+        plan, x0, x1 = "1안", cx0, cx1
+        if "R" in side and px < mid:
+            x1 = mid
+        elif "L" in side and px >= mid:
+            plan, x0 = "2안", mid
+        return {"date": self.dates[day], "s": s_, "e": e_, "plan": plan, "rect": (x0, y0, x1, y1)}
+
+    def pick_empty_slot(self, e):
+        """빈 시간을 누름: 초록 점선 + 오른쪽 수정란에 시각·편성안을 채워 둠 -> 프로그램명을 치면 새 줄"""
+        slot = self.empty_slot_at(e)
+        if slot is None:
+            return
+        self.empty_slot = slot
+        self._loading = True
+        try:
+            self.fv["s"].set(fmt_t(slot["s"]))
+            self.fv["e"].set(fmt_t(slot["e"]))
+            self.fv["plan"].set(slot["plan"])
+        finally:
+            self._loading = False
+        self.form_title.config(text=f"빈 시간 {day_label(slot['date'])} {fmt_t(slot['s'])}~{fmt_t(slot['e'])}"
+                                    f" ({slot['plan']}) - 프로그램명을 넣으면 새 줄", fg="#2e7d32")
+        self.draw_marks()
+
+    def new_row_at_slot(self, name):
+        """빈 시간(empty_slot)에 새 줄을 만들고 고름. 시각·편성안은 오른쪽 수정란 값(없으면 빈 시간 그대로)"""
+        slot = self.empty_slot
+        if not slot:
+            return None
+        try:
+            s_ = hhmm_to_min(self.fv["s"].get()) - DAY_START_MIN
+            e_ = hhmm_to_min(self.fv["e"].get()) - DAY_START_MIN
+            if e_ <= s_ or not (0 <= s_ < DAY_LEN_MIN and 0 < e_ <= DAY_LEN_MIN):
+                raise ValueError
+        except (ValueError, TypeError):
+            s_, e_ = slot["s"], slot["e"]
+        self.push_undo("add")
+        r = {"date": slot["date"], "code": "", "name": name, "s": s_, "e": e_,
+             "uhd": False, "cc": True, "ad": False, "sign": False, "age": "", "rl": "", "rerun": False,
+             "plan": self.fv["plan"].get() or slot["plan"], "edited": True}
+        if self.dmb_on:         # DMB 로 보는 중에 넣는 줄은 DMB에서만
+            r["show"] = "dmb"
+        self.rows.append(r)
+        self.saved = False
+        self.log(f"[빈 시간에 추가] {day_label(r['date'])} {fmt_t(s_)}~{fmt_t(e_)} {name} ({r['plan']})")
+        self.empty_slot = None
+        self.refresh(keep=len(self.rows) - 1)
+        return len(self.rows) - 1
+
+    def add_at_slot(self):
+        """빈 시간을 두 번 누름: 그 자리에 새 줄을 만들고 [자세히 고치기] 창"""
+        i = self.new_row_at_slot("새 프로그램")
+        if i is not None:
+            self.edit_row(i, new=True)
 
     def block_of(self, i):
         return next((g["block"] for g in self.geom if i in g["block"]["_ris"]), None)
@@ -4189,12 +4596,20 @@ class App:
         i = self.hit(e)
         if i is None:
             return
-        self.select(i)
+        if i in self.selected_rows():
+            self.select(i, keep_multi=True)
+        else:
+            self.select_block(i)
         r = self.rows[i]
         m = self.tk.Menu(self.root, tearoff=0)
         m.add_command(label=f"{day_label(r['date'])} {fmt_t(r['s'])} {r['name']}", state="disabled")
         m.add_separator()
         m.add_command(label="음영 넣기 / 빼기 ...", command=self.shade_dialog)
+        m.add_command(label="꾸밈 복사 (음영·글자 바탕·글자색·굵게·점선)", command=lambda: self.copy_style(i))
+        if self.style_clip:
+            n = len(self.selected_rows())
+            m.add_command(label=f"꾸밈 붙여넣기 ← '{self.style_clip['_from']}'" + (f" ({n}칸)" if n > 1 else ""),
+                          command=self.paste_style)
         m.add_command(label=("분홍 끄기" if self.eff_pink(i) else "분홍 켜기"), command=self.toggle_pink)
         m.add_command(label=("끝 시각 표시 끄기" if r.get("show_end") else "끝 시각 표시 켜기"), command=self.toggle_end)
         m.add_separator()
@@ -4208,7 +4623,15 @@ class App:
         m.add_command(label="이름 앞뒤에 글자 붙이기 ...", command=self.affix_dialog)
         m.add_command(label=("DMB 칸 넣기 (TV 편성 위에 덮기) ..." if self.dmb_on else "로컬 끼워 넣기 ..."),
                       command=self.local_dialog)
+        if r["plan"] == "2안":
+            m.add_command(label="2안 지우기 (1안만 남기기)", command=lambda: self.del_plan2(i))
+        else:
+            m.add_command(label="2안 넣기 (이 시간을 1안/2안으로 나누기) ...", command=lambda: self.plan2_dialog(i))
+        if self.plan_partners(i):     # 같은 날·겹치는 시간에 짝(1안/2안)이 있을 때만
+            m.add_command(label="1안 ↔ 2안 서로 바꾸기", command=lambda: self.swap_plan(i))
         m.add_command(label="자세히 고치기 ...", command=lambda: self.edit_row())
+        if self.whole_block():
+            m.add_command(label="이 요일만 고르기 (Alt+클릭)", command=lambda: self.select(i))
         m.add_command(label="이 칸 뒤에 줄 추가 ...", command=self.add_row)
         if r.get("_check") or r.get("_ver") in ("changed", "new"):
             m.add_separator()
