@@ -30,7 +30,7 @@ try:
 except Exception:
     pass
 
-APP_VERSION = "1.3.3"
+APP_VERSION = "1.3.4"
 VERSION = f"v{APP_VERSION} (시험판)"
 
 
@@ -2142,19 +2142,7 @@ class App:
         self.recent_menu = tk.Menu(self.recent_mb, tearoff=0)
         self.recent_mb.config(menu=self.recent_menu)
         tk.Button(top, text="⚙ 설정", command=self.toggle_head).pack(side=tk.LEFT, padx=6)
-        # 📺 서버로 보내기: 위 버튼 줄에 늘 보이게 (TV 편성표 편집기·런처와 같은 view.json)
-        self.v_view_on = tk.BooleanVar(value=tv_view_config()["on"])
-        if tv_preview_dir():        # 런처로 실행할 때만 보낼 수 있음
-            def view_toggle():
-                if not save_tv_view_config(self.v_view_on.get()):
-                    self.log("[주의] 서버로 보내기 설정을 저장하지 못했습니다.")
-                    return
-                self.log("[서버로 보내기] " + ("켬 - PDF 저장할 때마다 녹음 PC 서버로 (TV 편성표 편집기와 같은 설정)"
-                                          if self.v_view_on.get() else "끔 - 다른 PC·서버에서 볼 수 없습니다"))
-            tk.Checkbutton(top, text="📺 서버로 보내기", variable=self.v_view_on, fg="#1565c0",
-                           command=view_toggle).pack(side=tk.LEFT, padx=(2, 4))
-        else:
-            tk.Label(top, text="📺 서버로 보내기: 런처로 실행할 때만", fg="#999").pack(side=tk.LEFT, padx=(2, 4))
+        self.v_view_on = tk.BooleanVar(value=tv_view_config()["on"])     # 📺 서버로 보내기 (⚙ 설정 창에서)
         self.status = tk.Label(top, text=f"[{VERSION}] 상단의 '{'TV 프로젝트 불러오기' if IS_DMB else '엑셀 열기'}'를 "
                                          f"눌러 시작하세요.")
         self.status.pack(side=tk.LEFT, padx=16)
