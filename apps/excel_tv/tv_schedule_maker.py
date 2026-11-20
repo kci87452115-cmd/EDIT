@@ -19,6 +19,7 @@ import os
 import re
 import sys
 import json
+import shutil
 import datetime
 
 import openpyxl
@@ -29,7 +30,7 @@ try:
 except Exception:
     pass
 
-APP_VERSION = "1.2.14"
+APP_VERSION = "1.3.0"
 VERSION = f"v{APP_VERSION} (시험판)"
 
 
@@ -64,6 +65,70 @@ DATA_DIR = _data_dir()
 TV_CONFIG_PATH = os.path.join(DATA_DIR, "tv_schedule_config.json")
 # DMB 편집기는 설정을 따로 (처음에는 TV 설정을 복사해서 시작: 글꼴·급 등은 같고 제목·빼기 체크는 따로)
 CONFIG_PATH = os.path.join(DATA_DIR, "dmb_schedule_config.json") if IS_DMB else TV_CONFIG_PATH
+
+# ---------------------------------------------------------------- 서버로 보내기 (다른 PC에서 보기)
+# PDF 저장 -> C:\\EDIT\\TV\\데이터\\미리보기 에 PDF + status.json -> TV PC 런처가 사내망에 보여 줌
+# -> 녹음 PC 서버가 1분 안에 가져감 (엑셀 편성표면 프로젝트·즐겨찾기·설정 백업도 그때 같이)
+TV_VIEW_PORT_DEFAULT = 8081
+
+
+def tv_preview_dir():
+    """런처로 실행할 때만: C:\\EDIT\\TV\\데이터\\미리보기 (TV 편성표 편집기와 같은 폴더)"""
+    home = os.environ.get("RADIO_HOME")
+    return os.path.join(home, "데이터", "미리보기") if home else ""
+
+
+def tv_view_config():
+    """다른 PC에서 보기 설정 - TV 편성표 편집기·DMB 편집기·런처와 같이 쓰는 미리보기\\view.json"""
+    try:
+        with open(os.path.join(tv_preview_dir(), "view.json"), "r", encoding="utf-8") as f:
+            c = json.load(f)
+        if isinstance(c, dict):
+            return {"on": bool(c.get("on")), "port": int(c.get("port", TV_VIEW_PORT_DEFAULT))}
+    except Exception:
+        pass
+    return {"on": False, "port": TV_VIEW_PORT_DEFAULT}
+
+
+def save_tv_view_config(on, port=None):
+    d = tv_preview_dir()
+    if not d:
+        return False
+    try:
+        os.makedirs(d, exist_ok=True)
+        port = int(port or tv_view_config()["port"])
+        with open(os.path.join(d, "view.json.tmp"), "w", encoding="utf-8") as f:
+            json.dump({"on": bool(on), "port": port}, f)
+        os.replace(os.path.join(d, "view.json.tmp"), os.path.join(d, "view.json"))
+        return True
+    except Exception:
+        return False
+
+
+def update_tv_preview_status(key, **fields):
+    """미리보기\\status.json 의 이 편성표 줄만 고침 (다른 편집기 줄은 그대로)"""
+    d = tv_preview_dir()
+    if not d:
+        return
+    try:
+        os.makedirs(d, exist_ok=True)
+        path = os.path.join(d, "status.json")
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                st = json.load(f)
+            if not isinstance(st, dict):
+                st = {}
+        except Exception:
+            st = {}
+        cur = st.get(key) or {}
+        cur.update(fields)
+        cur["updated"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        st[key] = cur
+        with open(path + ".tmp", "w", encoding="utf-8") as f:
+            json.dump(st, f, ensure_ascii=False, indent=1)
+        os.replace(path + ".tmp", path)
+    except Exception:
+        pass
 
 DAY_START_MIN = 5 * 60          # 편성표는 05:00 부터
 DAY_LEN_MIN = 24 * 60           # 다음날 05:00 까지
@@ -2142,6 +2207,17 @@ class App:
         self.ent_stext.pack(side=tk.LEFT, padx=2)
         tk.Label(head, text="(직접 입력일 때)", fg="#777").pack(side=tk.LEFT)
         tk.Button(head, text="아이콘 색 ...", command=self.icon_color_dialog).pack(side=tk.LEFT, padx=10)
+        if tv_preview_dir():        # 런처로 실행할 때만
+            self.v_view_on = tk.BooleanVar(value=tv_view_config()["on"])
+
+            def view_toggle():
+                if not save_tv_view_config(self.v_view_on.get()):
+                    self.log("[주의] 서버로 보내기 설정을 저장하지 못했습니다.")
+                    return
+                self.log("[서버로 보내기] " + ("켬 - PDF 저장할 때마다 녹음 PC 서버로 (TV 편성표 편집기와 같은 설정)"
+                                          if self.v_view_on.get() else "끔 - 다른 PC·서버에서 볼 수 없습니다"))
+            tk.Checkbutton(head, text="📺 서버로 보내기 (다른 PC에서 보기)", variable=self.v_view_on,
+                           command=view_toggle).pack(side=tk.LEFT, padx=6)
         self._head_id = None
         for v in (self.v_title, self.v_tsize, self.v_tbold, self.v_smode, self.v_stext):
             v.trace_add("write", lambda *a: self.head_changed())
@@ -2373,6 +2449,7 @@ class App:
 
     def refresh(self, keep=None):
         """줄 내용이 바뀐 뒤: 표, 오른쪽 수정란, 편성표를 모두 다시"""
+        self.mark_preview_dirty()
         if keep is not None:
             self.sel = keep if 0 <= keep < len(self.rows) else None
         elif not self.valid_sel():
@@ -3303,10 +3380,57 @@ class App:
         # 같은 이름의 프로젝트도 데이터 폴더에 함께 저장 -> 나중에 다시 열어 고칠 수 있음
         self.save(path=os.path.join(week_dir(self.rows), os.path.splitext(os.path.basename(out))[0] + PROJ_EXT),
                   kept=True)
+        self.publish_preview(out)       # 서버로 보내기 (프로젝트 저장 뒤 -> 서버가 백업할 때 이번 프로젝트도 들어감)
         self.log(f"[작업 기록] 불러온 뒤 {self.elapsed()} 걸림 · 고친 줄 {self.edits}개 "
                  f"(프로젝트도 함께 저장: {os.path.basename(self.proj_path or '')})")
         if messagebox.askyesno("완료", "PDF를 만들었습니다. 열어 볼까요?"):
             open_file(out)
+
+    def preview_key(self):
+        """서버 목록의 칸 이름: 주(월요일 날짜)마다 한 줄. 'schedule-엑셀-20261116' / 'dmb-엑셀-20261116'"""
+        dates = sorted({r["date"] for r in self.rows})
+        if not dates:
+            return ""
+        d = datetime.datetime.strptime(dates[0], "%Y%m%d")
+        mon = d - datetime.timedelta(days=d.weekday())
+        return ("dmb" if IS_DMB else "schedule") + f"-엑셀-{mon:%Y%m%d}"
+
+    def preview_title(self):
+        t = (self.v_title.get() or "").strip() or week_label(sorted({r["date"] for r in self.rows}))
+        return t
+
+    def publish_preview(self, pdf_path):
+        """PDF 저장할 때: 미리보기 폴더에 PDF를 두고 '수정완료'로 -> 녹음 PC 서버가 1분 안에 가져감"""
+        d, key = tv_preview_dir(), self.preview_key()
+        if not d or not key:
+            return
+        try:
+            os.makedirs(d, exist_ok=True)
+            shutil.copyfile(pdf_path, os.path.join(d, key + ".pdf.tmp"))
+            os.replace(os.path.join(d, key + ".pdf.tmp"), os.path.join(d, key + ".pdf"))
+        except Exception as e:
+            self.log(f"[서버로 보내기] PDF를 미리보기 폴더에 두지 못했습니다: {e}")
+            return
+        update_tv_preview_status(key, kind="엑셀 DMB" if IS_DMB else "엑셀 TV", title=self.preview_title(),
+                                 state="수정완료", dirty=False, src=os.path.basename(pdf_path),
+                                 saved_at=datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        self._pv_dirty_key = ""
+        on = tv_view_config()["on"]
+        self.log(f"[서버로 보내기] {self.preview_title()} - "
+                 + ("1분 안에 녹음 PC 서버에 올라갑니다 (프로젝트·즐겨찾기·설정 백업도 함께)" if on else
+                    "'서버로 보내기'가 꺼져 있어 이 PC에만 둡니다 (⚙ 설정에서 켜기)"))
+
+    def mark_preview_dirty(self):
+        """PDF 저장 뒤 다시 고치기 시작하면 서버 목록에 '✏ 현재 편집중' (바뀔 때만 파일을 고침)"""
+        if not tv_preview_dir() or not self.rows or self.saved:
+            return
+        key = self.preview_key()
+        if not key or getattr(self, "_pv_dirty_key", "") == key:
+            return
+        if not os.path.exists(os.path.join(tv_preview_dir(), key + ".pdf")):
+            return          # 아직 이 주를 서버에 보낸 적 없으면 그대로
+        self._pv_dirty_key = key
+        update_tv_preview_status(key, dirty=True)
 
     def preview(self):
         """큰 창 미리보기: 실제로 저장되는 PDF 그대로. 확대·축소, 위아래좌우 이동"""

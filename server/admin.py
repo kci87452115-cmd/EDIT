@@ -293,7 +293,8 @@ BK = os.path.join(HOME, "backup")
 JOBS_STATUS = os.path.join(BK, "status-jobs.json")
 EDITORS_STATUS = os.path.join(BK, "status-editors.json")
 FM_CONF = "/etc/nginx/edit-extra/fm.conf"
-BACKUP_DIRS = {"server": "server", "peer": "peer", "editors_radio": "editors/radio", "editors_tv": "editors/tv"}
+BACKUP_DIRS = {"server": "server", "peer": "peer", "editors_radio": "editors/radio", "editors_tv": "editors/tv",
+               "editors_tv_save": "editors/tv-save"}
 
 
 def peer_addr():
@@ -328,7 +329,7 @@ def backup_status_public():
     return {"host": socket.gethostname(), "role": c.get("role", "main"),
             "server": pick(jobs.get("server", {}), ("at", "ok", "msg", "err", "file", "size")),
             "sync": pick(jobs.get("sync", {}), ("at", "ok", "msg", "err", "last_ok", "dates", "days", "newest_file")),
-            "editors": {k: pick(ed.get(k, {}), ("at", "ok", "err", "msg", "from", "file")) for k in ("radio", "tv")}}
+            "editors": {k: pick(ed.get(k, {}), ("at", "ok", "err", "msg", "from", "file")) for k in ("radio", "tv", "tv_save")}}
 
 
 def backup_status():
@@ -590,7 +591,7 @@ async function bk(){$('fbar').style.display='none';$('cnt').textContent='';$('ms
   +'</div>';
  h+='<h3>보관 설정</h3><div class="bar">AM 녹음 복사 <input id="k1" size="3" value="'+d.keep.am_keep_days+'">일 · 설정 백업 <input id="k2" size="3" value="'+d.keep.backup_keep+'">개 · 편집기 설정 <input id="k3" size="3" value="'+d.keep.editors_keep+'">개 <button id="ksave">저장</button> <span class="muted">AM 녹음 복사 일수는 예비 서버의 설정입니다</span></div>';
  const F=(key,title)=>{const L=d.files[key]||[];return '<h3>'+title+' <span class="muted">('+L.length+'개)</span></h3>'+(L.length?'<table><tr><th>파일</th><th>시각</th><th class="n">크기</th><th></th></tr>'+L.map(f=>'<tr><td>'+esc(f.name)+'</td><td>'+esc(f.t)+'</td><td class="n">'+KB(f.size)+'</td><td><a href="../api/admin/backup/file?dir='+key+'&name='+encodeURIComponent(f.name)+'">⬇ 받기</a></td></tr>').join('')+'</table>':'<div class="muted">없음</div>')};
- h+=F('server','이 서버 설정 백업')+F('peer','상대 서버 설정 백업 (서로 백업)')+F('editors_radio','라디오 편집기 설정')+F('editors_tv','TV 편집기 설정');
+ h+=F('server','이 서버 설정 백업')+F('peer','상대 서버 설정 백업 (서로 백업)')+F('editors_radio','라디오 편집기 설정')+F('editors_tv','TV 편집기 설정')+F('editors_tv_save','엑셀 편성표 저장할 때마다 (프로젝트·즐겨찾기·설정)');
  h+='<h3>백업 기록 (30일)</h3>'+((d.history||[]).length?'<table><tr><th>시각</th><th>작업</th><th>결과</th><th>내용</th><th class="n">걸린 시간</th></tr>'+d.history.map(x=>'<tr><td>'+esc(x.t.slice(5,16))+'</td><td>'+({server:'설정 백업',sync:'AM 녹음 복사'}[x.job]||esc(x.job))+'</td><td>'+(x.ok?'<span class="ok">성공</span>':'<span class="bad">실패</span>')+'</td><td>'+esc(x.msg)+'</td><td class="n">'+(x.sec||0)+'초</td></tr>').join('')+'</table>':'<div class="muted">아직 없음</div>');
  h+='<h3>복원 방법</h3><div class="muted">설정 백업 zip 안의 <b>복원방법.txt</b>에 새 SSD·새 PC에 다시 꾸미는 순서가 있습니다. 편집기 설정 zip은 편집기 PC의 C:\\EDIT\\radio\\데이터 / C:\\EDIT\\TV\\데이터 에 풀면 됩니다 (편집기를 끄고).</div>';
  $('tbl').innerHTML='<tr><td style="border:none;padding:0">'+h+'</td></tr>';

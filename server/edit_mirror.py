@@ -313,7 +313,7 @@ class Mirror:
             self._set("tv", checked=now_str(), error="TV 편성표 PC를 찾지 못함 (런처가 꺼져 있거나 '다른 PC에서 보기'가 꺼짐)")
             return
         local = load_json(os.path.join(TV_DIR, "status.json"), {})
-        ok_any, errs, got = False, [], 0
+        ok_any, errs, got, excel_src = False, [], 0, None
         for s in srcs:
             if not s["url"]:
                 errs.append(s["name"])
@@ -334,6 +334,8 @@ class Mirror:
                         if data[:4] == b"%PDF":
                             write_atomic(pdf, data)
                             got += 1
+                            if str(ent.get("kind", "")).startswith("엑셀") and old.get("saved_at") != ent["saved_at"]:
+                                excel_src = s       # PDF 를 새로 저장한 때만 (편집중 표시만 바뀐 때는 아님)
                     local[key] = ent
                 ok_any = True
             except Exception as exc:
@@ -342,6 +344,8 @@ class Mirror:
         save_json(os.path.join(TV_DIR, "status.json"), local)
         if got:
             log(f"TV 편성표 {got}개 받음")
+        if excel_src is not None:       # 엑셀 편성표를 PDF로 저장할 때마다: 프로젝트·즐겨찾기·설정도 바로 백업
+            self.backup_tv_on_save(excel_src, config)
         if ok_any:
             self._set("tv", checked=now_str(), synced=now_str(), error="; ".join(errs), count=len(local),
                       sources=[s["name"] or s["url"] for s in srcs])
@@ -413,6 +417,43 @@ class Mirror:
             st[kind] = ent
             log(f"편집기 설정 백업 ({kind}): {'OK ' + ent.get('msg', '') if ent['ok'] else ent['err']}")
         save_json(EDITORS_STATUS, st)
+
+    def backup_tv_on_save(self, s, config):
+        """엑셀 편성표 편집기가 PDF를 저장할 때마다 TV 쪽 설정 백업(프로젝트·즐겨찾기·설정·이름 사전)을 받아
+        editors/tv-save 에 따로 보관 (매일 백업과 섞이지 않게). 내용이 같으면 새로 저장하지 않음."""
+        import zipfile
+        import io
+        st = load_json(EDITORS_STATUS, {})
+        ent = {"at": now_str(), "ok": False, "err": "", "file": "", "size": 0, "from": s.get("name") or s.get("url")}
+        try:
+            _, _, data = http_get(s["url"] + "/api/settings-backup", timeout=120)
+            if data[:2] != b"PK":
+                raise RuntimeError("설정 백업을 받지 못함")
+            with zipfile.ZipFile(io.BytesIO(data)) as z:
+                h = hashlib.sha1()
+                for n in sorted(z.namelist()):
+                    if not n.startswith("_백업정보"):
+                        h.update(n.encode())
+                        h.update(z.read(n))
+                sig = h.hexdigest()
+            d = os.path.join(BACKUP_DIR, "editors", "tv-save")
+            os.makedirs(d, exist_ok=True)
+            prev = st.get("tv_save", {})
+            if prev.get("sig") == sig and prev.get("file") and os.path.exists(os.path.join(d, prev["file"])):
+                ent.update(ok=True, file=prev["file"], size=prev.get("size", 0), sig=sig, msg="바뀐 것 없음")
+            else:
+                fn = f"tv-save_{time.strftime('%Y%m%d-%H%M%S')}.zip"
+                write_atomic(os.path.join(d, fn), data)
+                ent.update(ok=True, file=fn, size=len(data), sig=sig, msg="저장할 때 백업")
+                keep = int(config.get("editors_save_keep", 30) or 30)
+                fs = sorted(glob.glob(os.path.join(d, "*.zip")), key=os.path.getmtime, reverse=True)
+                for f in fs[keep:]:
+                    os.remove(f)
+        except Exception as exc:
+            ent["err"] = str(exc)
+        st["tv_save"] = ent
+        save_json(EDITORS_STATUS, st)
+        log(f"엑셀 편성표 저장 백업: {'OK ' + ent.get('msg', '') if ent['ok'] else ent['err']}")
 
     def loop(self):
         while True:
