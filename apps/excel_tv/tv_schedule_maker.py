@@ -29,7 +29,7 @@ try:
 except Exception:
     pass
 
-APP_VERSION = "1.2.12"
+APP_VERSION = "1.2.13"
 VERSION = f"v{APP_VERSION} (시험판)"
 
 
@@ -2014,7 +2014,8 @@ class App:
         self.t0 = None
         self.sel = None             # 고른 편성 줄 번호
         self.deleted = 0
-        self.zoom = 1.4
+        _z = load_config().get("view_zoom")
+        self.zoom = float(_z) if isinstance(_z, (int, float)) and not isinstance(_z, bool) else 1.4
         self._redraw_id = None
         self.geom, self.dates = [], []
         self.diff_keys = set()
@@ -2346,7 +2347,7 @@ class App:
         self.update_undo_buttons()
         self.build_day_buttons()
         self.refresh()
-        self.root.after(300, self.zoom_fit)
+        self.root.after(300, self.apply_saved_zoom)
         self.log(f"[불러옴] {os.path.basename(f)}  편성 {len(self.rows)}줄 (작업 시간 재기 시작)")
 
     def pick_prev(self):
@@ -3459,7 +3460,7 @@ class App:
         self.show_main()
         self.build_day_buttons()
         self.refresh()
-        self.root.after(300, self.zoom_fit)
+        self.root.after(300, self.apply_saved_zoom)
         self.root.title(f"{APP_NAME} {VERSION} - {os.path.basename(path)}")
         self.build_recent()
         self.log(f"[프로젝트 열기] {os.path.basename(path)}  편성 {len(self.rows)}줄 · 고친 줄 {self.edits}개 "
@@ -3517,7 +3518,7 @@ class App:
         self.show_main()
         self.build_day_buttons()
         self.refresh()
-        self.root.after(300, self.zoom_fit)
+        self.root.after(300, self.apply_saved_zoom)
         self.root.title(f"{APP_NAME} {VERSION} - {os.path.basename(path)} (DMB 작업, 저장 전)")
         self.log(f"[TV 프로젝트 불러오기] {os.path.basename(path)}  편성 {len(self.rows)}줄 - "
                  f"TV 프로젝트는 그대로 두고, DMB 작업은 [프로젝트 저장] 때 {DMB_PROJ_EXT} 로 따로 저장합니다.")
@@ -3637,6 +3638,8 @@ class App:
                 return
         elif not messagebox.askokcancel("종료 확인", "프로그램을 종료할까요?"):
             return
+        if getattr(self, "_zoom_save_id", None):    # 끄기 직전에 바꾼 보기 크기도 저장
+            self.save_zoom_pref()
         self.root.destroy()
 
     # ================================================================ 편성표 보면서 고치기
@@ -4665,14 +4668,44 @@ class App:
         else:
             self.cv.yview_scroll(int(-e.delta / 120), "units")
 
-    def set_zoom(self, z):
+    def set_zoom(self, z, pref=None):
+        """보기 크기 바꾸기. pref: 기억할 값 (None 이면 이 배율, 'fit' 이면 한 장 맞춤)"""
         self.zoom = max(0.6, min(4.0, z))
         self.zoom_lbl.config(text=f"{int(self.zoom * 100)}%")
         self.schedule_redraw(100)
+        self.remember_zoom("fit" if pref == "fit" else round(self.zoom, 3))
 
     def zoom_fit(self):
         h = self.cv.winfo_height() or 700
-        self.set_zoom((h - 4) / PAGE_H)
+        self.set_zoom((h - 4) / PAGE_H, pref="fit")
+
+    def remember_zoom(self, pref):
+        """마지막 보기 크기를 설정 파일에 기억 (1초 동안 더 안 바뀌면 저장)"""
+        self._zoom_pref = pref
+        if getattr(self, "_zoom_save_id", None):
+            try:
+                self.root.after_cancel(self._zoom_save_id)
+            except Exception:
+                pass
+        self._zoom_save_id = self.root.after(1000, self.save_zoom_pref)
+
+    def save_zoom_pref(self):
+        self._zoom_save_id = None
+        pref = getattr(self, "_zoom_pref", None)
+        if pref is None or load_config().get("view_zoom") == pref:
+            return
+        try:
+            save_config_keys({"view_zoom": pref})
+        except Exception as e:
+            self.log(f"[주의] 보기 크기를 기억하지 못했습니다: {e}")
+
+    def apply_saved_zoom(self):
+        """파일을 열 때: 마지막 보기 크기 그대로 (처음이거나 '한 장 맞춤'이었으면 창에 맞춤)"""
+        pref = load_config().get("view_zoom", "fit")
+        if isinstance(pref, (int, float)) and not isinstance(pref, bool):
+            self.set_zoom(float(pref))
+        else:
+            self.zoom_fit()
 
     def icon_color_dialog(self):
         """아이콘(U·자·수·해·R·L·연령) 배경색과 글자색 바꾸기 - 바로 편성표에 반영, 설정에 저장"""
