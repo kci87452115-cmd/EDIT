@@ -29,7 +29,7 @@ try:
 except Exception:
     pass
 
-APP_VERSION = "1.2.11"
+APP_VERSION = "1.2.12"
 VERSION = f"v{APP_VERSION} (시험판)"
 
 
@@ -2525,6 +2525,8 @@ class App:
             for k in ("uhd", "cc", "sign", "ad", "force_pink", "show_end"):
                 if k in fv:
                     b[k].set(bool(fv[k]))
+            if "age" in fv:
+                v["age"].set(fv["age"] or "")
             if "shade" in fv:
                 v["shade"].set(fv["shade"] or "")
                 v_sn.set(next((k for k, c in SHADE_PRESETS.items() if c == (fv["shade"] or "")),
@@ -4182,6 +4184,7 @@ class App:
         r = self.rows[i]
         d = {k: bool(r.get(k)) for k in ("uhd", "cc", "sign", "ad", "show_end", "bold", "top_dash", "bottom_dash")}
         d["force_pink"] = self.eff_pink(i)
+        d["age"] = r.get("age", "") or ""
         for k in ("shade", "hl", "fg"):
             d[k] = r.get(k, "") or ""
         d["opts"] = True
@@ -4291,6 +4294,12 @@ class App:
                     vc[k].set(c)
                     vn.set("직접 고른 색")
             tk.Button(of, text="색 고르기", command=pick).grid(row=row, column=2, sticky="w", padx=2)
+        # 연령: 안 바꿈(☆ 눌러도 칸의 연령 그대로) / 없음 / 00·07·12·15·19
+        tk.Label(of, text="연령").grid(row=5, column=0, sticky="w")
+        v_age = tk.StringVar(value=(src.get("age") or FAV_AGE_NONE) if "age" in src else FAV_AGE_KEEP)
+        ttk.Combobox(of, textvariable=v_age, values=(FAV_AGE_KEEP, FAV_AGE_NONE, "00", "07", "12", "15", "19"),
+                     width=10, state="readonly").grid(row=5, column=1, sticky="w", pady=1)
+        tk.Label(of, text="(안 바꿈: 칸의 연령 그대로)", fg="#777").grid(row=5, column=2, columnspan=3, sticky="w")
 
         def from_cell():
             if not self.valid_sel():
@@ -4301,6 +4310,7 @@ class App:
                 vb[k].set(bool(o.get(k)))
             for k in vc:
                 vc[k].set(o.get(k, ""))
+            v_age.set(o.get("age") or FAV_AGE_NONE)
             v_opts.set(True)
             self.log("[즐겨찾기] 고른 칸의 옵션을 가져왔습니다. (색 이름 칸은 저장하면 맞춰집니다)")
         tk.Button(f, text="지금 고른 칸의 옵션 가져오기", command=from_cell).grid(row=4, column=0, columnspan=4,
@@ -4320,6 +4330,8 @@ class App:
                     fv[k] = bool(vb[k].get())
                 for k in vc:
                     fv[k] = vc[k].get()
+                if v_age.get() != FAV_AGE_KEEP:
+                    fv["age"] = "" if v_age.get() == FAV_AGE_NONE else v_age.get()
             favs2 = load_config().get("favorites", [])
             if edit_index is not None and edit_index < len(favs2):
                 favs2[edit_index] = fv
@@ -5109,7 +5121,8 @@ def bind_linebreak(entry):
     entry.bind("<Control-Return>", ins)
 
 
-FAV_OPT_KEYS = ("uhd", "cc", "sign", "ad", "force_pink", "show_end", "bold", "top_dash", "bottom_dash",
+FAV_AGE_KEEP, FAV_AGE_NONE = "안 바꿈", "없음"     # 즐겨찾기 연령: 안 바꿈(저장 안 함) / 없음("")
+FAV_OPT_KEYS = ("uhd", "cc", "sign", "ad", "age", "force_pink", "show_end", "bold", "top_dash", "bottom_dash",
                 "shade", "hl", "fg")
 
 
@@ -5118,6 +5131,8 @@ def fav_opt_summary(fv):
     if not any(k in fv for k in FAV_OPT_KEYS):
         return ""
     a = [t for k, t in (("uhd", "UHD"), ("cc", "자막"), ("sign", "수어"), ("ad", "화면해설")) if fv.get(k)]
+    if "age" in fv:
+        a.append(f"연령 {fv['age'] or '없음'}")
     b = [t for k, t in (("force_pink", "분홍"), ("show_end", "끝 시각"), ("bold", "굵게"),
                         ("top_dash", "위 점선"), ("bottom_dash", "아래 점선")) if fv.get(k)]
     c = [t for k, t in (("shade", "음영"), ("hl", "바탕"), ("fg", "글자색")) if fv.get(k)]
