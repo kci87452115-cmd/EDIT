@@ -30,7 +30,7 @@ try:
 except Exception:
     pass
 
-APP_VERSION = "1.3.1"
+APP_VERSION = "1.3.2"
 VERSION = f"v{APP_VERSION} (시험판)"
 
 
@@ -2123,7 +2123,7 @@ class App:
         self.recent_mb.pack(side=tk.LEFT, padx=(2, 0))
         self.recent_menu = tk.Menu(self.recent_mb, tearoff=0)
         self.recent_mb.config(menu=self.recent_menu)
-        tk.Button(top, text="⚙ 설정 (제목/날짜/아이콘)", command=self.toggle_head).pack(side=tk.LEFT, padx=6)
+        tk.Button(top, text="⚙ 설정", command=self.toggle_head).pack(side=tk.LEFT, padx=6)
         # 📺 서버로 보내기: 위 버튼 줄에 늘 보이게 (TV 편성표 편집기·런처와 같은 view.json)
         self.v_view_on = tk.BooleanVar(value=tv_view_config()["on"])
         if tv_preview_dir():        # 런처로 실행할 때만 보낼 수 있음
@@ -2198,28 +2198,14 @@ class App:
 
         # 제목 · 날짜 (바꾸면 바로 편성표에 반영, 설정에 저장되어 다음 주에도 그대로)
         cfg0 = load_config()
-        head = tk.Frame(root)
-        head.pack(fill=tk.X, padx=8, pady=(0, 4))
-        self.head = head
+        self.head = tk.Frame(root)      # (예전 설정 줄 자리 - 이제 ⚙ 설정은 따로 창으로)
         self.head_visible = False
+        self.settings_win = None
         self.v_title = tk.StringVar(value=cfg0.get("title_text", "MBC 주간편성표"))
         self.v_tsize = tk.StringVar(value=str(cfg0.get("title_size", 22)))
         self.v_tbold = tk.BooleanVar(value=bool(cfg0.get("title_bold")))
         self.v_smode = tk.StringVar(value=cfg0.get("stamp_mode", "저장 시각"))
         self.v_stext = tk.StringVar(value=cfg0.get("stamp_text", ""))
-        tk.Label(head, text="제목").pack(side=tk.LEFT)
-        tk.Entry(head, textvariable=self.v_title, width=24).pack(side=tk.LEFT, padx=2)
-        tk.Label(head, text="크기").pack(side=tk.LEFT)
-        ttk.Combobox(head, textvariable=self.v_tsize, values=("16", "18", "20", "22", "24", "26", "28", "32"),
-                     width=4).pack(side=tk.LEFT, padx=2)
-        tk.Checkbutton(head, text="굵게", variable=self.v_tbold).pack(side=tk.LEFT)
-        tk.Label(head, text="   오른쪽 위 날짜").pack(side=tk.LEFT)
-        ttk.Combobox(head, textvariable=self.v_smode, width=10, state="readonly",
-                     values=("저장 시각", "엑셀 조회일", "주간 범위", "직접 입력", "표시 안 함")).pack(side=tk.LEFT, padx=2)
-        self.ent_stext = tk.Entry(head, textvariable=self.v_stext, width=34)
-        self.ent_stext.pack(side=tk.LEFT, padx=2)
-        tk.Label(head, text="(직접 입력일 때)", fg="#777").pack(side=tk.LEFT)
-        tk.Button(head, text="아이콘 색 ...", command=self.icon_color_dialog).pack(side=tk.LEFT, padx=10)
         self._head_id = None
         for v in (self.v_title, self.v_tsize, self.v_tbold, self.v_smode, self.v_stext):
             v.trace_add("write", lambda *a: self.head_changed())
@@ -5211,14 +5197,84 @@ class App:
         self.main_shown = True
 
     def toggle_head(self):
-        """⚙ 설정: 제목·날짜·아이콘 색 줄을 보이기/숨기기"""
-        tk = self.tk
-        self.head_visible = not self.head_visible
-        if self.head_visible:
-            anchor = (self.dmbbar if IS_DMB else self.act) if self.main_shown else self.topbar
-            self.head.pack(fill=tk.X, padx=8, pady=(0, 4), after=anchor)
+        """⚙ 설정: 따로 창 (제목 · 오른쪽 위 날짜 · 아이콘 색 · 서버로 보내기). 이미 열려 있으면 앞으로"""
+        tk, ttk = self.tk, self.ttk
+        w = self.settings_win
+        if w is not None and w.winfo_exists():
+            w.deiconify()
+            w.lift()
+            w.focus_force()
+            return
+        w = tk.Toplevel(self.root)
+        self.settings_win = w
+        w.title(("엑셀 DMB" if IS_DMB else "엑셀 TV") + " 편성표 설정")
+        w.transient(self.root)
+        w.resizable(False, False)
+        f = tk.Frame(w, padx=16, pady=12)
+        f.pack(fill=tk.BOTH)
+        tk.Label(f, text="⚙ 편성표 설정", font=("", 12, "bold")).grid(row=0, column=0, columnspan=4, sticky="w")
+        tk.Label(f, text="바꾸면 편성표에 바로 반영되고, 다음 주에도 그대로 씁니다.", fg="#777").grid(
+            row=1, column=0, columnspan=4, sticky="w", pady=(0, 8))
+
+        # 제목
+        g1 = tk.LabelFrame(f, text=" 제목 ", padx=10, pady=6)
+        g1.grid(row=2, column=0, columnspan=4, sticky="we", pady=4)
+        tk.Label(g1, text="제목").grid(row=0, column=0, sticky="w")
+        tk.Entry(g1, textvariable=self.v_title, width=34).grid(row=0, column=1, columnspan=3, sticky="w", padx=4)
+        tk.Label(g1, text="크기").grid(row=1, column=0, sticky="w", pady=(4, 0))
+        ttk.Combobox(g1, textvariable=self.v_tsize, values=("16", "18", "20", "22", "24", "26", "28", "32"),
+                     width=5).grid(row=1, column=1, sticky="w", padx=4, pady=(4, 0))
+        tk.Checkbutton(g1, text="굵게", variable=self.v_tbold).grid(row=1, column=2, sticky="w", pady=(4, 0))
+
+        # 오른쪽 위 날짜
+        g2 = tk.LabelFrame(f, text=" 오른쪽 위 날짜 ", padx=10, pady=6)
+        g2.grid(row=3, column=0, columnspan=4, sticky="we", pady=4)
+        tk.Label(g2, text="표시").grid(row=0, column=0, sticky="w")
+        ttk.Combobox(g2, textvariable=self.v_smode, width=12, state="readonly",
+                     values=("저장 시각", "엑셀 조회일", "주간 범위", "직접 입력", "표시 안 함")).grid(
+            row=0, column=1, sticky="w", padx=4)
+        tk.Label(g2, text="직접 입력").grid(row=1, column=0, sticky="w", pady=(4, 0))
+        ent = tk.Entry(g2, textvariable=self.v_stext, width=34)
+        ent.grid(row=1, column=1, sticky="w", padx=4, pady=(4, 0))
+
+        def stext_state(*a):
+            ent.config(state="normal" if self.v_smode.get() == "직접 입력" else "disabled")
+        stext_state()
+        tid = self.v_smode.trace_add("write", stext_state)
+
+        # 아이콘 색
+        g3 = tk.LabelFrame(f, text=" 아이콘 ", padx=10, pady=6)
+        g3.grid(row=4, column=0, columnspan=4, sticky="we", pady=4)
+        tk.Button(g3, text="아이콘 색 ...", command=self.icon_color_dialog).grid(row=0, column=0, sticky="w")
+        tk.Label(g3, text="UHD·자막·연령 등 아이콘 바탕색", fg="#777").grid(row=0, column=1, sticky="w", padx=6)
+
+        # 서버로 보내기
+        g4 = tk.LabelFrame(f, text=" 📺 서버로 보내기 (다른 PC에서 보기) ", padx=10, pady=6)
+        g4.grid(row=5, column=0, columnspan=4, sticky="we", pady=4)
+        if tv_preview_dir():
+            def view_toggle():
+                if not save_tv_view_config(self.v_view_on.get()):
+                    self.log("[주의] 서버로 보내기 설정을 저장하지 못했습니다.")
+                    return
+                self.log("[서버로 보내기] " + ("켬 - PDF 저장할 때마다 녹음 PC 서버로 (TV 편성표 편집기와 같은 설정)"
+                                          if self.v_view_on.get() else "끔 - 다른 PC·서버에서 볼 수 없습니다"))
+            tk.Checkbutton(g4, text="PDF 저장할 때마다 녹음 PC 서버로 보내기", variable=self.v_view_on,
+                           command=view_toggle).grid(row=0, column=0, sticky="w")
+            tk.Label(g4, text="TV 편성표 편집기·런처와 같은 설정 · 프로젝트·즐겨찾기·설정 백업도 함께",
+                     fg="#777").grid(row=1, column=0, sticky="w")
         else:
-            self.head.pack_forget()
+            tk.Label(g4, text="런처로 실행할 때만 쓸 수 있습니다.", fg="#999").grid(row=0, column=0, sticky="w")
+
+        def close():
+            try:
+                self.v_smode.trace_remove("write", tid)
+            except Exception:
+                pass
+            self.settings_win = None
+            w.destroy()
+        tk.Button(f, text="닫기", width=10, command=close).grid(row=6, column=0, columnspan=4, pady=(10, 0))
+        w.protocol("WM_DELETE_WINDOW", close)
+        w.bind("<Escape>", lambda e: close())
 
     def cfg_over(self):
         o = {"_query_date": getattr(self, "query_date", "")}
