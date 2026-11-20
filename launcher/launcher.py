@@ -28,10 +28,12 @@ import tempfile
 import time
 import zipfile
 
-LAUNCHER_VERSION = "1.2.4"
+LAUNCHER_VERSION = "1.2.5"
 RUNTIME = 1                         # 공용 실행 환경 세대. 필요한 부품이 바뀌면 올린다 (앱의 runtime 값과 비교)
 EXE_NAME = "EditLauncher.exe"
 MUTEX = "EditLauncher_Running"      # 설치 프로그램(setup)이 '실행 중'을 알아보는 이름
+WINDOW_MUTEX = "EditLauncher_Window"    # 런처 창 중복 실행 방지 (편집기 실행 --run 과는 따로)
+WINDOW_TITLE_PREFIX = "편집 프로그램  (런처"
 
 GROUPS = {"radio": "RADIO", "tv": "TV"}              # 그룹 id: 탭 이름
 GROUP_FOLDER = {"radio": "radio", "tv": "TV"}        # C:\\EDIT 아래 폴더 이름
@@ -107,6 +109,53 @@ def hold_mutex():
         return ctypes.windll.kernel32.CreateMutexW(None, False, MUTEX)
     except Exception:
         return None
+
+
+_window_mutex = None
+
+
+def single_instance():
+    """런처 창이 이미 떠 있으면 그 창을 앞으로 가져오고 False. 처음 켜는 것이면 True.
+    (윈도우가 아니거나 확인할 수 없으면 그냥 True)"""
+    global _window_mutex
+    try:
+        import ctypes
+        from ctypes import wintypes
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        u32 = ctypes.WinDLL("user32", use_last_error=True)
+    except Exception:
+        return True
+    k32.CreateMutexW.restype = wintypes.HANDLE
+    k32.CreateMutexW.argtypes = (ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR)
+    h = k32.CreateMutexW(None, False, WINDOW_MUTEX)
+    if ctypes.get_last_error() != 183:          # ERROR_ALREADY_EXISTS 가 아니면 처음 켠 런처
+        _window_mutex = h                       # 프로세스가 끝날 때까지 잡고 있음
+        return True
+    # 이미 떠 있는 런처 창 찾기 -> 최소화돼 있으면 되살려 앞으로
+    found = []
+    proc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+    def each(hwnd, lp):
+        n = u32.GetWindowTextLengthW(hwnd)
+        if n and u32.IsWindowVisible(hwnd):
+            buf = ctypes.create_unicode_buffer(n + 1)
+            u32.GetWindowTextW(hwnd, buf, n + 1)
+            if buf.value.startswith(WINDOW_TITLE_PREFIX):
+                found.append(hwnd)
+                return False
+        return True
+    try:
+        u32.EnumWindows(proc(each), 0)
+        if found:
+            hwnd = found[0]
+            if u32.IsIconic(hwnd):
+                u32.ShowWindow(hwnd, 9)         # SW_RESTORE
+            u32.SetForegroundWindow(hwnd)
+        else:
+            u32.MessageBoxW(None, "편집 프로그램 런처가 이미 실행 중입니다.", "편집 프로그램", 0x40)
+    except Exception:
+        pass
+    return False
 
 
 def load_settings():
@@ -1367,6 +1416,8 @@ def main():
         sys.exit(selftest(sys.argv[2]))
     if len(sys.argv) >= 3 and sys.argv[1] == "--run":
         sys.exit(run_app_mode(sys.argv[2]))
+    if not single_instance():       # 런처 창은 하나만 (이미 켜져 있으면 그 창을 앞으로)
+        return
     import tkinter as tk
     hold_mutex()
     root = tk.Tk()
