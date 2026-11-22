@@ -50,7 +50,7 @@ bash ~/edit/server/install.sh
 - 바로 받고 싶으면: `cd ~/edit && git pull && bash server/install.sh` (nginx 설정이 바뀐 경우에도 이것)
 
 ## 관리자 · 접속 기록 (http://녹음PC/admin/)
-누가(PC·IP) 언제 무엇을 봤는지 확인합니다. 첫 화면 왼쪽 아래 **🔐 관리자 · 접속 기록**.
+누가(PC·IP) 언제 무엇을 봤는지 확인합니다. 들어가는 곳: 첫 화면 왼쪽 위 **📡 을 3초 안에 3번** 누르기 (비밀번호 필요).
 1. 처음 한 번 (녹음 PC): `cd ~/edit && git pull && bash server/install.sh` — nginx 가 접속 기록을 남기도록 바꿉니다.
 2. 비밀번호 정하기·바꾸기 (녹음 PC): `bash ~/edit/server/admin-password.sh` — 웹에서는 비밀번호를 만들 수 없습니다.
 - 보이는 것: 첫 화면 · 라디오 운행표 · 운행표 PDF · TV 편성표 · AM/FM 녹음 듣기 · 녹음 구간 저장 · 관리자 로그인
@@ -59,6 +59,15 @@ bash ~/edit/server/install.sh
 - IP를 누르면 이름(예: 라디오 편집 PC)을 붙일 수 있습니다 (`config.json` 의 `ip_names`).
 - 비밀번호를 10분에 5번 틀리면 그 PC는 10분 동안 잠깁니다. 로그인은 12시간 유지.
 - 기록 파일: `/var/log/nginx/edit-access.log` (nginx 기본 정리로 14일 보관), 관리자 기록: `~/edit-mirror/admin-events.log`
+
+## 녹음 기록 (관리자 화면 📻 녹음 기록 탭)
+AM·FM 녹음 프로그램(rr_rec.py)의 기록과 녹음 상태를 한 화면에서 봅니다. 녹음 프로그램은 고치지 않고 기록 파일을 읽기만 합니다.
+- 한눈에: 녹음 중 / 멈춤(파일이 5분째 안 커짐) / 프로그램 꺼짐, 지금 파일, 오늘 파일 수·빠진 시간·짧은 파일, 오류·경고 수, 디스크 남은 용량
+- 시간표: 최근 7일 × 24시간 (초록 정상 · 주황 50분 미만 · 빨강 없음 · 파랑 녹음 중). 칸을 누르면 그 시간 기록과 녹음 파일
+- 기록: 날짜 · AM/FM/둘 다 · 전체/경고 이상/오류만 · 찾기, 10초마다 새로 고침, [기록 파일 받기]
+- 읽는 곳: `~/.local/share/radio_recorder/logs/log_날짜.txt` (없으면 `~/Recordings/recording_logs`), 녹음 `~/Recordings/날짜/`
+- 상대 PC(AM↔FM) 기록은 상대 서버 8081 에서 바로 받습니다. 상대 서버 주소에서 온 요청만 대답합니다 (nginx 설정 바꿀 것 없음).
+- 바꿀 수 있는 값 (`config.json`): `rec_short_min`(50) `rec_stall_min`(5) `rec_kbps`(128) `rec_label` `rec_log_dirs` `rec_own_dir`
 
 ## 예비 서버 (FM PC) · 백업
 FM 녹음 PC를 **예비 웹서버**로: 운행표 · TV 편성표 · 관리자 화면이 본 서버와 같고, AM 녹음은 최근 2일만 들어 있습니다.

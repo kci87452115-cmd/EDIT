@@ -22,6 +22,8 @@ import threading
 import time
 import urllib.parse
 
+import reclog                                   # 녹음 프로그램 기록 (📻 녹음 기록 탭)
+
 HOME = os.environ.get("EDIT_MIRROR_HOME") or os.path.join(os.path.expanduser("~"), "edit-mirror")
 CONFIG_FILE = os.path.join(HOME, "config.json")
 ADMIN_FILE = os.path.join(HOME, "admin.json")              # 비밀번호(소금+해시)만. 600 권한
@@ -398,6 +400,18 @@ def handle(h, method):
     if path == "/api/backup-status":            # 상대 PC 관리자 화면이 읽는 짧은 상태 (비밀 없음)
         h._json(backup_status_public())
         return True
+    if path == "/api/rec-log-peer":             # 상대 녹음 PC 서버만 (8081 로 바로, nginx 거치지 않음)
+        peer = peer_addr()
+        if not peer or h.client_address[0] != peer or h.headers.get("X-Real-IP"):
+            h._json({"error": "상대 녹음 PC만 쓸 수 있습니다."}, 403)
+            return True
+        c = _load(CONFIG_FILE, {})
+        if q.get("raw"):
+            s = reclog.settings(c)
+            h._send(200, reclog.raw_text(s, (q.get("date") or [""])[0]), "text/plain; charset=utf-8")
+        else:
+            h._json(reclog.local(c, q))
+        return True
     if not path.startswith("/api/admin/"):
         return False
     if path == "/api/admin/me":
@@ -464,6 +478,36 @@ def handle(h, method):
         h._send(200, data, "application/zip",
                 {"Content-Disposition": f"attachment; filename*=UTF-8''{urllib.parse.quote(name)}"})
         return True
+    if path == "/api/admin/reclog":
+        c = _load(CONFIG_FILE, {})
+        if g("src") == "peer":
+            peer = peer_addr()
+            d = reclog.remote(peer, {k: v[0] for k, v in q.items() if k != "src"})
+            d["peer"] = peer
+            h._json(d)
+        else:
+            h._json(reclog.local(c, q))
+        return True
+    if path == "/api/admin/reclog/file":
+        c = _load(CONFIG_FILE, {})
+        date = g("date")
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
+            h._json({"error": "날짜가 올바르지 않습니다."}, 400)
+            return True
+        if g("src") == "peer":
+            data = reclog.remote(peer_addr(), {"raw": "1", "date": date}, raw=True)
+            if isinstance(data, dict):
+                h._json({"error": data.get("err", "")}, 502)
+                return True
+            label = "FM" if c.get("role", "main") != "backup" else "AM"
+        else:
+            data = reclog.raw_text(reclog.settings(c), date).encode("utf-8")
+            label = reclog.settings(c)["label"]
+        name = f"녹음기록_{label}_{date}.txt"
+        event(ip, f"녹음 기록 파일 받기: {label} {date}")
+        h._send(200, data, "text/plain; charset=utf-8",
+                {"Content-Disposition": f"attachment; filename*=UTF-8''{urllib.parse.quote(name)}"})
+        return True
     if path == "/api/admin/events":
         h._json({"rows": events()})
         return True
@@ -516,6 +560,15 @@ h3{font-size:14px;margin:14px 0 6px}html.dark .card{border-color:#1f2937}html.da
 html.dark body{background:#0b1220;color:#e2e8f0}html.dark .box,html.dark .kpi{background:#111827;border-color:#1f2937}
 html.dark th{background:#1f2937;color:#cbd5e1}html.dark td{border-color:#1f2937}html.dark button,html.dark select,html.dark input{background:#1f2937;color:#e2e8f0;border-color:#334155}
 html.dark button.p{background:#2563eb}
+.rlg{border-collapse:separate;border-spacing:2px;width:auto}.rlg td,.rlg th{padding:0;border:none;font-size:11px;text-align:center}.rlg th{background:none;position:static;color:#64748b;font-weight:normal}
+.rlg td.d{padding-right:6px;white-space:nowrap;text-align:right;color:#475569;font-size:12px}.hc{width:24px;height:20px;border-radius:4px;cursor:pointer}
+.hc.ok{background:#22c55e}.hc.short{background:#f59e0b}.hc.none{background:#ef4444}.hc.now{background:#3b82f6;animation:pl 1.6s infinite}.hc.future{background:#e5e7eb;cursor:default}.hc.sel{outline:2px solid #0f172a;outline-offset:1px}
+@keyframes pl{50%{opacity:.55}}
+#rlLog{max-height:56vh;overflow:auto;font-family:Consolas,"D2Coding",monospace;font-size:12.5px;line-height:1.55;background:#f8fafc;border:1px solid #e5e7eb;border-radius:8px;padding:6px 8px}
+.ll{white-space:pre-wrap;word-break:break-all;padding:1px 4px;border-radius:4px}.ll .tm{color:#64748b}.ll .lv{color:#64748b;font-size:11px}
+.ll.err{background:#fee2e2;color:#991b1b}.ll.warn{background:#ffedd5;color:#9a3412}.ll.sys{color:#94a3b8}
+.lvb button.on{background:#0f172a;color:#fff}.chip{display:inline-block;background:#e0e7ff;color:#3730a3;border-radius:12px;padding:2px 10px;font-size:12px}
+html.dark #rlLog{background:#0b1220;border-color:#1f2937}html.dark .ll.err{background:#450a0a;color:#fecaca}html.dark .ll.warn{background:#431407;color:#fed7aa}html.dark .hc.future{background:#1f2937}html.dark .hc.sel{outline-color:#e2e8f0}
 </style></head><body>
 <header><b>🔐 관리자 · 접속 기록</b><span class="muted" style="color:#94a3b8">녹음 PC 웹을 누가 언제 무엇을 봤는지</span><span class="sp"></span>
 <button id="out" style="display:none">로그아웃</button></header>
@@ -525,7 +578,7 @@ html.dark button.p{background:#2563eb}
  <div id="lmsg" class="err" style="margin-top:10px"></div></div>
 <div id="app" style="display:none">
  <div class="kpis" id="kpis"></div>
- <div class="tabs" style="margin-top:12px"><button data-t="acc" class="on">접속 기록</button> <button data-t="ppl">사람별</button> <button data-t="ev">관리자 기록</button> <button data-t="bk">💾 백업</button></div>
+ <div class="tabs" style="margin-top:12px"><button data-t="acc" class="on">접속 기록</button> <button data-t="ppl">사람별</button> <button data-t="ev">관리자 기록</button> <button data-t="bk">💾 백업</button> <button data-t="rl">📻 녹음 기록</button></div>
  <div class="box" style="border-radius:0 10px 10px 10px">
   <div class="bar" id="fbar">기간 <select id="days"><option value="1">오늘</option><option value="2">어제부터</option><option value="7">7일</option><option value="14">14일</option></select>
    IP·이름 <input id="ip" size="14" placeholder="예: 218.237"> 찾기 <input id="q" size="14" placeholder="예: 녹음, 운행표">
@@ -557,7 +610,7 @@ async function load(){$('msg').textContent='';$('cnt').textContent='불러오는
  try{const u='../api/admin/access?days='+$('days').value+'&all='+($('all').checked?1:0)+'&ip='+encodeURIComponent($('ip').value)+'&q='+encodeURIComponent($('q').value);
   last=await J(u);if(!last.log_ok)$('msg').textContent='접속 기록 파일이 아직 없습니다 ('+last.log+'). 녹음 PC에서 cd ~/edit && git pull && bash server/install.sh 를 실행하세요.';render()}
  catch(e){if(e.message!=='login'){$('msg').textContent=e.message;$('cnt').textContent=''}}}
-function render(){if(tab==='ev')return evs();if(tab==='bk')return bk();if(!last)return;const s=last.summary,k=s.kinds;
+function render(){$('tbl').parentElement.style.maxHeight=tab==='rl'?'none':'';if(tab==='ev')return evs();if(tab==='bk')return bk();if(tab==='rl')return rl(true);if(!last)return;const s=last.summary,k=s.kinds;
  const n=x=>Number(k[x]||0);
  $('kpis').innerHTML=[['오늘 접속한 PC',s.today_ips+'대'],['오늘 기록',s.today_n+'건'],['녹음 듣기',n('AM 녹음 듣기')+n('FM 녹음 듣기')+'건'],['구간 저장',n('녹음 구간 저장')+'건'],['운행표·TV',n('라디오 운행표')+n('운행표 PDF')+n('TV 편성표')+n('TV 편성표 PDF')+'건']]
   .map(([l,v])=>'<div class="kpi"><div class="l">'+l+'</div><div class="v">'+v+'</div></div>').join('');
@@ -598,6 +651,72 @@ async function bk(){$('fbar').style.display='none';$('cnt').textContent='';$('ms
  document.querySelectorAll('[data-run]').forEach(b=>b.onclick=async()=>{b.disabled=true;try{const r=await J('../api/admin/backup/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({job:b.dataset.run})});alert(r.msg);setTimeout(bk,5000)}catch(e){if(e.message!=='login')alert(e.message)}b.disabled=false});
  $('ksave').onclick=async()=>{try{await J('../api/admin/backup/keep',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({am_keep_days:+$('k1').value,backup_keep:+$('k2').value,editors_keep:+$('k3').value})});alert('저장했습니다.');bk()}catch(e){if(e.message!=='login')alert(e.message)}};
 }
+// ---------------- 📻 녹음 기록 (녹음 프로그램 rr_rec 기록 · 상태 · 시간표)
+let RL={src:'both',date:'',lv:'all',q:'',h:'',hsrc:''},RLD={me:null,peer:null},rlBusy=false;
+const recBase=l=>l==='FM'?'../rec-fm/':'../rec/';
+const hh=n=>String(n).padStart(2,'0');
+function rlSkel(){if($('rlLog'))return;$('fbar').style.display='none';$('cnt').textContent='';$('msg').textContent='';
+ $('tbl').innerHTML='<tr><td style="border:none;padding:0"><div id="rlWarn"></div><div class="cards" id="rlCards"></div>'
+ +'<h3>시간표 <span class="muted">초록 정상 · 주황 짧음 · 빨강 없음 · 파랑 녹음 중 — 칸을 누르면 그 시간 기록과 녹음</span></h3><div id="rlGrid" style="overflow-x:auto"></div>'
+ +'<h3>기록</h3><div class="bar">PC <select id="rlSrc"></select> 날짜 <select id="rlDate"></select>'
+ +' <span class="lvb"><button data-lv="all">전체</button><button data-lv="warn">경고 이상</button><button data-lv="err">오류만</button></span>'
+ +' 찾기 <input id="rlQ" size="14" placeholder="예: 전환, 실패"> <span id="rlH"></span> <span class="muted" id="rlCnt"></span><span style="flex:1"></span><span id="rlDl"></span></div>'
+ +'<div id="rlLog"><div class="muted">불러오는 중…</div></div><div class="muted" style="margin-top:4px">10초마다 저절로 새로 고칩니다 · 녹음 프로그램은 건드리지 않고 기록 파일을 읽기만 합니다</div></td></tr>';
+ $('rlSrc').onchange=()=>{RL.src=$('rlSrc').value;rl(true)};$('rlDate').onchange=()=>{RL.date=$('rlDate').value;RL.h='';rl(true)};
+ let qt;$('rlQ').oninput=()=>{clearTimeout(qt);qt=setTimeout(()=>{RL.q=$('rlQ').value.trim();rl(true)},400)};
+ document.querySelectorAll('.lvb button').forEach(b=>b.onclick=()=>{RL.lv=b.dataset.lv;rl(true)})}
+function rlQS(src){return '../api/admin/reclog?src='+src+'&date='+encodeURIComponent(RL.date)+'&lv='+RL.lv+'&q='+encodeURIComponent(RL.q)+'&h='+RL.h}
+async function rl(force){rlSkel();if(rlBusy&&!force)return;rlBusy=true;
+ try{const [a,b]=await Promise.all([J(rlQS('me')).catch(e=>{if(e.message==='login')throw e;return {ok:false,err:e.message}}),
+   J(rlQS('peer')).catch(e=>{if(e.message==='login')throw e;return {ok:false,err:e.message}})]);
+  RLD.me=a;RLD.peer=(b&&!b.ok&&/등록되어/.test(b.err||''))?null:b;if(!$('rlLog'))return;rlDraw()}
+ catch(e){}finally{rlBusy=false}}
+function rlCard(d,who){if(!d)return '';if(!d.ok)return '<div class="card"><h4>📻 '+(who==='me'?'이 PC':'상대 녹음 PC')+'</h4><span class="bad">✖ 응답 없음</span><div class="muted">'+esc(d.err||'')+'</div></div>';
+ const s=d.status,t=s.today,disk=s.disk;const st=!s.pid?'<span class="bad">🔴 녹음 프로그램 꺼짐</span>':s.recording?'<span class="ok">🟢 녹음 중</span>':'<span class="bad">🔴 멈춤 (파일이 커지지 않음)</span>';
+ const age=s.newest_age==null?'':s.newest_age<90?s.newest_age+'초 전':Math.round(s.newest_age/60)+'분 전';
+ return '<div class="card"><h4>'+(d.label==='FM'?'📻':'🎧')+' '+esc(d.label)+' 녹음 · '+esc(s.host)+'</h4>'+st+(s.freq?' <span class="muted">주파수 '+esc(s.freq)+'</span>':'')
+  +'<div style="margin-top:6px">지금 파일 <b>'+esc((s.newest||'없음').split('/').pop())+'</b> <span class="muted">'+(s.newest?KB(s.newest_size)+' · '+age+' 갱신':'')+'</span></div>'
+  +'<div>오늘 파일 <b>'+t.files+'</b> / '+(new Date().getHours()+1)+' · 빠진 시간 <b class="'+(t.missing.length?'bad':'')+'">'+t.missing.length+'</b> · 짧은 파일 <b>'+t.short.length+'</b></div>'
+  +'<div>오늘 기록 오류 <b class="'+(t.err?'bad':'')+'">'+t.err+'</b> · 경고 <b>'+t.warn+'</b></div>'
+  +(disk?'<div>디스크 남은 용량 <b>'+KB(disk.free)+'</b> / '+KB(disk.total)+'</div>':'')
+  +'<div class="muted">'+(s.started?'프로그램 켠 시각 '+esc(s.started.slice(5))+' · ':'')+(s.last_line?'마지막 기록 '+esc(s.last_line.slice(5)):'기록 없음')+'</div>'
+  +'<div style="margin-top:6px"><a href="'+recBase(d.label)+'player.html" target="_blank">🎧 녹음 듣기 ↗</a></div></div>'}
+function rlGridHtml(d,who){if(!d||!d.ok||!d.grid)return '';let h='<div style="margin-bottom:8px"><b>'+esc(d.label)+'</b><table class="rlg"><tr><th></th>'+[...Array(24)].map((_,i)=>'<th>'+i+'</th>').join('')+'</tr>';
+ for(const r of d.grid){h+='<tr><td class="d">'+esc(r.date.slice(5))+' '+WKN(r.date)+'</td>'+r.hours.map(x=>{const lab={ok:'정상',short:'짧음',none:'없음',now:'녹음 중',future:''}[x.st];
+  const tip=x.st==='future'?'':hh(x.h)+'시 · '+lab+(x.min?' · 약 '+x.min+'분':'')+(x.files.length?'\n'+x.files.join('\n'):'');
+  const sel=RL.h===hh(x.h)&&RL.date===r.date&&RL.hsrc===who?' sel':'';
+  return '<td><div class="hc '+x.st+sel+'" title="'+esc(tip)+'" data-w="'+who+'" data-d="'+r.date+'" data-h="'+x.h+'"></div></td>'}).join('')+'</tr>'}
+ return h+'</table></div>'}
+function WKN(d){return '일월화수목금토'[new Date(d+'T00:00').getDay()]}
+function rlDraw(){const me=RLD.me,pe=RLD.peer,L=[me,pe].filter(x=>x&&x.ok);
+ const lab=w=>{const d=RLD[w];return d&&d.ok?d.label:(w==='me'?'이 PC':'상대 PC')};
+ const so=[['both',(lab('me'))+' + '+(lab('peer'))],['me',lab('me')],['peer',lab('peer')]].filter(o=>pe||o[0]==='me');if(!pe&&RL.src!=='me')RL.src='me';
+ $('rlSrc').innerHTML=so.map(o=>'<option value="'+o[0]+'"'+(o[0]===RL.src?' selected':'')+'>'+esc(o[1])+'</option>').join('');
+ const ds=[...new Set(L.flatMap(x=>x.dates||[]))].sort().reverse();const td=new Date();const tday=td.getFullYear()+'-'+hh(td.getMonth()+1)+'-'+hh(td.getDate());
+ if(!ds.includes(tday))ds.unshift(tday);if(!RL.date)RL.date=tday;if(!ds.includes(RL.date))ds.unshift(RL.date);
+ $('rlDate').innerHTML=ds.map(x=>'<option'+(x===RL.date?' selected':'')+'>'+x+'</option>').join('');
+ document.querySelectorAll('.lvb button').forEach(b=>b.classList.toggle('on',b.dataset.lv===RL.lv));
+ const W=[];for(const d of L)for(const w of d.status.warn)W.push(d.label+': '+w);
+ $('rlWarn').innerHTML=W.map(w=>'<div class="warnbar">⚠ '+esc(w)+'</div>').join('');
+ $('rlCards').innerHTML=rlCard(me,'me')+(pe?rlCard(pe,'peer'):'');
+ $('rlGrid').innerHTML=rlGridHtml(me,'me')+rlGridHtml(pe,'peer');
+ $('rlGrid').querySelectorAll('.hc:not(.future)').forEach(c=>c.onclick=()=>{const w=c.dataset.w;RL.date=c.dataset.d;RL.h=hh(+c.dataset.h);RL.hsrc=w;RL.src=pe?RL.src:'me';if(RL.src!=='both')RL.src=w;rl(true);
+  setTimeout(()=>$('rlLog').scrollIntoView({behavior:'smooth',block:'nearest'}),300)});
+ let hcell=null;if(RL.h){const d=RLD[RL.hsrc];const r=d&&d.ok&&(d.grid||[]).find(g=>g.date===RL.date);hcell=r?r.hours[+RL.h]:null;
+  $('rlH').innerHTML='<span class="chip">'+esc((d&&d.label)||'')+' '+RL.h+'시만 <a href="#" id="rlHx" style="color:inherit;text-decoration:none">✕</a></span>'
+   +(hcell&&hcell.files.length?' '+hcell.files.map(f=>'<a href="'+recBase(d.label)+RL.date+'/'+encodeURIComponent(f)+'" target="_blank">🎧 '+esc(f)+'</a>').join(' '):'');
+  $('rlHx').onclick=e=>{e.preventDefault();RL.h='';RL.hsrc='';rl(true)}}else $('rlH').innerHTML='';
+ const pick=w=>(RL.src==='both'||RL.src===w)&&RLD[w]&&RLD[w].ok;
+ let rows=[];for(const w of ['me','peer'])if(pick(w))rows=rows.concat(RLD[w].lines.map(x=>Object.assign({w,L:RLD[w].label},x)));
+ if(RL.src==='both')rows.sort((a,b)=>a.t<b.t?-1:a.t>b.t?1:0);
+ const cn=w=>{const c=RLD[w].counts;return (RL.src==='both'?RLD[w].label+' ':'')+'오류 '+c.err+' · 경고 '+c.warn+' · 전체 '+c.all};
+ $('rlCnt').textContent=['me','peer'].filter(pick).map(cn).join('  |  ');
+ $('rlDl').innerHTML=['me','peer'].filter(pick).map(w=>'<a href="../api/admin/reclog/file?src='+w+'&date='+RL.date+'">⬇ '+esc(RLD[w].label)+' 기록 파일 받기</a>').join(' &nbsp; ');
+ const box=$('rlLog'),atEnd=box.scrollHeight-box.scrollTop-box.clientHeight<40||!box.dataset.k||box.dataset.k!==JSON.stringify(RL);box.dataset.k=JSON.stringify(RL);
+ box.innerHTML=rows.length?rows.map(r=>'<div class="ll '+(r.c==='info'?(/SYSTEM/i.test(r.lv)?'sys':''):r.c)+'"><span class="tm">'+esc(r.t)+'</span> '+(RL.src==='both'?'<span class="k '+(r.L==='FM'?'fm':'rec')+'">'+esc(r.L)+'</span> ':'')+'<span class="lv">['+esc(r.lv)+']</span> '+esc(r.m)+'</div>').join('')
+  :'<div class="muted">'+(L.length?'이 조건의 기록이 없습니다.':'기록을 읽지 못했습니다.')+'</div>';
+ if(atEnd)box.scrollTop=box.scrollHeight}
+setInterval(()=>{if(!document.hidden&&$('app').style.display===''&&tab==='rl')rl(false)},10000);
 async function evs(){$('fbar').style.display='none';try{const d=await J('../api/admin/events');$('cnt').textContent='';
  $('tbl').innerHTML='<tr><th>시각</th><th>IP</th><th>한 일</th></tr>'+d.rows.map(r=>'<tr><td>'+esc(r.t.replace('T',' ').slice(5))+'</td><td>'+esc(r.ip)+'</td><td>'+esc(r.what)+'</td></tr>').join('')}catch(e){}}
 function bindIp(){document.querySelectorAll('.ipn').forEach(a=>a.onclick=async()=>{const nm=prompt(a.dataset.ip+' 의 이름 (비우면 지움)\n예: 라디오 편집 PC, 3층 주조',a.dataset.n||'');if(nm===null)return;

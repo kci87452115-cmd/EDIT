@@ -536,7 +536,7 @@ a{color:inherit}
 /* ---- 왼쪽 패널 */
 #side{width:260px;flex-shrink:0;background:var(--side);color:#cbd5e1;display:flex;flex-direction:column;height:100vh;overflow:hidden}
 .brand{padding:18px 18px 14px;border-bottom:1px solid #1e293b}
-.brand b{display:block;color:#fff;font-size:17px;letter-spacing:-.3px}.brand span{font-size:11px;color:#64748b}
+.brand b{display:block;color:#fff;font-size:17px;letter-spacing:-.3px}#adm{cursor:default;user-select:none;-webkit-user-select:none;touch-action:manipulation;-webkit-tap-highlight-color:transparent}.brand span{font-size:11px;color:#64748b}
 .scroll{flex:1;overflow-y:auto;padding:8px 0 12px}
 .grp{padding:14px 18px 6px;font-size:11px;color:#64748b;letter-spacing:.5px;font-weight:bold}
 .nav{display:flex;align-items:center;gap:10px;padding:9px 18px;margin:1px 8px;border-radius:8px;cursor:pointer;text-decoration:none;color:#cbd5e1}
@@ -599,7 +599,7 @@ html.dark .b-ok{background:#14532d;color:#bbf7d0}html.dark .b-warn{background:#7
 html.dark .am{color:#93c5fd}html.dark .fm{color:#fdba74}
 </style></head><body>
 <aside id="side">
- <div class="brand"><b>📡 방송운행자료 조회</b><span id="srv">녹음 PC 서버</span></div>
+ <div class="brand"><b><span id="adm" aria-hidden="true">📡</span> 방송운행자료 조회</b><span id="srv">녹음 PC 서버</span></div>
  <div class="scroll">
   <div class="grp">보기</div>
   <a class="nav" data-p="home"><span class="i">🏠</span><span class="n">오늘 한눈에</span></a>
@@ -622,7 +622,6 @@ html.dark .am{color:#93c5fd}html.dark .fm{color:#fdba74}
 <div id="main">
  <div id="bkban" style="display:none;background:#fef3c7;color:#92400e;padding:6px 14px;font-weight:bold;border-bottom:1px solid #fde68a"></div>
  <div id="top"><button class="tb" id="menu">☰</button><h1 id="ttl">오늘 한눈에</h1>
-  <span id="adm" aria-hidden="true" style="display:inline-block;width:30px;height:30px;opacity:0;cursor:default;user-select:none"></span>
   <button class="tb" id="reload">⟳ 새로고침</button><a class="tb" id="newwin" target="_blank" style="display:none">↗ 새 창</a></div>
  <iframe id="frame" title="내용"></iframe>
  <div id="home"></div>
@@ -647,8 +646,10 @@ document.querySelectorAll('#theme button').forEach(b=>b.classList.toggle('on',b.
 function playing(){try{const w=$('frame').contentWindow;return !!(w&&w.playerBusy&&w.playerBusy())}catch(e){return false}}
 let reloading=false;
 function newVersion(){if(reloading)return;reloading=true;(function w(){if(playing())setTimeout(w,5000);else location.reload()})()}
-// 관리자: 새로고침 버튼 왼쪽의 보이지 않는 자리를 누르면 (관리자 비밀번호를 넣어야 들어감)
-document.getElementById('adm').addEventListener('click',()=>go('admin'));
+// 관리자: 왼쪽 위 📡 을 3초 안에 3번 누르면 (관리자 비밀번호를 넣어야 들어감)
+(function(){const a=document.getElementById('adm');let n=0,t0=0;
+ a.addEventListener('mousedown',e=>{if(e.detail>1)e.preventDefault()});        // 여러 번 눌러도 글자가 선택되지 않게
+ a.addEventListener('click',()=>{const now=Date.now();if(now-t0>3000){n=0;t0=now}if(++n>=3){n=0;t0=0;go('admin')}})})();
 function go(p,src,title){
  if(!PAGES[p]&&!src)p='home';cur=p;
  const [t,u]=PAGES[p]||[title,src];const url=src||u;
