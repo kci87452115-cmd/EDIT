@@ -25,7 +25,7 @@ except ImportError:
     except ImportError:
         fitz = None
 
-APP_VERSION = "2.17.0"
+APP_VERSION = "2.18.0"
 APP_TITLE = f"운행표 데이터 편집기 v{APP_VERSION}"
 APP_MUTEX = "RunSheetEditor_Running"      # 설치 프로그램이 '실행 중'을 알아보는 이름 (setup.iss 의 AppMutex 와 같아야 함)
 RUN_BY_LAUNCHER = bool(os.environ.get("RADIO_LAUNCHER"))   # 편집 프로그램 런처로 실행됨 -> 업데이트는 런처가 한다
@@ -2346,6 +2346,8 @@ class DataEditor:
             self.preview_geom = str(data.get("preview_geom", "") or "")
             self.preset_win_geom = str(data.get("preset_win_geom", "") or "")
             self.preset_win_top = bool(data.get("preset_win_top", False))
+            su_ = data.get("search_ui")
+            self.search_ui = su_ if isinstance(su_, dict) else {}
             try:
                 self.view_port = min(65535, max(1024, int(data.get("view_port", VIEW_PORT_DEFAULT))))
             except (TypeError, ValueError):
@@ -2360,7 +2362,7 @@ class DataEditor:
                            "backup_dir": self.backup_dir, "backup_keep": self.backup_keep, "backup_on": self.backup_on,
                            "update_dir": self.update_dir, "update_check": self.update_check, "view_on": self.view_on, "view_port": self.view_port,
                            "preset_detached": self.preset_detached, "page_check_on": self.page_check_on, "preview_view": self.preview_view, "preview_geom": self.preview_geom, "preset_win_geom": self.preset_win_geom, "preset_win_top": self.preset_win_top,
-                           "app_version": APP_VERSION}, f, ensure_ascii=False, indent=1)
+                           "search_ui": getattr(self, "search_ui", {}), "app_version": APP_VERSION}, f, ensure_ascii=False, indent=1)
         except Exception:
             pass
 
@@ -5372,223 +5374,236 @@ Start-Process (Join-Path $prog 'RunSheetEditor.exe') -WorkingDirectory $prog
             ttk.Button(top, text="CSV 저장", command=lambda s=state: save_csv(s["cols"], s["rows"])).pack(side="right")
             run()
 
-        # --- 검색 탭
+        # --- 🔍 검색 탭 (웹 조회 화면 「🔍 검색」과 같은 구성: 조건은 한 번, 보는 방식만 바꿔 보기)
         tab = ttk.Frame(nb, padding=8)
-        nb.add(tab, text=" 검색 / 그룹 검색 ")
+        nb.add(tab, text=" 🔍 검색 ")
+        ui = dict(getattr(self, "search_ui", {}) or {})
         r1 = ttk.Frame(tab)
         r1.pack(fill="x", pady=2)
-        ttk.Label(r1, text="검색어:", font=fnt).pack(side="left")
-        kw = tk.StringVar()
-        kw_e = ttk.Entry(r1, textvariable=kw, width=22)
-        kw_e.pack(side="left", padx=4)
-        kw_e.bind("<Return>", lambda e: do_search())
-        ttk.Label(r1, text="찾는 곳:", font=fnt).pack(side="left", padx=(6, 0))
-        tgt = tk.StringVar(value="광고주만")
-        ttk.Combobox(r1, textvariable=tgt, values=list(SEARCH_TARGETS), state="readonly", width=13).pack(side="left", padx=4)
-        ttk.Label(r1, text="매체:", font=fnt).pack(side="left", padx=(10, 0))
+        ttk.Label(r1, text="기간:", font=fnt).pack(side="left")
+        d0_ = datetime.date.fromisoformat(today) if re.fullmatch(r"\d{4}-\d{2}-\d{2}", today) else datetime.date.today()
+        df = tk.StringVar(value=d0_.replace(day=1).isoformat())
+        dt = tk.StringVar(value=month_end_iso(d0_.isoformat()))
+        ttk.Entry(r1, textvariable=df, width=12).pack(side="left", padx=(4, 0))
+        cal_btn(r1, df)
+        ttk.Label(r1, text=" ~").pack(side="left")
+        ttk.Entry(r1, textvariable=dt, width=12).pack(side="left", padx=(4, 0))
+        cal_btn(r1, dt)
+
+        def set_month(n):
+            try:
+                base = datetime.date.fromisoformat(df.get().strip()) if n else datetime.date.today()
+            except ValueError:
+                base = datetime.date.today()
+            y, m = base.year, base.month + n
+            while m < 1:
+                y, m = y - 1, m + 12
+            while m > 12:
+                y, m = y + 1, m - 12
+            first = datetime.date(y, m, 1).isoformat()
+            df.set(first)
+            dt.set(month_end_iso(first))
+
+        ttk.Button(r1, text="이번 달", command=lambda: set_month(0)).pack(side="left", padx=(8, 2))
+        ttk.Button(r1, text="◀ 한 달", command=lambda: set_month(-1)).pack(side="left", padx=2)
+        ttk.Button(r1, text="한 달 ▶", command=lambda: set_month(1)).pack(side="left", padx=2)
+        ttk.Label(r1, text="   매체:", font=fnt).pack(side="left")
         sm = tk.StringVar(value="전체")
-        ttk.Combobox(r1, textvariable=sm, values=["전체", "AM", "FM"], state="readonly", width=5).pack(side="left", padx=4)
-        ttk.Label(r1, text="그룹:", font=fnt).pack(side="left", padx=(10, 0))
-        gv = tk.StringVar()
-        gcombo = ttk.Combobox(r1, textvariable=gv, values=[""] + self.store.distinct_groups(), width=14)
-        gcombo.pack(side="left", padx=4)
+        sm_cb = ttk.Combobox(r1, textvariable=sm, values=["전체", "AM", "FM"], state="readonly", width=5)
+        sm_cb.pack(side="left", padx=4)
+
         r2 = ttk.Frame(tab)
         r2.pack(fill="x", pady=2)
-        ttk.Label(r2, text="기간:", font=fnt).pack(side="left")
-        df = tk.StringVar()
-        dt = tk.StringVar()
-        ttk.Entry(r2, textvariable=df, width=12).pack(side="left", padx=(4, 0))
-        cal_btn(r2, df)
-        ttk.Label(r2, text=" ~").pack(side="left")
-        ttk.Entry(r2, textvariable=dt, width=12).pack(side="left", padx=(4, 0))
-        cal_btn(r2, dt)
-        ttk.Label(r2, text="(비우면 전체 기간, 기간 안의 기록만 나옵니다)", foreground="#666").pack(side="left")
-        ttk.Label(r2, text="   묶어서 보기:", font=fnt).pack(side="left")
-        sby = tk.StringVar(value="묶지 않음")
-        ttk.Combobox(r2, textvariable=sby, values=["묶지 않음"] + list(BY_OPTIONS), state="readonly", width=10).pack(side="left", padx=4)
+        ttk.Label(r2, text="대상:", font=fnt).pack(side="left")
+        kind_v = tk.StringVar(value=ui.get("kind") if ui.get("kind") in ("group", "ad", "all") else "group")
+        for val, txt in (("group", "그룹"), ("ad", "광고"), ("all", "전체")):
+            ttk.Radiobutton(r2, text=txt, value=val, variable=kind_v).pack(side="left", padx=2)
+        dyn = ttk.Frame(r2)                  # 대상에 따라 바뀌는 칸 (목록 / 찾기 · 검색어 / 찾는 곳)
+        dyn.pack(side="left")
+        lst_lbl = ttk.Label(dyn, text="   목록:", font=fnt)
+        adv = tk.StringVar()
+        adv_cb = ttk.Combobox(dyn, textvariable=adv, values=[], state="readonly", width=34)
+        kw_lbl = ttk.Label(dyn, text="찾기:", font=fnt)
+        kw = tk.StringVar()
+        kw_e = ttk.Entry(dyn, textvariable=kw, width=14)
+        tgt = tk.StringVar(value="광고주만")
+        tgt_cb = ttk.Combobox(dyn, textvariable=tgt, values=list(SEARCH_TARGETS), state="readonly", width=12)
+        merge_v = tk.BooleanVar(value=bool(ui.get("merge", False)))
+        ttk.Checkbutton(r2, text="초수 합치기", variable=merge_v).pack(side="left", padx=(8, 0))
+        cnt_lbl = ttk.Label(r2, text="", foreground="#555")
+        cnt_lbl.pack(side="left", padx=8)
+
+        r3 = ttk.Frame(tab)
+        r3.pack(fill="x", pady=2)
+        ttk.Label(r3, text="보는 방식:", font=fnt).pack(side="left")
+        view_v = tk.StringVar(value=ui.get("view") if ui.get("view") in ("sched", "detail", "sum") else "sched")
+        for val, txt in (("sched", "📋 일정표"), ("detail", "📄 내역"), ("sum", "Σ 합계")):
+            ttk.Radiobutton(r3, text=txt, value=val, variable=view_v, style="Toolbutton").pack(side="left", padx=1)
+        by_v = tk.StringVar(value="광고주별")
+        by_cb = ttk.Combobox(r3, textvariable=by_v, values=list(BY_OPTIONS), state="readonly", width=10)
+        act = ttk.Frame(r3)
+        csv_btn = ttk.Button(r3, text="CSV 저장")
+        with_contract = tk.BooleanVar(value=False)
+        wc_cb = ttk.Checkbutton(act, text="기록 없는 계약 광고도", variable=with_contract)
+
+        title_lbl = ttk.Label(tab, text="", font=(self.ui_font_family, 11, "bold"))
+        title_lbl.pack(anchor="w", pady=(6, 0))
         stree = make_tree(tab)
+        stree.tag_configure("out", background="#d9d9d9", foreground="#6b7280")
+        stree.tag_configure("short", background="#fff2cc")
         slbl = ttk.Label(tab, text="", font=fnt)
         slbl.pack(anchor="e")
-        sstate = {"cols": [], "rows": []}
+        hint = ttk.Label(tab, text="", font=(self.ui_font_family, 8), foreground="#666")
+        hint.pack(anchor="w")
+        st = {"cols": [], "rows": [], "all": [], "p": None, "sched": []}
 
-        def do_search():
-            d0, d1 = df.get().strip(), dt.get().strip()
-            for v in (d0, d1):
+        def remember():
+            self.search_ui = {"kind": kind_v.get(), "view": view_v.get(), "merge": bool(merge_v.get())}
+            self._save_settings()
+
+        def period():
+            a_, b_ = df.get().strip(), dt.get().strip()
+            for v in (a_, b_):
                 if v and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", v):
-                    messagebox.showwarning("검색", "기간은 2026-10-30 형식으로 입력해 주세요.", parent=win)
-                    return
-            gcombo.configure(values=[""] + self.store.distinct_groups())
-            if sby.get() == "묶지 않음":
-                data = self.store.detail(d0, d1, kw.get().strip(), gv.get().strip(), media="" if sm.get() == "전체" else sm.get(),
-                                         target=SEARCH_TARGETS[tgt.get()])
-                cols = [("방송일", 95), ("매체", 50), ("시분초", 80), ("프로그램", 220), ("칸", 40), ("광고주", 200), ("초수", 60), ("그룹", 100)]
-                rows = [(a, m, t, p, cell_label(c_), n, s, g) for a, m, t, p, c_, n, s, pr, g in data]
-                fill(stree, cols, rows)
-                slbl.config(text=f"{len(rows)}건   총 초수 {fmt_num(sum(r[6] for r in data))}")
+                    raise ValueError("기간은 2026-06-01 형식으로 입력해 주세요.")
+            if a_ and b_ and b_ < a_:
+                raise ValueError("기간이 올바르지 않습니다. 시작이 끝보다 늦습니다.")
+            return a_, b_
+
+        def layout():
+            k, v = kind_v.get(), view_v.get()
+            for w in (lst_lbl, adv_cb, kw_lbl, kw_e, tgt_cb):
+                w.pack_forget()
+            if k != "all":
+                lst_lbl.pack(side="left")
+                adv_cb.pack(side="left", padx=4)
+            kw_lbl.config(text="검색어:" if k == "all" else "찾기:")
+            kw_lbl.pack(side="left", padx=(6, 0))
+            kw_e.pack(side="left", padx=4)
+            if k == "all":
+                tgt_cb.pack(side="left", padx=4)
+            by_cb.pack_forget()
+            act.pack_forget()
+            csv_btn.pack_forget()
+            if v == "sum":
+                by_cb.pack(side="left", padx=6)
+            if v == "sched":
+                act.pack(side="left", padx=8)
+                if k == "ad":
+                    wc_cb.pack(side="left", padx=6)
+                else:
+                    wc_cb.pack_forget()
             else:
-                data = self.store.aggregate(d0, d1, kw.get().strip(), gv.get().strip(), BY_OPTIONS[sby.get()], media="" if sm.get() == "전체" else sm.get(),
-                                            target=SEARCH_TARGETS[tgt.get()])
-                cols = [(sby.get().replace("별", ""), 300), ("건수", 90), ("총 초수", 110)]
-                rows = [(k or "(없음)", cnt, fmt_num(sec)) for k, cnt, sec, amt in data]
-                fill(stree, cols, rows)
-                slbl.config(text=f"{len(rows)}개 묶음   건수 {fmt_num(sum(r[1] for r in data))}")
-            sstate["cols"], sstate["rows"] = cols, rows
+                csv_btn.pack(side="right")
+            sm_cb.configure(state="disabled" if v == "sched" else "readonly")
+            hint.config(text="회색: 계약 기간 밖  /  노랑: 입력 작업을 한 날인데 하루 최소 횟수에 모자람  /  일정표는 AM·FM을 함께 봅니다"
+                        if v == "sched" else "")
 
-        ttk.Button(r2, text="검색", command=do_search).pack(side="left", padx=6)
-        ttk.Button(r2, text="CSV 저장", command=lambda: save_csv(sstate["cols"], sstate["rows"])).pack(side="right")
-        do_search()
-
-        # --- 광고주별 일정표 탭
-        tab = ttk.Frame(nb, padding=8)
-        nb.add(tab, text=" 광고주별 일정표 ")
-        # 일정표는 (이름, 초수) 단위. 목록에는 '60초 이름' 형태로 보인다
-        keys = sorted({(p["name"], p["seconds"]) for p in self.store.list_presets()} | set(self.store.record_keys()), key=lambda t: (t[0], t[1]))
-        key_of_label = {f"{sec}초 {nm}": (nm, sec) for nm, sec in keys}
-        secs_of = {}
-        for nm, sec in keys:
-            secs_of.setdefault(nm, set()).add(sec)
-        multi = sorted(nm for nm, v in secs_of.items() if len(v) >= 2)
-        for nm in multi:                       # 초수가 둘 이상인 광고주는 '전체 초수'(합산) 보기도 고를 수 있다
-            key_of_label[f"{nm} (전체 초수)"] = (nm, None)
-        names = list(key_of_label)
-        q1 = ttk.Frame(tab)
-        q1.pack(fill="x", pady=2)
-        ttk.Label(q1, text="광고:", font=fnt).pack(side="left")
-        adv = tk.StringVar(value=names[0] if names else "")
-        adv_cb = ttk.Combobox(q1, textvariable=adv, values=names, width=36)
-        adv_cb.pack(side="left", padx=4)
-        ttk.Label(q1, text="  기간:", font=fnt).pack(side="left")
-        sf, ef = tk.StringVar(), tk.StringVar()
-        ttk.Entry(q1, textvariable=sf, width=12).pack(side="left", padx=(2, 0))
-        cal_btn(q1, sf)
-        ttk.Label(q1, text=" ~").pack(side="left")
-        ttk.Entry(q1, textvariable=ef, width=12).pack(side="left", padx=(2, 0))
-        cal_btn(q1, ef)
-        ttk.Label(q1, text="(비우면 광고의 계약 기간으로 자동, 형식 2026-08-01)", foreground="#666").pack(side="left")
-        q3 = ttk.Frame(tab)
-        q3.pack(fill="x", pady=2)
-        with_contract = tk.BooleanVar(value=False)
-        list_info = ttk.Label(q3, text="", foreground="#1d4ed8")
-
-        def period_or_none():
-            """입력한 기간. 다 쓰지 않은(형식이 틀린) 값이 있으면 None."""
-            a, b = sf.get().strip(), ef.get().strip()
-            for v in (a, b):
-                if v and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", v):
-                    return None
-            return a, b
-
-        def labels_for(a, b):
-            """목록에 보일 광고. 기간이 없으면 전체, 있으면 그 기간에 기록이 있는 광고만
-            ([기록 없는 계약 광고도 보기]를 켜면 계약 기간이 겹치는 광고도)."""
-            if not a and not b:
-                return names
-            ks = set(self.store.keys_in_period(a, b))
-            if with_contract.get():
-                lo, hi = a or "0000-01-01", b or "9999-12-31"
-                for pr_ in self.store.list_presets():
-                    st_, en_ = pr_.get("start_date") or "", pr_.get("end_date") or ""
-                    if (st_ or en_) and (not st_ or st_ <= hi) and (not en_ or en_ >= lo):
-                        ks.add((pr_["name"], pr_["seconds"]))
-            secs = {}
-            for nm_, sec_ in ks:
-                secs.setdefault(nm_, set()).add(sec_)
-            out = [f"{sec_}초 {nm_}" for nm_, sec_ in sorted(ks, key=lambda t: (t[0], t[1]))]
-            out += [f"{nm_} (전체 초수)" for nm_ in sorted(secs) if len(secs[nm_]) >= 2]
-            return [x for x in out if x in key_of_label]
-
-        def refresh_list(*_a):
-            per = period_or_none()
-            if per is None:
+        def load_list():
+            k = kind_v.get()
+            if k == "all":
+                st["all"] = []
                 return
-            lst = labels_for(*per)
+            try:
+                a_, b_ = period()
+            except ValueError:
+                return
+            labels = schedule_labels(self.store, a_, b_, bool(merge_v.get()), k)
+            if k == "ad" and with_contract.get():           # 편집기만: 기간 안에 기록이 없어도 계약 기간이 겹치는 광고
+                lo, hi = a_ or "0000-01-01", b_ or "9999-12-31"
+                for pr_ in self.store.list_presets():
+                    s_, e_ = pr_.get("start_date") or "", pr_.get("end_date") or ""
+                    lb = f"{pr_['seconds']}초 {pr_['name']}"
+                    if (s_ or e_) and (not s_ or s_ <= hi) and (not e_ or e_ >= lo) and lb not in labels:
+                        labels.append(lb)
+            st["all"] = labels
+
+        def fill_list():
+            f = kw.get().strip()
+            lst = [x for x in st["all"] if f in x] if f else list(st["all"])
             adv_cb["values"] = lst
-            if per == ("", ""):
-                list_info.config(text=f"전체 광고 {len(lst)}개", foreground="#555")
-            else:
-                list_info.config(text=f"이 기간에 조회되는 광고 {len(lst)}개" + ("" if lst else " — 기간 안의 기록이 없습니다"),
-                                 foreground="#1d4ed8" if lst else "#dc2626")
             if adv.get() not in lst:
                 adv.set(lst[0] if lst else "")
-
-        ttk.Checkbutton(q3, text="기록 없는 계약 광고도 보기 (계약 기간이 겹치는 광고)", variable=with_contract, command=refresh_list).pack(side="left")
-        list_info.pack(side="left", padx=12)
-        sf.trace_add("write", refresh_list)
-        ef.trace_add("write", refresh_list)
-        q2 = ttk.Frame(tab)
-        q2.pack(fill="x", pady=2)
-        title_lbl = ttk.Label(tab, text="", font=(self.ui_font_family, 11, "bold"))
-        stree2 = make_tree(tab)
-        stree2.tag_configure("out", background="#d9d9d9", foreground="#6b7280")
-        stree2.tag_configure("short", background="#fff2cc")
-        sum_lbl = ttk.Label(tab, text="", font=fnt)
-        sum_lbl.pack(anchor="e")
-        ttk.Label(tab, text="초수가 여러 개인 광고주는 '(전체 초수)'를 고르면 합산해서 봅니다 (칸에 0759(20) 처럼 초수 표시, 하루 최소 횟수는 합쳐서 점검).",
-                  font=(self.ui_font_family, 8), foreground="#666").pack(anchor="w")
-        ttk.Label(tab, text="회색: 계약 기간 밖  /  노랑: 입력 작업을 한 날인데 하루 최소 횟수에 모자람  (입력하지 않은 날은 점검하지 않습니다)",
-                  font=(self.ui_font_family, 8), foreground="#666").pack(anchor="w")
-        sched = {"p": None, "rows": [], "cols": []}
-
-        def build_for(name, d0s, d1s):
-            name = (name or "").strip()
-            if not name:
-                raise ValueError("광고를 선택해 주세요.")
-            for v in (d0s, d1s):
-                if v and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", v):
-                    raise ValueError("기간은 2026-08-01 형식으로 입력해 주세요.")
-            if name in key_of_label:
-                name, sec = key_of_label[name]
+            if kind_v.get() != "all":
+                n = len(st["all"])
+                cnt_lbl.config(text=f"이 기간 {'그룹' if kind_v.get() == 'group' else '광고'} " + (f"{len(lst)} / {n}개" if f else f"{n}개"))
             else:
-                m = re.match(r"^(\d+)초\s+(.+)$", name)
-                name, sec = (m.group(2).strip(), int(m.group(1))) if m else (name, None)
-            if sec is None and name in multi:
-                p = combine_presets(name, [x for x in self.store.list_presets() if x["name"] == name])
-            else:
-                p = self.store.get_preset_by_name(name, sec)
-            span = self.store.record_date_span(name, sec)
-            if p is None:
-                recs0 = self.store.schedule_records(name, "0000-01-01", "9999-12-31", sec)
-                p = {"name": name, "seconds": sec if sec is not None else (recs0[0]["seconds"] if recs0 else 0), "start_date": "", "end_date": "", "min_am": 0, "min_fm": 0}
-            d0 = d0s or p.get("start_date") or span[0]
-            d1 = d1s or (month_end_iso(p["end_date"]) if p.get("end_date") else span[1])
-            if not d0 or not d1:
-                raise ValueError("이 광고의 기록이 아직 없어 기간을 알 수 없습니다.\n기간을 직접 입력해 주세요.")
-            if d1 < d0:
-                raise ValueError("기간이 올바르지 않습니다. 시작이 끝보다 늦습니다.")
-            if (datetime.date.fromisoformat(d1) - datetime.date.fromisoformat(d0)).days + 1 > 800:
-                raise ValueError("기간이 너무 깁니다. 800일 이내로 입력해 주세요.")
-            recs = self.store.schedule_records(name, d0, d1, sec)
-            rows = build_schedule(p, recs, d0, d1, self.store.processed_dates(d0, d1))
-            return p, rows, d0, d1
+                cnt_lbl.config(text="")
 
-        def show_sched():
+        def search_args():
+            a_, b_ = period()
+            k, v = kind_v.get(), adv.get()
+            grp, key, target, sec = "", "", "name", None
+            if k == "group":
+                m_ = re.match(r"^📁 (?:(\d+)초 )?(.+) \(그룹\)$", v)
+                if not m_:
+                    raise ValueError("목록에서 그룹을 골라 주세요.")
+                grp, sec = m_.group(2), (int(m_.group(1)) if m_.group(1) else None)
+            elif k == "ad":
+                m_ = re.match(r"^(?:(\d+)초 )?(.+?)(?: \(전체 초수\))?$", v)
+                if not v or not m_:
+                    raise ValueError("목록에서 광고를 골라 주세요.")
+                key, sec = m_.group(2), (int(m_.group(1)) if m_.group(1) else None)
+            else:
+                key, target = kw.get().strip(), SEARCH_TARGETS[tgt.get()]
+            return a_, b_, key, grp, ("" if sm.get() == "전체" else sm.get()), target, sec
+
+        def show(*_a):
+            layout()
+            for i in stree.get_children():
+                stree.delete(i)
+            title_lbl.config(text="")
+            st["cols"], st["rows"], st["p"], st["sched"] = [], [], None, []
             try:
-                p, rows, d0, d1 = build_for(adv.get(), sf.get().strip(), ef.get().strip())
+                v = view_v.get()
+                if v == "sched":
+                    if kind_v.get() == "all":
+                        slbl.config(text="일정표는 대상을 「그룹」이나 「광고」로 고르면 나옵니다. 전체는 [엑셀 (목록 전체 · 시트별)]로 받으세요.")
+                        return
+                    if not adv.get():
+                        slbl.config(text="이 기간에 기록이 없습니다." if not st["all"] else "찾기에 맞는 것이 없습니다.")
+                        return
+                    a_, b_ = period()
+                    p_, rows, d0, d1 = schedule_for(self.store, adv.get(), a_, b_)
+                    st["p"], st["sched"] = p_, rows
+                    title_lbl.config(text=p_.get("title") or schedule_title(p_))
+                    cols = [("날짜", 90), ("AM", 330), ("횟수", 50), ("FM", 330), ("횟수 ", 50), ("점검", 130)]
+                    stree.configure(columns=[c for c, _ in cols])
+                    for c_, w in cols:
+                        stree.heading(c_, text=c_.strip())
+                        stree.column(c_, width=w, anchor="center")
+                    tbl = []
+                    for r in rows:
+                        vals = (f"{r['date'][2:4]}.{r['date'][5:7]}.{r['date'][8:10]}", r["AM"], r["AM_n"] or "", r["FM"], r["FM_n"] or "", r["check"])
+                        tbl.append(vals)
+                        stree.insert("", "end", values=vals, tags=("out",) if r["outside"] else ("short",) if r["check"] else ())
+                    am_t, fm_t = sum(r["AM_n"] for r in rows), sum(r["FM_n"] for r in rows)
+                    stree.insert("", "end", values=("합계", "", am_t, "", fm_t, ""))
+                    st["cols"], st["rows"] = cols, tbl + [("합계", "", am_t, "", fm_t, "")]
+                    slbl.config(text=f"{d0} ~ {d1}   AM 총 {am_t}회   FM 총 {fm_t}회" +
+                                (f"   횟수 부족한 날 {sum(1 for r in rows if r['check'])}일" if any(r["check"] for r in rows) else ""))
+                    return
+                a_, b_, key, grp, media, target, sec = search_args()
+                if v == "detail":
+                    data = self.store.detail(a_, b_, key, grp, media=media, target=target, seconds=sec)
+                    cols = [("방송일", 95), ("매체", 50), ("시분초", 80), ("프로그램", 220), ("칸", 40), ("광고주", 200), ("초수", 60), ("그룹", 100)]
+                    rows = [(x0, m, t, pg, cell_label(c_), n, s_, g) for x0, m, t, pg, c_, n, s_, pr, g in data]
+                    fill(stree, cols, rows)
+                    slbl.config(text=f"{len(rows)}건   총 초수 {fmt_num(sum(r[6] for r in data))}")
+                else:
+                    data = self.store.aggregate(a_, b_, key, grp, BY_OPTIONS[by_v.get()], media=media, target=target, seconds=sec)
+                    cols = [(by_v.get().replace("별", ""), 300), ("건수", 90), ("총 초수", 110)]
+                    rows = [(k_ or "(없음)", cnt, fmt_num(sec_)) for k_, cnt, sec_, amt in data]
+                    fill(stree, cols, rows)
+                    slbl.config(text=f"{len(rows)}개 묶음   건수 {fmt_num(sum(r[1] for r in data))}   총 초수 {fmt_num(sum(r[2] for r in data))}")
+                st["cols"], st["rows"] = cols, rows
             except ValueError as exc:
-                messagebox.showwarning("일정표", str(exc), parent=win)
-                return
-            sched["p"], sched["rows"] = p, rows
-            title_lbl.config(text=schedule_title(p))
-            cols = [("날짜", 90), ("AM", 330), ("FM", 330), ("점검", 140)]
-            sched["cols"] = cols
-            tbl = [(f"{r['date'][2:4]}.{r['date'][5:7]}.{r['date'][8:10]}", r["AM"], r["FM"], r["check"]) for r in rows]
-            stree2.configure(columns=[c for c, _ in cols])
-            for c_, w in cols:
-                stree2.heading(c_, text=c_)
-                stree2.column(c_, width=w, anchor="center")
-            for i in stree2.get_children():
-                stree2.delete(i)
-            for r, v in zip(rows, tbl):
-                stree2.insert("", "end", values=v, tags=("out",) if r["outside"] else ("short",) if r["check"] else ())
-            am_t, fm_t = sum(r["AM_n"] for r in rows), sum(r["FM_n"] for r in rows)
-            sum_lbl.config(text=f"{d0} ~ {d1}   AM 총 {am_t}회   FM 총 {fm_t}회   횟수 부족한 날 {sum(1 for r in rows if r['check'])}일")
+                slbl.config(text=f"⚠ {exc}")
 
-        def sched_csv():
-            if not sched["rows"]:
-                messagebox.showinfo("CSV 저장", "먼저 [보기]를 눌러 일정표를 만들어 주세요.", parent=win)
-                return
-            rows = [(f"{r['date'][2:4]}.{r['date'][5:7]}.{r['date'][8:10]}", r["AM"], r["FM"], r["check"]) for r in sched["rows"]]
-            save_csv(sched["cols"], rows)
+        def reload(*_a):
+            load_list()
+            fill_list()
+            show()
 
         def save_xlsx(sheets):
             if not sheets:
@@ -5599,49 +5614,64 @@ Start-Process (Join-Path $prog 'RunSheetEditor.exe') -WorkingDirectory $prog
                 return
             try:
                 export_schedule_xlsx(path, sheets)
-            except ImportError:
-                messagebox.showerror("엑셀 저장", "엑셀 파일을 만들려면 openpyxl 이 필요합니다.\n명령 프롬프트에서  pip install openpyxl  을 실행한 뒤 다시 시도해 주세요.\n(CSV 저장은 그대로 쓸 수 있습니다.)", parent=win)
-                return
             except Exception as exc:
                 messagebox.showerror("엑셀 저장 실패", str(exc), parent=win)
                 return
             messagebox.showinfo("엑셀 저장", f"저장했습니다 (시트 {len(sheets)}개):\n{path}", parent=win)
 
-        def sched_xlsx():
-            if not sched["rows"]:
-                messagebox.showinfo("엑셀 저장", "먼저 [보기]를 눌러 일정표를 만들어 주세요.", parent=win)
+        def xlsx_one():
+            if kind_v.get() == "all" or not st["p"]:
+                messagebox.showinfo("엑셀 저장", "「이것만」은 대상을 그룹이나 광고로 고르고 일정표를 본 뒤에 저장합니다.", parent=win)
                 return
-            p = sched["p"]
-            save_xlsx([{"title": schedule_title(p), "sheet": sheet_name_for(p, set()), "rows": sched["rows"]}])
+            p_ = st["p"]
+            save_xlsx([{"title": p_.get("title") or schedule_title(p_), "sheet": sheet_name_for(p_, set()), "rows": st["sched"]}])
 
-        def all_xlsx():
-            used, sheets, skipped = set(), [], 0
-            per = period_or_none()
-            if per is None:
-                messagebox.showwarning("엑셀 저장", "기간은 2026-08-01 형식으로 입력해 주세요.", parent=win)
+        def xlsx_all():
+            try:
+                a_, b_ = period()
+            except ValueError as exc:
+                messagebox.showwarning("엑셀 저장", str(exc), parent=win)
                 return
-            if per == ("", ""):
-                labels_all = [f"{sec_}초 {nm_}" for nm_, sec_ in self.store.record_keys()] + [f"{nm_} (전체 초수)" for nm_ in multi]
-            else:
-                labels_all = labels_for(*per)             # 기간을 넣었으면 그 기간에 조회되는 광고만 시트로 만든다
-            for lb in labels_all:
+            merge = bool(merge_v.get())
+            k = kind_v.get()
+            in_grp = self.store.grouped_name_keys(a_, b_)
+            if k == "ad":                  # 광고마다 시트 하나
+                labels, in_grp = list(st["all"]), set()
+            else:                          # 그룹마다 시트 하나 + 그룹 없는 광고는 광고마다 시트 하나
+                labels = schedule_labels(self.store, a_, b_, merge, "group") + schedule_labels(self.store, a_, b_, merge, "ad")
+            used, sheets, skipped = set(), [], 0
+            for lb in labels:
+                m_ = re.match(r"^(\d+)초\s+(.+)$", lb)
+                if m_ and (m_.group(2).strip(), int(m_.group(1))) in in_grp:
+                    continue
+                if lb.endswith(" (전체 초수)") and lb[:-len(" (전체 초수)")] in {x[0] for x in in_grp}:
+                    continue
                 try:
-                    p, rows, _, _ = build_for(lb, sf.get().strip(), ef.get().strip())
+                    p_, rows, _, _ = schedule_for(self.store, lb, a_, b_)
                 except ValueError:
                     skipped += 1
                     continue
-                sheets.append({"title": schedule_title(p), "sheet": sheet_name_for(p, used), "rows": rows})
+                sheets.append({"title": p_.get("title") or schedule_title(p_), "sheet": sheet_name_for(p_, used), "rows": rows})
             if skipped and sheets:
                 messagebox.showinfo("엑셀 저장", f"기간을 정할 수 없는 광고 {skipped}개는 제외하고 저장합니다.", parent=win)
             save_xlsx(sheets)
 
-        ttk.Button(q2, text="보기", command=show_sched).pack(side="left", padx=2)
-        ttk.Button(q2, text="CSV 저장", command=sched_csv).pack(side="left", padx=2)
-        ttk.Button(q2, text="엑셀 저장 (이 광고)", command=sched_xlsx).pack(side="left", padx=2)
-        ttk.Button(q2, text="엑셀 저장 (목록의 모든 광고, 시트별)", command=all_xlsx).pack(side="left", padx=2)
-        title_lbl.pack(anchor="w", pady=(6, 0), before=stree2.master)
-        if names:
-            show_sched()
+        ttk.Button(act, text="📥 엑셀 (이것만)", command=xlsx_one).pack(side="left", padx=2)
+        ttk.Button(act, text="📥 엑셀 (목록 전체 · 시트별)", command=xlsx_all).pack(side="left", padx=2)
+        csv_btn.configure(command=lambda: save_csv(st["cols"], st["rows"]))
+        ttk.Button(r1, text="조회", command=reload).pack(side="left", padx=8)
+        for var_ in (kind_v, view_v, merge_v):
+            var_.trace_add("write", lambda *_a: (remember(), reload()))
+        with_contract.trace_add("write", reload)
+        for var_ in (df, dt):
+            var_.trace_add("write", lambda *_a: reload() if re.fullmatch(r"\d{4}-\d{2}-\d{2}", df.get().strip()) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", dt.get().strip()) else None)
+        adv_cb.bind("<<ComboboxSelected>>", show)
+        sm_cb.bind("<<ComboboxSelected>>", show)
+        by_cb.bind("<<ComboboxSelected>>", show)
+        tgt_cb.bind("<<ComboboxSelected>>", show)
+        kw_e.bind("<KeyRelease>", lambda e: (fill_list(), show()) if kind_v.get() != "all" else None)
+        kw_e.bind("<Return>", show)
+        reload()
 
     # ------------------------------------------------------------------ 다른 날 입력 가져오기
     IMPORT_STATUS = {"ok": "그대로", "moved": "자리 바뀜", "check": "확인 필요", "skip": "이미 있음", "fail": "못 넣음"}
