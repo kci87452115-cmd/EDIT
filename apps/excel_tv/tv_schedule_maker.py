@@ -30,7 +30,7 @@ try:
 except Exception:
     pass
 
-APP_VERSION = "1.4.1"
+APP_VERSION = "1.4.2"
 VERSION = f"v{APP_VERSION} (시험판)"
 
 
@@ -777,7 +777,8 @@ def build_blocks(rows, cfg, prev_rows=None, log=print):
                     or nb.get("show_end") != b.get("show_end") or bool(nb.get("bold")) != bool(b.get("bold")) \
                     or (nb.get("hl") or "") != (b.get("hl") or "") or (nb.get("fg") or "") != (b.get("fg") or "") \
                     or bool(nb.get("top_dash")) != bool(b.get("top_dash")) \
-                    or bool(nb.get("bottom_dash")) != bool(b.get("bottom_dash")):
+                    or bool(nb.get("bottom_dash")) != bool(b.get("bottom_dash")) \
+                    or bool(nb.get("thick_border")) != bool(b.get("thick_border")):
                 break
             if (b.get("name_edited") or nb.get("name_edited")) and nb["label"] != b["label"]:
                 break
@@ -844,7 +845,7 @@ def time_size(v, default):
 
 def edit_mark_cfg(cfg):
     """고친 칸 따로 표시 설정 -> (켬, 테두리 굵기 또는 None(끄기), 시각 크기)  ※ 색은 edited_line_color"""
-    on = bool(cfg.get("edited_mark", not IS_DMB))
+    on = bool(cfg.get("edited_mark", True))     # DMB 는 'DMB에서 빼기 - 테두리 굵게'로 테두리만 따로 뺄 수 있음
     v = cfg.get("edited_line_w", EDIT_LINE_W)
     lw = None if v in (0, "0", "끄기", None, "") else line_width(v, EDIT_LINE_W)
     return on, lw, time_size(cfg.get("edited_time_sz"), TIME_SZ)
@@ -994,7 +995,7 @@ def icon_list(b):
 # 빼는 것: 키 -> 이름. 기본은 연령·분홍만 남기고 나머지 아이콘·글자색·음영은 뺌
 DMB_HIDE_ITEMS = (("uhd", "UHD"), ("cc", "자막"), ("sign", "수어"), ("ad", "화면해설"), ("rl", "R/L"),
                   ("age", "연령"), ("hl", "글자 바탕색"), ("fg", "글자색"), ("bold", "글자 굵기"), ("shade", "음영"),
-                  ("pink", "분홍"))
+                  ("pink", "분홍"), ("border", "고친 칸 테두리"))       # border: 고친 칸 굵은 테두리
 OWN_STYLE_KEYS = ("shade", "bold", "fg", "hl")
 DMB_HIDE_DEFAULT = ("uhd", "cc", "sign", "ad", "rl", "hl", "fg", "bold", "shade")
 ICON_KEY_OF = {"U": "uhd", "자": "cc", "수": "sign", "해": "ad", "R": "rl", "L": "rl", "AGE": "age"}
@@ -1267,8 +1268,10 @@ def draw_schedule(dates, blocks, cfg, out_path=None, printed_at=None):
         ed = ed_on and bool(b.get("_mark", b.get("edited")))
         tsz = ed_t if ed else TIME_SZ                      # 고친 칸은 ⚙ 설정의 시각 크기
         lsz = LOCAL_TIME_SZ + (tsz - TIME_SZ)              # 로컬은 기본과의 차이만큼 같이
-        if ed and ed_w:
-            ed_lines.append((x0, y0, x1, y1, not b.get("top_dash"), not b.get("bottom_dash")))
+        if b.get("thick_border"):           # DMB: 이 칸만 테두리 굵게 (DMB에서 넣은 꾸밈이라 빼기와 상관없이 유지)
+            ed_lines.append((x0, y0, x1, y1, ed_w or EDIT_LINE_W))
+        elif ed and ed_w and "border" not in hide:      # DMB: 'DMB에서 빼기 - 고친 칸 테두리'면 굵은 테두리만 뺌
+            ed_lines.append((x0, y0, x1, y1, ed_w))
         msz = tsz if h >= tsz * 1.05 else max(2.2, min(tsz, h * 0.9))
         dx, dy = (ed_dx, ed_dy) if ed else (TIME_DX, TIME_DY)     # 왼쪽 간격, 위아래 옮김
         p.bold = bool(b.get("bold")) and "bold" not in hide
@@ -1370,18 +1373,18 @@ def draw_schedule(dates, blocks, cfg, out_path=None, printed_at=None):
     # 위·아래 변이 점선 자리면(이 칸 것이든 위·아래 칸 것이든) 실선으로 덮지 않고, 고친 칸 굵기·색의 점선으로
     def dashed_at(y, xa, xb):
         return any(abs(ly - y) < 0.3 and lx0 < xb - 0.5 and lx1 > xa + 0.5 for lx0, ly, lx1 in dash_lines)
-    ed_dw = max(ed_w or 0, dw)          # 고친 칸 점선: 고친 칸 굵기와 점선 굵기 중 굵은 쪽, 색은 고친 칸 색
-    ed_pat, ed_cap = dash_pattern(dst, ed_dw)
-    for ex0, ey0, ex1, ey1, top_, bot_ in ed_lines:     # 1) 위·아래 변
+    for ex0, ey0, ex1, ey1, ew_ in ed_lines:     # 1) 위·아래 변
+        ed_dw = max(ew_, dw)          # 고친 칸 점선: 칸 굵기와 점선 굵기 중 굵은 쪽, 색은 고친 칸 색
+        ed_pat, ed_cap = dash_pattern(dst, ed_dw)
         for y in (ey0, ey1):
             if dashed_at(y, ex0, ex1):
-                erase(ex0 + ed_w / 2, ex1 - ed_w / 2, y)       # 밑의 선만 지우고 (빈 칸은 칸 색)
+                erase(ex0 + ew_ / 2, ex1 - ew_ / 2, y)       # 밑의 선만 지우고 (빈 칸은 칸 색)
                 p.line(ex0, y, ex1, y, ed_c, ed_dw, ed_pat, ed_cap)
             else:
-                p.line(ex0 - ed_w / 2, y, ex1 + ed_w / 2, y, ed_c, ed_w)
-    for ex0, ey0, ex1, ey1, top_, bot_ in ed_lines:     # 2) 왼쪽·오른쪽 변 (지운 자리 위에 다시)
-        p.line(ex0, ey0, ex0, ey1, ed_c, ed_w)
-        p.line(ex1, ey0, ex1, ey1, ed_c, ed_w)
+                p.line(ex0 - ew_ / 2, y, ex1 + ew_ / 2, y, ed_c, ew_)
+    for ex0, ey0, ex1, ey1, ew_ in ed_lines:     # 2) 왼쪽·오른쪽 변 (지운 자리 위에 다시)
+        p.line(ex0, ey0, ex0, ey1, ed_c, ew_)
+        p.line(ex1, ey0, ex1, ey1, ed_c, ew_)
     p.rect(29.0, TABLE_TOP, 567.7, TABLE_BOTTOM, fill=None, stroke=DARK, width=frame_w)
     p.finish()
     doc.set_metadata({"title": "주간편성표", "creator": f"{APP_NAME} {VERSION}"})
@@ -1662,8 +1665,8 @@ def insert_local(rows, dates, name, s, e, shade="#d9d9d9", bold=True, code=None,
 
 # 묶인 한 칸(월~금)을 고칠 때 요일마다 똑같이 맞추는 항목 (날짜는 빼고)
 BLOCK_SYNC_KEYS = ("name", "s", "e", "plan", "age", "rl", "code", "shade", "uhd", "cc", "sign", "ad", "show_end",
-                   "force_pink", "bold", "top_dash", "bottom_dash", "hl", "fg", "name_edited", "show")
-STYLE_COPY_KEYS = ("shade", "hl", "fg", "bold", "top_dash", "bottom_dash")     # 꾸밈 복사/붙여넣기 항목
+                   "force_pink", "bold", "top_dash", "bottom_dash", "thick_border", "hl", "fg", "name_edited", "show")
+STYLE_COPY_KEYS = ("shade", "hl", "fg", "bold", "top_dash", "bottom_dash", "thick_border")     # 꾸밈 복사/붙여넣기 항목
 SHARE_CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"     # 헷갈리는 0·O·1·I 는 뺌
 
 
@@ -1749,7 +1752,7 @@ def resolve_overlaps(rows, i, plan=None):
 
 
 # ---------------------------------------------------------------- 새 판 반영 (같은 주 엑셀 수정판)
-STYLE_KEYS = ("shade", "hl", "fg", "bold", "show_end", "force_pink", "top_dash", "bottom_dash")
+STYLE_KEYS = ("shade", "hl", "fg", "bold", "show_end", "force_pink", "top_dash", "bottom_dash", "thick_border")
 ICON_KEYS = ("uhd", "cc", "sign", "ad", "age", "rl")
 
 
@@ -2798,7 +2801,7 @@ class App:
                 v_sn.set(next((k for k, c in SHADE_PRESETS.items() if c == (fv["shade"] or "")),
                               "직접 고른 색" if fv["shade"] else "없음"))
             extra.clear()
-            extra.update({k: fv[k] for k in ("bold", "top_dash", "bottom_dash", "hl", "fg") if k in fv})
+            extra.update({k: fv[k] for k in ("bold", "top_dash", "bottom_dash", "thick_border", "hl", "fg") if k in fv})
             e_name.focus_set()
             e_name.icursor("end")
         fav_cb.bind("<<ComboboxSelected>>", fav_pick)
@@ -3987,7 +3990,7 @@ class App:
                                                "hl_name", "fg_name", "show")}
         self.f_hl = self.f_fg = ""
         self.fb = {k: tk.BooleanVar() for k in ("uhd", "cc", "sign", "ad", "force_pink", "show_end", "bold",
-                                                "top_dash", "bottom_dash")}
+                                                "top_dash", "bottom_dash", "thick_border")}
         self.f_shade = ""
         tk.Label(f, text="프로그램명").grid(row=0, column=0, sticky="w")
         e_name = tk.Entry(f, textvariable=self.fv["name"], width=34)
@@ -4032,7 +4035,11 @@ class App:
         tk.Label(f, text="음영").grid(row=6, column=0, sticky="w")
         ttk.Combobox(f, textvariable=self.fv["shade_name"], values=list(SHADE_PRESETS), width=10,
                      state="readonly").grid(row=6, column=1, sticky="w", pady=2)
-        tk.Button(f, text="색 고르기", command=self.form_pick_color).grid(row=6, column=2, columnspan=2, sticky="w")
+        sf = tk.Frame(f)
+        sf.grid(row=6, column=2, columnspan=2, sticky="w")
+        tk.Button(sf, text="색 고르기", command=self.form_pick_color).pack(side=tk.LEFT)
+        if IS_DMB:      # DMB: 이 칸만 테두리 굵게 (굵기·색은 ⚙ 설정 '고친 칸')
+            tk.Checkbutton(sf, text="테두리 굵게", variable=self.fb["thick_border"]).pack(side=tk.LEFT, padx=(10, 0))
         tk.Label(f, text="글자 바탕").grid(row=7, column=0, sticky="w")
         ttk.Combobox(f, textvariable=self.fv["hl_name"], values=list(HL_PRESETS), width=10,
                      state="readonly").grid(row=7, column=1, sticky="w", pady=2)
@@ -4342,7 +4349,7 @@ class App:
         self.push_undo("same")
         for x in same:
             for k in ("shade", "force_pink", "show_end", "uhd", "cc", "sign", "ad", "age", "rl", "hl", "fg", "bold",
-                      "top_dash", "bottom_dash"):
+                      "top_dash", "bottom_dash", "thick_border"):
                 x[k] = r.get(k)
             self.mark_edit(x)
         self.log(f"[같은 프로그램] '{r['name']}' 설정을 {len(same)}줄에 적용")
@@ -4498,7 +4505,8 @@ class App:
     def cell_options(self, i):
         """칸의 옵션 값 (즐겨찾기에 함께 저장하는 것)"""
         r = self.rows[i]
-        d = {k: bool(r.get(k)) for k in ("uhd", "cc", "sign", "ad", "show_end", "bold", "top_dash", "bottom_dash")}
+        d = {k: bool(r.get(k)) for k in ("uhd", "cc", "sign", "ad", "show_end", "bold", "top_dash", "bottom_dash",
+                                         "thick_border")}
         d["force_pink"] = self.eff_pink(i)
         d["age"] = r.get("age", "") or ""
         for k in ("shade", "hl", "fg"):
@@ -4593,6 +4601,10 @@ class App:
                                     ("top_dash", "위 선 점선"), ("bottom_dash", "아래 선 점선"))):
             vb[k] = tk.BooleanVar(value=bool(src.get(k)))
             tk.Checkbutton(of, text=t, variable=vb[k]).grid(row=1, column=n, sticky="w")
+        if IS_DMB:
+            vb["thick_border"] = tk.BooleanVar(value=bool(src.get("thick_border")))
+            tk.Checkbutton(of, text="테두리 굵게", variable=vb["thick_border"]).grid(row=2, column=3, columnspan=2,
+                                                                               sticky="w")     # 음영 줄 오른쪽
         vc = {}
         for row, (k, t, presets) in enumerate((("shade", "음영", SHADE_PRESETS), ("hl", "글자 바탕", HL_PRESETS),
                                                 ("fg", "글자색", FG_PRESETS)), start=2):
@@ -5605,7 +5617,7 @@ class App:
             self.schedule_redraw(50)
 
         def reset_edit():
-            v_eon.set(not IS_DMB)
+            v_eon.set(True)
             v_ew.set(f"{EDIT_LINE_W:g}")
             v_et.set(f"{TIME_SZ:.2f}")
             v_edx.set(f"{TIME_DX:.2f}")
@@ -5749,6 +5761,7 @@ def bind_linebreak(entry):
 
 FAV_AGE_KEEP, FAV_AGE_NONE = "안 바꿈", "없음"     # 즐겨찾기 연령: 안 바꿈(저장 안 함) / 없음("")
 FAV_OPT_KEYS = ("uhd", "cc", "sign", "ad", "age", "force_pink", "show_end", "bold", "top_dash", "bottom_dash",
+                "thick_border",
                 "shade", "hl", "fg")
 
 
@@ -5760,7 +5773,8 @@ def fav_opt_summary(fv):
     if "age" in fv:
         a.append(f"연령 {fv['age'] or '없음'}")
     b = [t for k, t in (("force_pink", "분홍"), ("show_end", "끝 시각"), ("bold", "굵게"),
-                        ("top_dash", "위 점선"), ("bottom_dash", "아래 점선")) if fv.get(k)]
+                        ("top_dash", "위 점선"), ("bottom_dash", "아래 점선"), ("thick_border", "테두리 굵게"))
+         if fv.get(k)]
     c = [t for k, t in (("shade", "음영"), ("hl", "바탕"), ("fg", "글자색")) if fv.get(k)]
     return " / ".join("·".join(x) for x in (a, b, c) if x) or "옵션 모두 끔"
 
