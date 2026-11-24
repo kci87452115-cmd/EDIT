@@ -25,7 +25,7 @@ except ImportError:
     except ImportError:
         fitz = None
 
-APP_VERSION = "2.14.4"
+APP_VERSION = "2.15.0"
 APP_TITLE = f"운행표 데이터 편집기 v{APP_VERSION}"
 APP_MUTEX = "RunSheetEditor_Running"      # 설치 프로그램이 '실행 중'을 알아보는 이름 (setup.iss 의 AppMutex 와 같아야 함)
 RUN_BY_LAUNCHER = bool(os.environ.get("RADIO_LAUNCHER"))   # 편집 프로그램 런처로 실행됨 -> 업데이트는 런처가 한다
@@ -1021,53 +1021,155 @@ def sheet_name_for(p, used):
     return name
 
 
+def _xml_esc(v):
+    return (str(v).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;"))
+
+
+def schedule_xlsx_bytes(sheets):
+    """sheets: [{'title','sheet','rows'}] -> .xlsx 파일 내용(bytes). openpyxl 없이 만든다 (녹음 PC 서버·편집기 공용).
+    모양: 제목 줄 / 날짜 · AM · 횟수 · FM · 횟수 / 맨 아래 합계. 기간 밖은 회색, 하루 최소 횟수 부족은 노랑."""
+    import io
+    import zipfile
+    # 스타일 번호: 0 기본, 1 제목(굵게 14), 2 머리글(굵게·테두리), 3 칸(테두리·가운데), 4 회색, 5 노랑, 6 합계(굵게·테두리)
+    styles = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+              '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+              '<fonts count="3"><font><sz val="11"/><name val="맑은 고딕"/></font>'
+              '<font><b/><sz val="14"/><name val="맑은 고딕"/></font><font><b/><sz val="11"/><name val="맑은 고딕"/></font></fonts>'
+              '<fills count="4"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill>'
+              '<fill><patternFill patternType="solid"><fgColor rgb="FFD9D9D9"/><bgColor indexed="64"/></patternFill></fill>'
+              '<fill><patternFill patternType="solid"><fgColor rgb="FFFFF2CC"/><bgColor indexed="64"/></patternFill></fill></fills>'
+              '<borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border>'
+              '<border><left style="thin"><color rgb="FF000000"/></left><right style="thin"><color rgb="FF000000"/></right>'
+              '<top style="thin"><color rgb="FF000000"/></top><bottom style="thin"><color rgb="FF000000"/></bottom><diagonal/></border></borders>'
+              '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="7">'
+              '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'
+              + "".join(f'<xf numFmtId="0" fontId="{f}" fillId="{fl}" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1">'
+                        '<alignment horizontal="center" vertical="center"/></xf>'
+                        for f, fl in ((1, 0), (2, 0), (0, 0), (0, 2), (0, 3), (2, 0)))
+              + '</cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>')
+    cols = "ABCDE"
+
+    def cell(ref, v, st):
+        if isinstance(v, int):
+            return f'<c r="{ref}" s="{st}"><v>{v}</v></c>'
+        if v in ("", None):
+            return f'<c r="{ref}" s="{st}"/>'
+        return f'<c r="{ref}" s="{st}" t="inlineStr"><is><t xml:space="preserve">{_xml_esc(v)}</t></is></c>'
+
+    def sheet_xml(sh):
+        rows = sh["rows"]
+        out = ['<row r="1" ht="26" customHeight="1">' + "".join(cell(f"{c}1", sh["title"] if c == "A" else "", 1) for c in cols) + "</row>",
+               '<row r="2">' + "".join(cell(f"{c}2", h, 2) for c, h in zip(cols, ("날짜", "AM", "횟수", "FM", "횟수"))) + "</row>"]
+        for i, r in enumerate(rows, start=3):
+            vals = (f"{r['date'][2:4]}.{r['date'][5:7]}.{r['date'][8:10]}", r["AM"], r["AM_n"] or "", r["FM"], r["FM_n"] or "")
+            sts = [3] + [4 if r["outside"] else 5 if r[("AM" if j < 2 else "FM") + "_short"] else 3 for j in range(4)]
+            out.append(f'<row r="{i}">' + "".join(cell(f"{c}{i}", v, st) for c, v, st in zip(cols, vals, sts)) + "</row>")
+        n = len(rows) + 3
+        tot = ("합계", "", sum(r["AM_n"] for r in rows), "", sum(r["FM_n"] for r in rows))
+        out.append(f'<row r="{n}">' + "".join(cell(f"{c}{n}", v, 6) for c, v in zip(cols, tot)) + "</row>")
+        return ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+                'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+                '<sheetPr><pageSetUpPr fitToPage="1"/></sheetPr>'
+                '<sheetViews><sheetView workbookViewId="0"><pane ySplit="2" topLeftCell="A3" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>'
+                '<cols><col min="1" max="1" width="12" customWidth="1"/><col min="2" max="2" width="46" customWidth="1"/>'
+                '<col min="3" max="3" width="7" customWidth="1"/><col min="4" max="4" width="46" customWidth="1"/>'
+                '<col min="5" max="5" width="7" customWidth="1"/></cols>'
+                '<sheetData>' + "".join(out) + '</sheetData><mergeCells count="1"><mergeCell ref="A1:E1"/></mergeCells>'
+                '<pageMargins left="0.4" right="0.4" top="0.5" bottom="0.5" header="0.3" footer="0.3"/>'
+                '<pageSetup paperSize="9" orientation="landscape" fitToWidth="1" fitToHeight="0"/></worksheet>')
+
+    sheets = list(sheets) or [{"title": "", "sheet": "빈 시트", "rows": []}]
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        n = len(sheets)
+        z.writestr("[Content_Types].xml",
+                   '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                   '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+                   '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+                   '<Default Extension="xml" ContentType="application/xml"/>'
+                   '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+                   '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>'
+                   + "".join(f'<Override PartName="/xl/worksheets/sheet{i}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+                             for i in range(1, n + 1)) + "</Types>")
+        z.writestr("_rels/.rels", '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                   '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                   '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>'
+                   '</Relationships>')
+        z.writestr("xl/workbook.xml", '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                   '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+                   'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>'
+                   + "".join(f'<sheet name="{_xml_esc(sh["sheet"])}" sheetId="{i}" r:id="rId{i}"/>' for i, sh in enumerate(sheets, 1))
+                   + "</sheets></workbook>")
+        z.writestr("xl/_rels/workbook.xml.rels", '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                   '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                   + "".join(f'<Relationship Id="rId{i}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" '
+                             f'Target="worksheets/sheet{i}.xml"/>' for i in range(1, n + 1))
+                   + f'<Relationship Id="rId{n + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>'
+                   "</Relationships>")
+        z.writestr("xl/styles.xml", styles)
+        for i, sh in enumerate(sheets, 1):
+            z.writestr(f"xl/worksheets/sheet{i}.xml", sheet_xml(sh))
+    return buf.getvalue()
+
+
 def export_schedule_xlsx(path, sheets):
-    """sheets: [{'title','sheet','rows'}]. 사진과 같은 모양: 제목 줄, 날짜/AM/FM, 기간 밖은 회색, 횟수 부족은 노랑."""
-    from openpyxl import Workbook
-    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
-    wb = Workbook()
-    wb.remove(wb.active)
-    thin = Side(style="thin", color="000000")
-    border = Border(left=thin, right=thin, top=thin, bottom=thin)
-    gray = PatternFill("solid", start_color="D9D9D9", end_color="D9D9D9")
-    yellow = PatternFill("solid", start_color="FFF2CC", end_color="FFF2CC")
-    center = Alignment(horizontal="center", vertical="center")
-    for sh in sheets:
-        ws = wb.create_sheet(sh["sheet"])
-        ws.merge_cells("A1:C1")
-        ws["A1"] = sh["title"]
-        ws["A1"].font = Font(bold=True, size=14)
-        ws["A1"].alignment = center
-        ws.row_dimensions[1].height = 26
-        for col in "ABC":
-            ws[f"{col}1"].border = border
-        for i, h in enumerate(("날짜", "AM", "FM")):
-            c = ws.cell(row=2, column=i + 1, value=h)
-            c.font = Font(bold=True)
-            c.alignment = center
-            c.border = border
-        for r_i, row in enumerate(sh["rows"], start=3):
-            vals = (f"{row['date'][2:4]}.{row['date'][5:7]}.{row['date'][8:10]}", row["AM"], row["FM"])
-            for c_i, v in enumerate(vals, start=1):
-                c = ws.cell(row=r_i, column=c_i, value=v)
-                c.alignment = center
-                c.border = border
-                if c_i > 1:
-                    if row["outside"]:
-                        c.fill = gray
-                    elif row["AM_short" if c_i == 2 else "FM_short"]:
-                        c.fill = yellow
-        ws.column_dimensions["A"].width = 12
-        ws.column_dimensions["B"].width = 46
-        ws.column_dimensions["C"].width = 46
-        ws.freeze_panes = "A3"
-        ws.page_setup.orientation = "landscape"          # 인쇄할 때 AM/FM 열이 잘리지 않게 가로 + 폭 맞춤
-        ws.sheet_properties.pageSetUpPr.fitToPage = True
-        ws.page_setup.fitToWidth = 1
-        ws.page_setup.fitToHeight = 0
-    if not wb.sheetnames:
-        wb.create_sheet("빈 시트")
-    wb.save(path)
+    """편집기 [엑셀 저장]: 웹과 같은 모양의 .xlsx 를 파일로 저장."""
+    data = schedule_xlsx_bytes(sheets)
+    with open(path, "wb") as f:
+        f.write(data)
+
+
+def schedule_labels(store, d0="", d1=""):
+    """일정표 광고 목록 ('60초 이름', 초수가 여럿이면 '이름 (전체 초수)'). 기간을 주면 그 기간에 기록이 있는 광고만."""
+    if d0 or d1:
+        keys = set(store.keys_in_period(d0, d1))
+    else:
+        keys = {(p["name"], p["seconds"]) for p in store.list_presets()} | set(store.record_keys())
+    secs = {}
+    for nm, sec in keys:
+        secs.setdefault(nm, set()).add(sec)
+    out = [f"{sec}초 {nm}" for nm, sec in sorted(keys, key=lambda t: (t[0], t[1]))]
+    out += [f"{nm} (전체 초수)" for nm in sorted(secs) if len(secs[nm]) >= 2]
+    return out
+
+
+def schedule_for(store, label, d0s="", d1s=""):
+    """일정표 하나 만들기 (편집기 「광고주별 일정표」와 같은 규칙). -> (설정, 날짜별 줄, 시작일, 끝일). 잘못되면 ValueError."""
+    label = (label or "").strip()
+    if not label:
+        raise ValueError("광고를 선택해 주세요.")
+    for v in (d0s, d1s):
+        if v and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", v):
+            raise ValueError("기간은 2026-08-01 형식으로 입력해 주세요.")
+    m_all = re.match(r"^(.+) \(전체 초수\)$", label)
+    m = re.match(r"^(\d+)초\s+(.+)$", label)
+    if m_all:
+        name, sec = m_all.group(1).strip(), None
+    elif m:
+        name, sec = m.group(2).strip(), int(m.group(1))
+    else:
+        name, sec = label, None
+    plist = [x for x in store.list_presets() if x["name"] == name]
+    if sec is None and len({x["seconds"] for x in plist} | {s for n_, s in store.record_keys() if n_ == name}) >= 2:
+        p = combine_presets(name, plist) if plist else {"name": name, "seconds": 0, "all_seconds": True, "start_date": "", "end_date": "", "min_am": 0, "min_fm": 0}
+    else:
+        p = store.get_preset_by_name(name, sec)
+    span = store.record_date_span(name, sec)
+    if p is None:
+        recs0 = store.schedule_records(name, "0000-01-01", "9999-12-31", sec)
+        p = {"name": name, "seconds": sec if sec is not None else (recs0[0]["seconds"] if recs0 else 0),
+             "start_date": "", "end_date": "", "min_am": 0, "min_fm": 0}
+    d0 = d0s or p.get("start_date") or span[0]
+    d1 = d1s or (month_end_iso(p["end_date"]) if p.get("end_date") else span[1])
+    if not d0 or not d1:
+        raise ValueError("이 광고의 기록이 아직 없어 기간을 알 수 없습니다. 기간을 직접 넣어 주세요.")
+    if d1 < d0:
+        raise ValueError("기간이 올바르지 않습니다. 시작이 끝보다 늦습니다.")
+    if (datetime.date.fromisoformat(d1) - datetime.date.fromisoformat(d0)).days + 1 > 800:
+        raise ValueError("기간이 너무 깁니다. 800일 이내로 넣어 주세요.")
+    recs = store.schedule_records(name, d0, d1, sec)
+    return p, build_schedule(p, recs, d0, d1, store.processed_dates(d0, d1)), d0, d1
 
 
 # ----------------------------------------------------------------------------
@@ -1259,6 +1361,12 @@ html.dark .cal .d.out{background:#0b1220;color:#334155}html.dark .cal .d.sel{bac
 html.dark .cal .cnt{color:#93c5fd}html.dark .cal .sun{color:#f87171}html.dark .cal .sat{color:#60a5fa}
 html.dark [style*="#15803d"]{color:#4ade80!important}html.dark [style*="#c2410c"]{color:#fb923c!important}
 html.dark [style*="#9a3412"]{color:#fdba74!important}html.dark tr[style*="#f8fafc"]{background:#172033!important}
+.sch td,.sch th{text-align:center;border:1px solid var(--line)}.sch td.tm{font-variant-numeric:tabular-nums;letter-spacing:.2px}
+.sch tr.out td{background:#e5e7eb;color:#6b7280}.sch tr td.short{background:#fff2cc}.sch tr.tot td{font-weight:bold;background:var(--soft)}
+.schT{font-size:19px;font-weight:bold;text-align:center;margin:6px 0 10px}
+html.dark .sch tr.out td{background:#1f2937;color:#6b7280}html.dark .sch tr td.short{background:#423a1a}
+@media print{body{background:#fff}header,.tabs,#fA .row,#fA .msg,.hint.np{display:none!important}.pane{border:0;box-shadow:none;padding:0;margin:0}
+ #fS,#fC,#fQ,#msg,#mainScroll,#total{display:none!important}.sch td,.sch th{border:1px solid #000;padding:3px 6px;font-size:12px}#schScroll{max-height:none;overflow:visible;border:0}}
 html.dark input::placeholder{color:#64748b}html.dark ::-webkit-calendar-picker-indicator{filter:invert(.8)}
 </style><script>if(window.top!==window.self)document.documentElement.classList.add('embed')</script></head><body>
 <header><b>💰 정산 / 검색</b><span id="who"></span><span>조회 전용 — 이 화면에서는 기록을 바꿀 수 없습니다</span></header>
@@ -1294,6 +1402,18 @@ html.dark input::placeholder{color:#64748b}html.dark ::-webkit-calendar-picker-i
    <button class="btn" onclick="run()">검색</button>
    <a class="right" id="qcsv" href="#">⬇ CSV 저장</a></div>
  </div>
+ <div id="fA" style="display:none">
+  <div class="row"><label>기간:</label><input type="date" id="af"> ~ <input type="date" id="at">
+   <button class="btn lite" onclick="amonth(0)">이번 달</button><button class="btn lite" onclick="amonth(-1)">지난 달</button>
+   <label>광고:</label><select id="aadv" style="min-width:260px"></select><span class="hint" id="acnt"></span></div>
+  <div class="row"><button class="btn" onclick="sched()">보기</button>
+   <a class="btn lite" id="ax1" href="#" style="text-decoration:none;line-height:20px">⬇ 엑셀 (이 광고)</a>
+   <a class="btn lite" id="axa" href="#" style="text-decoration:none;line-height:20px">⬇ 엑셀 (목록의 모든 광고, 시트별)</a>
+   <button class="btn lite" onclick="window.print()">🖨 인쇄</button>
+   <span class="hint">회색: 계약 기간 밖 · 노랑: 하루 최소 횟수에 모자람</span></div>
+  <div class="msg" id="amsg"></div>
+  <div id="schOut"><div class="schT" id="atitle"></div><div class="scroll" id="schScroll"><table class="sch" id="atbl"></table></div></div>
+ </div>
  <div class="msg" id="msg"></div>
  <div class="scroll" id="mainScroll"><table id="tbl"></table></div>
  <div class="total" id="total"></div>
@@ -1301,7 +1421,7 @@ html.dark input::placeholder{color:#64748b}html.dark ::-webkit-calendar-picker-i
 </main>
 <script>
 const $=id=>document.getElementById(id);let cur='C',info=null;const WK='일월화수목금토';
-const TABS=[['C','📅 달력'],['일',' 일 정산 '],['월',' 월 정산 '],['년',' 년 정산 '],['Q',' 검색 / 그룹 검색 '],['P','📄 운행표 미리보기 · 인쇄'],['T','📺 TV 주간 편성표']];
+const TABS=[['C','📅 달력'],['일',' 일 정산 '],['월',' 월 정산 '],['년',' 년 정산 '],['Q',' 검색 / 그룹 검색 '],['A','📋 광고주별 일정표'],['P','📄 운행표 미리보기 · 인쇄'],['T','📺 TV 주간 편성표']];
 const pad=n=>String(n).padStart(2,'0');const t0=new Date();const today=t0.getFullYear()+'-'+pad(t0.getMonth()+1)+'-'+pad(t0.getDate());
 const refs={'일':today,'월':today.slice(0,7),'년':today.slice(0,4)},bys={'일':'광고주별','월':'광고주별','년':'광고주별'},meds={'일':'','월':'','년':''};
 const num=v=>Number(v||0).toLocaleString('ko-KR');
@@ -1309,7 +1429,7 @@ const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&g
 function drawTabs(){$('tabs').innerHTML=TABS.map(([k,t])=>'<button class="'+(k===cur?'on':'')+'" onclick="tab(\''+k+'\')">'+esc(t)+'</button>').join('')}
 function keep(){if('일월년'.includes(cur)){refs[cur]=$('kref').value;bys[cur]=$('sby').value;meds[cur]=$('smedia').value}}
 function tab(k){keep();cur=k;drawTabs();const s='일월년'.includes(k);$('fS').style.display=s?'':'none';$('fQ').style.display=k==='Q'?'':'none';
- $('fC').style.display=k==='C'?'':'none';$('msg').textContent='';$('mainScroll').style.display=k==='C'?'none':'';
+ $('fC').style.display=k==='C'?'':'none';$('fA').style.display=k==='A'?'':'none';$('msg').textContent='';$('mainScroll').style.display=k==='C'||k==='A'?'none':'';
  $('total').textContent='';
  if(s){$('kLbl').textContent={'일':'기준일:','월':'기준월:','년':'기준연도:'}[k];$('kHint').textContent={'일':'📅 달력에서 고르기','월':'📅 달력에서 고르기','년':'(2026)'}[k];
   const kr=$('kref');kr.type={'일':'date','월':'month','년':'number'}[k];if(k==='년'){kr.min=2000;kr.max=2100;kr.style.width='6em'}else{kr.removeAttribute('min');kr.removeAttribute('max');kr.style.width=''}
@@ -1361,7 +1481,7 @@ async function day(iso,keepCal){selDay=iso;
   h+=d.rows.length?'<div class="two"><div>'+tb(d.rows.slice(0,half))+'</div><div>'+tb(d.rows.slice(half))+'</div></div>':'<div class="hint">이 날 기록이 없습니다.</div>';
   $('dayv').innerHTML=h;if(!keepCal)$('dayv').scrollIntoView({behavior:'smooth',block:'start'})}
  catch(e){$('dayv').innerHTML='<div class="msg">⚠ '+esc(e instanceof TypeError?'편집기 PC에 연결하지 못했습니다.':e.message)+'</div>'}}
-async function run(){if(cur==='C')return cal();if(cur==='P')return previews();if(cur==='T')return tvsheets();
+async function run(){if(cur==='C')return cal();if(cur==='A')return alist();if(cur==='P')return previews();if(cur==='T')return tvsheets();
  $('msg').textContent='불러오는 중…';
  try{if(cur==='Q'){$('qcsv').href='api/search.csv?'+qq();const d=await get('api/search?'+qq());
    if(d.mode==='detail'){$('tbl').innerHTML=detailTable(d.rows);$('total').textContent=num(d.total)+'건   총 초수 '+num(d.sec);
@@ -1375,6 +1495,23 @@ async function run(){if(cur==='C')return cal();if(cur==='P')return previews();if
    $('total').textContent='합계  건수 '+num(d.rows.reduce((a,x)=>a+x[1],0))+'   총 초수 '+num(d.rows.reduce((a,x)=>a+x[2],0));
    $('msg').textContent=(d.from===d.to?d.from:d.from+' ~ '+d.to)+(d.rows.length?'':' — 기록이 없습니다.')}}
  catch(e){$('tbl').innerHTML='';$('total').textContent='';$('msg').textContent='⚠ '+(e instanceof TypeError?'편집기 PC에 연결하지 못했습니다. 편집기가 켜져 있는지 확인해 주세요.':e.message)}}
+function aq(){return {from:$('af').value,to:$('at').value}}
+function amonth(n){const d=new Date(t0.getFullYear(),t0.getMonth()+n,1),e=new Date(d.getFullYear(),d.getMonth()+1,0);
+ $('af').value=d.getFullYear()+'-'+pad(d.getMonth()+1)+'-01';$('at').value=e.getFullYear()+'-'+pad(e.getMonth()+1)+'-'+pad(e.getDate());alist()}
+async function alist(){if(!$('af').value)return amonth(0);$('amsg').textContent='광고 목록을 불러오는 중…';
+ try{const d=await get('api/sched-list?'+new URLSearchParams(aq()));const old=$('aadv').value;
+  $('aadv').innerHTML=d.labels.map(x=>'<option>'+esc(x)+'</option>').join('');if(d.labels.includes(old))$('aadv').value=old;
+  $('acnt').textContent='이 기간에 방송된 광고 '+d.labels.length+'개';$('axa').href='api/sched-all.xlsx?'+new URLSearchParams(aq());
+  if(d.labels.length)sched();else{$('amsg').textContent='이 기간에 기록이 없습니다.';$('atbl').innerHTML='';$('atitle').textContent=''}}
+ catch(e){$('amsg').textContent='⚠ '+(e instanceof TypeError?'편집기 PC에 연결하지 못했습니다.':e.message)}}
+async function sched(){const q=new URLSearchParams(Object.assign({adv:$('aadv').value},aq()));$('ax1').href='api/sched.xlsx?'+q;$('amsg').textContent='불러오는 중…';
+ try{const d=await get('api/sched?'+q);let am=0,fm=0,h='<tr><th>날짜</th><th>AM</th><th>횟수</th><th>FM</th><th>횟수</th></tr>';
+  for(const r of d.rows){am+=r.AM_n;fm+=r.FM_n;const dt=r.date.slice(2).replace(/-/g,'.');
+   h+='<tr'+(r.outside?' class="out"':'')+'><td>'+dt+'</td><td class="tm'+(r.AM_short?' short':'')+'">'+esc(r.AM)+'</td><td'+(r.AM_short?' class="short"':'')+'>'+(r.AM_n||'')+'</td>'
+    +'<td class="tm'+(r.FM_short?' short':'')+'">'+esc(r.FM)+'</td><td'+(r.FM_short?' class="short"':'')+'>'+(r.FM_n||'')+'</td></tr>'}
+  h+='<tr class="tot"><td>합계</td><td></td><td>'+am+'</td><td></td><td>'+fm+'</td></tr>';
+  $('atbl').innerHTML=h;$('atitle').textContent=d.title;$('amsg').textContent=d.from+' ~ '+d.to+' — AM 총 '+am+'회 · FM 총 '+fm+'회'}
+ catch(e){$('atbl').innerHTML='';$('atitle').textContent='';$('amsg').textContent='⚠ '+(e instanceof TypeError?'편집기 PC에 연결하지 못했습니다.':e.message)}}
 function tvManual(){const v=prompt('TV 편성표 PC 주소 (예: http://192.168.0.20:8081)\n자동으로 못 찾을 때만 넣으세요. 비우면 지웁니다.',localStorage.getItem('tvaddr')||'');
  if(v===null)return;try{v.trim()?localStorage.setItem('tvaddr',v.trim().replace(/\/+$/,'')):localStorage.removeItem('tvaddr')}catch(e){}tvsheets()}
 async function tvsheets(){$('msg').textContent='TV 편성표 PC를 찾는 중…';
@@ -1412,6 +1549,7 @@ const opt=(sel,list)=>{for(const t of list){const o=document.createElement('opti
   opt($('target'),info.targets);opt($('sby'),['묶지 않음'].concat(info.by));$('sby').options[0].value='묶지 않음';$('sby').options[0].textContent='전체 내역 (묶지 않음)';opt($('qby'),['묶지 않음'].concat(info.by));
   $('target').value='광고주만';$('sby').value='광고주별';}catch(e){}
  $('kw').addEventListener('keydown',e=>{if(e.key==='Enter')run()});
+ $('aadv').addEventListener('change',()=>sched());$('af').addEventListener('change',()=>alist());$('at').addEventListener('change',()=>alist());
  $('kref').addEventListener('keydown',e=>{if(e.key==='Enter')run()});
  $('sby').addEventListener('change',()=>run());$('smedia').addEventListener('change',()=>run());   // 고르면 바로 조회
  $('kref').addEventListener('change',()=>{if(/^\d{4}(-\d{2}){0,2}$/.test($('kref').value))run()});   // 달력에서 고르면 바로 조회
@@ -1635,6 +1773,34 @@ class ViewServer:
                         if route == "/api/settle":
                             return self._json({"from": d0, "to": d1, "rows": rows})
                         return self._csv([by_lbl.replace("별", ""), "건수", "총 초수"], rows, f"{kind}정산_{p.get('ref', '').strip()}_{by_lbl}.csv")
+                    if route in ("/api/sched-list", "/api/sched", "/api/sched.xlsx", "/api/sched-all.xlsx"):   # 📋 광고주별 일정표
+                        from urllib.parse import quote
+                        d0, d1 = p.get("from", ""), p.get("to", "")
+                        for d in (d0, d1):
+                            if d and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", d):
+                                return self._json({"error": "기간은 2026-06-01 형식으로 넣어 주세요."}, 400)
+                        if route == "/api/sched-list":
+                            return self._json({"labels": schedule_labels(store, d0, d1)})
+                        xh = lambda fn: {"Content-Disposition": f"attachment; filename*=UTF-8''{quote(fn)}"}
+                        xct = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                        if route == "/api/sched-all.xlsx":
+                            used, sheets = set(), []
+                            for lb in schedule_labels(store, d0, d1):
+                                try:
+                                    sp, rows, _, _ = schedule_for(store, lb, d0, d1)
+                                except ValueError:
+                                    continue
+                                sheets.append({"title": schedule_title(sp), "sheet": sheet_name_for(sp, used), "rows": rows})
+                            return self._send(200, schedule_xlsx_bytes(sheets), xct, xh(f"일정표_{d0 or '처음'}_{d1 or '끝'}.xlsx"))
+                        try:
+                            sp, rows, a_, b_ = schedule_for(store, p.get("adv", "")[:200], d0, d1)
+                        except ValueError as exc:
+                            return self._json({"error": str(exc)}, 400)
+                        title = schedule_title(sp)
+                        if route == "/api/sched.xlsx":
+                            return self._send(200, schedule_xlsx_bytes([{"title": title, "sheet": sheet_name_for(sp, set()), "rows": rows}]),
+                                              xct, xh(f"{sheet_name_for(sp, set())}_{a_}_{b_}.xlsx"))
+                        return self._json({"title": title, "from": a_, "to": b_, "rows": rows})
                     if route in ("/api/search", "/api/search.csv"):      # 편집기 「검색 / 그룹 검색」 탭과 같은 조회
                         d0, d1 = p.get("from", ""), p.get("to", "")
                         for d in (d0, d1):
