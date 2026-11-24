@@ -30,7 +30,7 @@ try:
 except Exception:
     pass
 
-APP_VERSION = "1.3.6"
+APP_VERSION = "1.3.9"
 VERSION = f"v{APP_VERSION} (시험판)"
 
 
@@ -744,6 +744,7 @@ def build_blocks(rows, cfg, prev_rows=None, log=print):
             elif fp is False:
                 pink = False
             blocks.append(dict(r, day0=di[d], day1=di[d], half=half, pink=pink, _ris=[ridx[id(r)]],
+                               _mark=is_marked(r, cfg),
                                label=clean_name(r["name"], cfg),
                                shade=r.get("shade") or "", rule_shade=rule_shade(r, cfg),
                                show_end=bool(r.get("show_end")) or rule_end(r, cfg)))
@@ -783,6 +784,8 @@ def build_blocks(rows, cfg, prev_rows=None, log=print):
             used.add(id(nb))
             end += 1
             b["pink"] = b["pink"] or nb["pink"]
+            b["edited"] = bool(b.get("edited") or nb.get("edited"))
+            b["_mark"] = bool(b.get("_mark") or nb.get("_mark"))
             b["_ris"] = b["_ris"] + nb["_ris"]
         used.add(id(b))
         merged.append(dict(b, day1=end))
@@ -812,6 +815,45 @@ CELL_LINE_W = 0.3               # 칸 테두리 기본 굵기 (pt)
 FRAME_LINE_W = 0.6              # 바깥 테두리 기본 굵기 (pt)
 CELL_LINE_WS = ("0.2", "0.3", "0.4", "0.5", "0.75", "1.0")
 FRAME_LINE_WS = ("0.6", "0.8", "1.0", "1.5")
+
+
+EDIT_LINE_W = 0.75              # 고친 칸 테두리 기본 굵기 (pt)
+EDIT_LINE_WS = ("끄기", "0.2", "0.3", "0.4", "0.5", "0.75", "1.0", "1.5")
+TIME_SZ = 4.4                   # 칸 왼쪽 위 시각(분) 글자 기본 크기 (pt)
+LOCAL_TIME_SZ = 6.0             # 로컬 칸 시각 글자 기본 크기 (pt)
+
+
+TIME_DX = 0.3                   # 왼쪽 선 ↔ 시각 숫자 기본 간격 (pt)
+TIME_DY = 0.0                   # 시각 숫자 위아래 옮김 기본값 (pt, +아래로 / -위로)
+FINE_STEP = 0.05                # ⚙ 설정의 ▲▼ 한 번에 바뀌는 값 (pt)
+
+
+def fine_value(v, lo, hi, default):
+    """설정의 세밀한 값 (0.01pt 까지, lo~hi 밖이거나 이상하면 기본값)"""
+    try:
+        v = round(float(v), 2)
+        return v if lo <= v <= hi else default
+    except (TypeError, ValueError):
+        return default
+
+
+def time_size(v, default):
+    """설정의 시각 글자 크기 (2~10pt, 이상하면 기본값)"""
+    return fine_value(v, 2.0, 10.0, default)
+
+
+def edit_mark_cfg(cfg):
+    """고친 칸 따로 표시 설정 -> (켬, 테두리 굵기 또는 None(끄기), 시각 크기)  ※ 색은 edited_line_color"""
+    on = bool(cfg.get("edited_mark", not IS_DMB))
+    v = cfg.get("edited_line_w", EDIT_LINE_W)
+    lw = None if v in (0, "0", "끄기", None, "") else line_width(v, EDIT_LINE_W)
+    return on, lw, time_size(cfg.get("edited_time_sz"), TIME_SZ)
+
+
+def edit_time_gap(cfg):
+    """고친 칸 시각 숫자 간격 -> (왼쪽 간격, 위아래 옮김)"""
+    return (fine_value(cfg.get("edited_time_dx"), 0.0, 3.0, TIME_DX),
+            fine_value(cfg.get("edited_time_dy"), -1.0, 3.0, TIME_DY))
 
 
 def line_width(v, default):
@@ -895,7 +937,8 @@ class Painter:
 
     def line(self, x0, y0, x1, y1, color=LINE, width=0.3, dashes=None):
         self.shape.draw_line(pymupdf.Point(x0, y0), pymupdf.Point(x1, y1))
-        self.shape.finish(color=color, width=width, dashes=dashes)
+        # closePath=False: 선은 닫지 않음 (닫으면 되돌아오는 선이 점선 틈을 메워 실선처럼 보임)
+        self.shape.finish(color=color, width=width, dashes=dashes, closePath=False)
 
     def finish(self):
         self.shape.commit()
@@ -1082,6 +1125,10 @@ def draw_schedule(dates, blocks, cfg, out_path=None, printed_at=None):
     cell_w = line_width(cfg.get("cell_line_w"), CELL_LINE_W)
     cell_c = hex_to_rgb(cfg.get("cell_line_color")) or LINE
     frame_w = line_width(cfg.get("frame_line_w"), FRAME_LINE_W)
+    ed_on, ed_w, ed_t = edit_mark_cfg(cfg)     # 고친 칸: 테두리 굵기, 시각 크기
+    ed_c = hex_to_rgb(cfg.get("edited_line_color")) or cell_c     # 고친 칸 테두리 색 (없으면 칸 테두리 색)
+    ed_dx, ed_dy = edit_time_gap(cfg)                             # 고친 칸 시각 숫자 간격
+    ed_lines = []
     y_of = time_scale(blocks)
     printed_at = printed_at or datetime.datetime.now()
 
@@ -1190,30 +1237,42 @@ def draw_schedule(dates, blocks, cfg, out_path=None, printed_at=None):
         p.rect(x0, y0, x1, y1, fill=fill, stroke=cell_c, width=cell_w)
         h = y1 - y0
         mm = f"{(b['s'] + DAY_START_MIN) % 60:02d}"
-        msz = 4.4 if h >= 4.6 else max(2.2, h * 0.9)
+        ed = ed_on and bool(b.get("_mark", b.get("edited")))
+        tsz = ed_t if ed else TIME_SZ                      # 고친 칸은 ⚙ 설정의 시각 크기
+        lsz = LOCAL_TIME_SZ + (tsz - TIME_SZ)              # 로컬은 기본과의 차이만큼 같이
+        if ed and ed_w:
+            ed_lines.append((x0, y0, x1, y1, not b.get("top_dash"), not b.get("bottom_dash")))
+        msz = tsz if h >= tsz * 1.05 else max(2.2, min(tsz, h * 0.9))
+        dx, dy = (ed_dx, ed_dy) if ed else (TIME_DX, TIME_DY)     # 왼쪽 간격, 위아래 옮김
         p.bold = bool(b.get("bold")) and "bold" not in hide
-        if b.get("local") and h >= 9:
-            p.text(x0 + 1.0, y0 + h / 2 + 2.2, mm, 6.0, (0.3, 0.3, 0.3))   # 로컬은 분 표시를 크게
+        big_local = b.get("local") and h >= 9 and not ed     # 자동 로컬: 큰 회색 분 / 고친 로컬: 고친 칸 설정 그대로
+        if big_local:
+            p.text(x0 + 1.0 + (dx - TIME_DX), y0 + h / 2 + lsz * 0.37 + dy, mm, lsz, (0.3, 0.3, 0.3))   # 로컬은 크게
         else:
-            p.text(x0 + 0.3, y0 + msz * 0.8, mm, msz)
+            base = y0 + msz * 0.8 + dy
+            if dy > 0:      # 아래로 옮겨도 칸 밑선을 넘지 않게
+                base = max(y0 + msz * 0.8, min(base, y1 - 0.3))
+            p.text(x0 + dx, base, mm, msz)
         if b.get("show_end") and h >= msz * 2:      # 끝 시각: 칸 왼쪽 아래
             em = b["e"] + DAY_START_MIN
             et = cfg.get("end_label_format", "{mm}").format(hh=f"{em // 60:02d}", mm=f"{em % 60:02d}")
-            p.text(x0 + 0.3, y1 - 0.7, et, msz, (0, 0, 0))      # 끝 시각은 시작 분처럼 검정
+            p.text(x0 + dx, y1 - 0.7, et, msz, (0, 0, 0))      # 끝 시각은 시작 분처럼 검정
         icons = [ic for ic in icon_list(b) if ICON_KEY_OF.get(ic[0] if isinstance(ic, tuple) else ic) not in hide]
         isc = 1.0 if h >= ICON else max(0.5, h / ICON)
         iw = draw_icons(p, x1, y0, icons, scale=isc) if icons else 0
         if b["half"] and cfg.get("plan_label") and h >= 8:
             p.text(x0 + 0.4, y1 - 0.6, "1안" if b["half"] == "L" else "2안", 3.0, (0.75, 0.2, 0.3))
         # 글자: 칸이 낮으면 분 표시·아이콘 옆 공간에, 높으면 칸 전체 가운데에
-        lw = p.width(mm, msz) + 1
-        if b.get("local") and h >= 9:       # 로컬: 왼쪽의 큰 분 표시와 오른쪽 아이콘을 피해서 가운데
-            big = p.width(mm, 6.0) + 2.5
+        lw = p.width(mm, msz) + 1 + max(0.0, dx - TIME_DX)
+        if big_local:       # 로컬: 왼쪽의 큰 분 표시와 오른쪽 아이콘을 피해서 가운데
+            big = p.width(mm, lsz) + 2.5
             tx0, tx1, ty0, ty1 = x0 + big, x1 - max(iw, big) * (1 if iw else 0.3), y0, y1
         elif h < 11:
             tx0, tx1, ty0, ty1 = x0 + lw, x1 - iw - 0.5, y0, y1
         else:
             tx0, tx1, ty0, ty1 = x0 + 1.5, x1 - 1.5, y0 + min(ICON, h * 0.15), y1
+            if msz > TIME_SZ or dy > 0:     # 시각 글자를 키우거나 내린 칸: 프로그램명이 겹치지 않게 그만큼 아래에서
+                ty0 = max(ty0, y0 + min(msz * 0.95 + max(0.0, dy), h * 0.3))
         items, total = layout_label(p, b["label"], tx1 - tx0, ty1 - ty0)
         cy = (ty0 + ty1) / 2 - total / 2
         fg = (None if "fg" in hide else hex_to_rgb(b.get("fg"))) or (0, 0, 0)
@@ -1242,6 +1301,21 @@ def draw_schedule(dates, blocks, cfg, out_path=None, printed_at=None):
     for lx0, ly, lx1 in dash_lines:
         p.line(lx0 + 0.2, ly, lx1 - 0.2, ly, (1, 1, 1), 0.55)
         p.line(lx0, ly, lx1, ly, (0.45, 0.45, 0.45), 0.4, "[1.4 1.1] 0")
+    # 고친 칸 테두리: 옆 칸 선에 가리지 않게 마지막에.
+    # 위·아래 변이 점선 자리면(이 칸 것이든 위·아래 칸 것이든) 실선으로 덮지 않고, 고친 칸 굵기·색의 점선으로
+    def dashed_at(y, xa, xb):
+        return any(abs(ly - y) < 0.3 and lx0 < xb - 0.5 and lx1 > xa + 0.5 for lx0, ly, lx1 in dash_lines)
+    ed_dash = f"[{max(1.4, ed_w * 2):.2f} {max(1.1, ed_w * 1.6):.2f}] 0" if ed_w else None
+    for ex0, ey0, ex1, ey1, top_, bot_ in ed_lines:     # 1) 위·아래 변
+        for y in (ey0, ey1):
+            if dashed_at(y, ex0, ex1):
+                p.line(ex0 + ed_w / 2, y, ex1 - ed_w / 2, y, (1, 1, 1), max(0.55, cell_w + 0.25))  # 밑의 가는 선만 지우고
+                p.line(ex0, y, ex1, y, ed_c, ed_w, ed_dash)
+            else:
+                p.line(ex0 - ed_w / 2, y, ex1 + ed_w / 2, y, ed_c, ed_w)
+    for ex0, ey0, ex1, ey1, top_, bot_ in ed_lines:     # 2) 왼쪽·오른쪽 변 (지운 자리 위에 다시)
+        p.line(ex0, ey0, ex0, ey1, ed_c, ed_w)
+        p.line(ex1, ey0, ex1, ey1, ed_c, ed_w)
     p.rect(29.0, TABLE_TOP, 567.7, TABLE_BOTTOM, fill=None, stroke=DARK, width=frame_w)
     p.finish()
     doc.set_metadata({"title": "주간편성표", "creator": f"{APP_NAME} {VERSION}"})
@@ -1443,9 +1517,55 @@ def parse_days(spec):
     return out
 
 
-def insert_local(rows, dates, name, s, e, shade="#d9d9d9", bold=True, code=None, extra=None, log=print):
+# ---- 고친 칸 판단: 사람이 직접 고친 줄만 (로컬 때문에 잘린 줄·매주 자동 로컬은 뺌)
+# 자동으로 바뀐 줄에는 그 순간의 내용 지문(auto_sig)을 남김. 나중에 사람이 고쳐 내용이 달라지면 '고친 칸'
+_SIG_SKIP = ("edited", "cut", "name_edited", "auto_sig")
+
+
+def row_sig(r):
+    return json.dumps({k: v for k, v in r.items() if not k.startswith("_") and k not in _SIG_SKIP},
+                      sort_keys=True, ensure_ascii=False, default=str)
+
+
+def is_auto_row(r, cfg=None):
+    """자동으로만 바뀐 줄인가 (로컬 때문에 잘린 줄, 매주 자동 로컬) - 사람이 그 뒤에 고쳤으면 False"""
+    sig = r.get("auto_sig")
+    if sig is not None:
+        return row_sig(r) == sig
+    # 예전 프로젝트 (지문 없음): 잘리기만 한 줄, 로컬 규칙 이름과 같은 로컬
+    if r.get("cut") and not r.get("name_edited"):
+        return True
+    if r.get("local") and cfg is not None:
+        names = {norm_key(x.get("name", "")) for x in cfg.get("local_rules", [])}
+        return norm_key(r.get("name", "")) in names
+    return False
+
+
+def stamp_auto(r, was=None):
+    """자동으로 바뀐 줄에 지문을 남김. was(바뀌기 전 줄)를 사람이 이미 고쳤었다면 남기지 않음(고친 칸 유지)"""
+    if was is not None and was.get("edited") and not is_auto_row(was):
+        r.pop("auto_sig", None)
+        return r
+    r["auto_sig"] = row_sig(r)
+    return r
+
+
+def is_marked(r, cfg):
+    """⚙ 설정 '고친 칸'에 해당하는 줄인가"""
+    if not r.get("edited"):
+        return False
+    if not is_auto_row(r, cfg):
+        return True
+    if r.get("local"):
+        return bool(cfg.get("edited_mark_auto_local"))
+    return bool(cfg.get("edited_mark_cut"))
+
+
+def insert_local(rows, dates, name, s, e, shade="#d9d9d9", bold=True, code=None, extra=None, log=print,
+                 auto=False):
     """고른 날짜마다 1안 편성의 s~e 를 로컬 프로그램으로 바꿈.
     겹치는 전국 프로그램은 앞/뒤 조각으로 잘라 남김(같은 코드라 요일끼리 계속 한 칸으로 묶임).
+    auto=True: 매주 자동 로컬 (고친 칸으로 치지 않음). 잘린 조각은 늘 자동으로 바뀐 줄
     반환: 새로 넣은 로컬 줄 목록"""
     code = code or ("LOCAL-" + norm_key(name))
     added = []
@@ -1457,15 +1577,18 @@ def insert_local(rows, dates, name, s, e, shade="#d9d9d9", bold=True, code=None,
             if r["s"] < e and r["e"] > s:       # 겹침
                 rows.remove(r)
                 if r["s"] < s:
-                    rows.append(dict(r, e=s, edited=True, cut=True))
+                    rows.append(stamp_auto(dict(r, e=s, edited=True, cut=True), r))
                 if r["e"] > e:
-                    rows.append(dict(r, s=e, edited=True, cut=True))
+                    rows.append(stamp_auto(dict(r, s=e, edited=True, cut=True), r))
                 log(f"[로컬] {day_label(d)} '{r['name']}' {fmt_t(r['s'])}~{fmt_t(r['e'])} 중 "
                     f"{fmt_t(max(s, r['s']))}~{fmt_t(min(e, r['e']))} 을 로컬로")
         new = {"date": d, "code": code, "name": name, "s": s, "e": e, "uhd": False, "cc": True, "ad": False,
                "sign": False, "age": "", "rl": "", "rerun": False, "plan": "1안", "shade": shade or "",
                "bold": bool(bold), "local": True, "edited": True}
         new.update(extra or {})
+        new.pop("auto_sig", None)
+        if auto:
+            stamp_auto(new)
         rows.append(new)
         added.append(new)
     return added
@@ -1545,12 +1668,15 @@ def resolve_overlaps(rows, i, plan=None):
         if act == "del":
             gone.add(k)
         elif act == "cut_end":
-            x.update(e=r["s"], edited=True)
+            was = dict(x)
+            stamp_auto(x.update(e=r["s"], edited=True) or x, was)
         elif act == "cut_start":
-            x.update(s=r["e"], edited=True)
+            was = dict(x)
+            stamp_auto(x.update(s=r["e"], edited=True) or x, was)
         else:
-            rows.append(dict(x, s=r["e"], edited=True, cut=True))
-            x.update(e=r["s"], edited=True, cut=True)
+            was = dict(x)
+            rows.append(stamp_auto(dict(x, s=r["e"], edited=True, cut=True), was))
+            stamp_auto(x.update(e=r["s"], edited=True, cut=True) or x, was)
     for k in sorted(gone, reverse=True):
         rows.pop(k)
     return rows.index(r), len(gone)
@@ -1684,7 +1810,8 @@ def merge_new_version(cur_rows, old_orig, new_rows):
     for c in sorted(locals_, key=lambda c: (c["date"], c["s"])):
         extra = {k: c.get(k) for k in STYLE_KEYS + ICON_KEYS + ("name_edited",) if k in c}
         rows_added = insert_local(merged, [c["date"]], c["name"], c["s"], c["e"], c.get("shade", ""),
-                                  c.get("bold", False), c.get("code"), extra=extra, log=lambda s: None)
+                                  c.get("bold", False), c.get("code"), extra=extra, log=lambda s: None,
+                                  auto=c.get("auto_sig") is not None and is_auto_row(c))
         for r in rows_added:
             r["_ver"] = "local"
             if hits(c["date"], c["s"], c["e"]):
@@ -1763,7 +1890,8 @@ def apply_local_rules(rows, cfg, log=print):
             continue
         insert_local(rows, target, rule.get("name", "로컬"), s, e, rule.get("shade", "#d9d9d9"),
                      rule.get("bold", True), rule.get("code"),
-                     {k: rule[k] for k in ("cc", "age", "rl", "uhd", "ad", "sign") if k in rule}, log=lambda x: None)
+                     {k: rule[k] for k in ("cc", "age", "rl", "uhd", "ad", "sign") if k in rule}, log=lambda x: None,
+                     auto=True)
         n += 1
         log(f"[로컬 규칙] '{rule.get('name')}' {rule.get('days', '월-금')} {rule['start']}~{rule['end']} 넣음")
     return n
@@ -5216,8 +5344,13 @@ class App:
         w.title(("엑셀 DMB" if IS_DMB else "엑셀 TV") + " 편성표 설정")
         w.transient(self.root)
         w.resizable(False, False)
-        f = tk.Frame(w, padx=16, pady=12)
-        f.pack(fill=tk.BOTH)
+        # 화면이 낮은 PC(노트북)에서도 [닫기]까지 보이도록: 내용이 화면보다 길면 세로 스크롤
+        sc = tk.Canvas(w, highlightthickness=0)
+        sb = tk.Scrollbar(w, orient="vertical", command=sc.yview)
+        sc.configure(yscrollcommand=sb.set)
+        sc.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        f = tk.Frame(sc, padx=16, pady=12)
+        sc.create_window(0, 0, window=f, anchor="nw")
         tk.Label(f, text="⚙ 편성표 설정", font=("", 12, "bold")).grid(row=0, column=0, columnspan=4, sticky="w")
         tk.Label(f, text="바꾸면 편성표에 바로 반영되고, 다음 주에도 그대로 씁니다.", fg="#777").grid(
             row=1, column=0, columnspan=4, sticky="w", pady=(0, 8))
@@ -5274,6 +5407,8 @@ class App:
         pv.grid(row=2, column=0, columnspan=5, sticky="w", pady=(6, 2))
         tk.Label(g5, text="(4배 확대 미리보기)", fg="#777").grid(row=2, column=4, sticky="e")
 
+        dir_ed = {}         # 고친 칸 미리보기 (아래에서 만듦)
+
         def draw_pv():
             pv.delete("all")
             cw = line_width(v_cw.get(), CELL_LINE_W)
@@ -5291,6 +5426,8 @@ class App:
                 return
             save_config_keys({"cell_line_w": cw, "frame_line_w": fw, "cell_line_color": col["c"]})
             draw_pv()
+            if "draw_epv" in dir_ed:
+                dir_ed["draw_epv"]()
             self.schedule_redraw(50)
 
         def pick_color():
@@ -5314,9 +5451,124 @@ class App:
         line_tids = [(v_cw, v_cw.trace_add("write", save_lines)), (v_fw, v_fw.trace_add("write", save_lines))]
         draw_pv()
 
+        # 고친 칸 (수정된 프로그램)
+        g6 = tk.LabelFrame(f, text=" 고친 칸 (수정된 프로그램) ", padx=10, pady=6)
+        g6.grid(row=6, column=0, columnspan=4, sticky="we", pady=4)
+        e_on, e_w, e_t = edit_mark_cfg(cfg_l)
+        v_eon = tk.BooleanVar(value=e_on)
+        v_ew = tk.StringVar(value="끄기" if e_w is None else f"{e_w:g}")
+        v_et = tk.StringVar(value=f"{e_t:.2f}")
+        e_dx, e_dy = edit_time_gap(cfg_l)
+        v_edx = tk.StringVar(value=f"{e_dx:.2f}")
+        v_edy = tk.StringVar(value=f"{e_dy:.2f}")
+        tk.Checkbutton(g6, text="고친 칸 따로 표시", variable=v_eon).grid(row=0, column=0, columnspan=3, sticky="w")
+        tk.Label(g6, text="테두리 굵기").grid(row=1, column=0, sticky="w", pady=(4, 0))
+        ttk.Combobox(g6, textvariable=v_ew, values=EDIT_LINE_WS, width=6).grid(row=1, column=1, sticky="w",
+                                                                            padx=4, pady=(4, 0))
+        ecol = {"c": cfg_l.get("edited_line_color") or ""}      # "" = 칸 테두리 색과 같게
+        tk.Label(g6, text="pt   색").grid(row=1, column=2, sticky="w", pady=(4, 0))
+        esw = tk.Label(g6, text="      ", relief="solid", bd=1)
+        esw.grid(row=1, column=3, sticky="w", padx=4, pady=(4, 0))
+        ecf = tk.Frame(g6)
+        ecf.grid(row=1, column=4, sticky="w", pady=(4, 0))
+
+        def edit_color():
+            return ecol["c"] or col["c"]
+
+        def pick_ecolor():
+            from tkinter import colorchooser
+            c = colorchooser.askcolor(color=edit_color(), parent=w, title="고친 칸 테두리 색")[1]
+            if c:
+                ecol["c"] = c.lower()
+                save_edit()
+
+        def same_ecolor():
+            ecol["c"] = ""
+            save_edit()
+        tk.Button(ecf, text="색 고르기", command=pick_ecolor).pack(side=tk.LEFT)
+        tk.Button(ecf, text="칸과 같게", command=same_ecolor).pack(side=tk.LEFT, padx=(4, 0))
+        tk.Label(g6, text="시각 크기").grid(row=2, column=0, sticky="w", pady=(4, 0))
+        def fine_spin(row, var, lo, hi, label, note):
+            tk.Label(g6, text=label).grid(row=row, column=0, sticky="w", pady=(4, 0))
+            tk.Spinbox(g6, textvariable=var, from_=lo, to=hi, increment=FINE_STEP, format="%.2f", width=6).grid(
+                row=row, column=1, sticky="w", padx=4, pady=(4, 0))
+            tk.Label(g6, text=note).grid(row=row, column=2, columnspan=3, sticky="w", pady=(4, 0))
+        fine_spin(2, v_et, 2.0, 10.0, "시각 크기", "pt  (0.05pt씩)")
+        fine_spin(3, v_edx, 0.0, 3.0, "왼쪽 간격", "pt  (선 ↔ 숫자)")
+        fine_spin(4, v_edy, -1.0, 3.0, "위아래 옮김", "pt  (+아래로 · -위로)")
+        epv = tk.Canvas(g6, width=220, height=84, bg="white", highlightthickness=0)
+        epv.grid(row=5, column=0, columnspan=4, sticky="w", pady=(6, 2))
+        tk.Label(g6, text="(8배 확대 미리보기)", fg="#777").grid(row=5, column=4, sticky="e")
+
+        def draw_epv():
+            """칸 왼쪽 위 모서리를 8배로: 왼쪽은 보통 칸, 오른쪽은 고친 칸"""
+            epv.delete("all")
+            k = 8
+            cw = line_width(v_cw.get(), CELL_LINE_W)
+            ew = None if v_ew.get().strip() in ("끄기", "0", "") else line_width(v_ew.get(), None)
+            ed = v_eon.get()
+            et = time_size(v_et.get(), TIME_SZ) if ed else TIME_SZ
+            edx = fine_value(v_edx.get(), 0.0, 3.0, TIME_DX) if ed else TIME_DX
+            edy = fine_value(v_edy.get(), -1.0, 3.0, TIME_DY) if ed else TIME_DY
+            c = col["c"]
+            esw.config(bg=edit_color())
+            top = 10
+            for cx, sz, dx, dy, lc, lw_, txt in ((6, TIME_SZ, TIME_DX, TIME_DY, c, cw, "05"),
+                                                 (116, et, edx, edy, edit_color() if (ed and ew) else c,
+                                                  ew if (ed and ew) else cw, "50")):
+                w_ = max(1, round(lw_ * k))
+                epv.create_line(cx, top, cx + 100, top, fill=lc, width=w_)       # 위쪽 선
+                epv.create_line(cx, top, cx, 82, fill=lc, width=w_)              # 왼쪽 선
+                fpx = max(6, round(sz * k))
+                base = top + (sz * 0.8 + dy) * k                                 # PDF 와 같은 글자 바닥선
+                epv.create_text(cx + dx * k, base + fpx * 0.12, text=txt, anchor="sw", font=("Arial", -fpx))
+            epv.create_text(56, 76, text="보통 칸", fill="#777")
+            epv.create_text(166, 76, text="고친 칸", fill="#c62828")
+
+        def save_edit(*a):
+            ewv = v_ew.get().strip()
+            vals = {"edited_mark": bool(v_eon.get()), "edited_line_color": ecol["c"],
+                    "edited_mark_cut": bool(v_ecut.get()), "edited_mark_auto_local": bool(v_eauto.get()),
+                    "edited_line_w": 0 if ewv in ("끄기", "0", "") else line_width(ewv, None),
+                    "edited_time_sz": time_size(v_et.get(), None),
+                    "edited_time_dx": fine_value(v_edx.get(), 0.0, 3.0, None),
+                    "edited_time_dy": fine_value(v_edy.get(), -1.0, 3.0, None)}
+            # 입력 중이거나 범위 밖인 칸은 건너뛰고, 올바른 칸만 저장 (한 칸 때문에 다른 칸이 막히지 않게)
+            save_config_keys({k: v for k, v in vals.items() if v is not None})
+            draw_epv()
+            self.schedule_redraw(50)
+
+        def reset_edit():
+            v_eon.set(not IS_DMB)
+            v_ew.set(f"{EDIT_LINE_W:g}")
+            v_et.set(f"{TIME_SZ:.2f}")
+            v_edx.set(f"{TIME_DX:.2f}")
+            v_edy.set(f"{TIME_DY:.2f}")
+            v_ecut.set(False)
+            v_eauto.set(False)
+            ecol["c"] = ""
+            save_edit()
+        tk.Button(g6, text="기본값으로", command=reset_edit).grid(row=6, column=0, sticky="w", pady=(2, 0))
+        tk.Label(g6, text=f"(기본: {EDIT_LINE_W:g}pt · 칸과 같은 색 · 시각 {TIME_SZ:g} · 왼쪽 {TIME_DX:g} · 옮김 0)",
+                 fg="#777").grid(row=6, column=1, columnspan=4, sticky="w", pady=(2, 0))
+        tk.Label(g6, text="직접 고친 칸에만 · 화면과 PDF에 같이 · 직접 치면 0.01pt까지",
+                 fg="#777").grid(row=7, column=0, columnspan=5, sticky="w")
+        v_ecut = tk.BooleanVar(value=bool(cfg_l.get("edited_mark_cut")))
+        v_eauto = tk.BooleanVar(value=bool(cfg_l.get("edited_mark_auto_local")))
+        tk.Checkbutton(g6, text="로컬 때문에 잘린 칸도 표시", variable=v_ecut).grid(
+            row=8, column=0, columnspan=3, sticky="w")
+        tk.Checkbutton(g6, text="자동 로컬 칸도 표시 (매주 로컬 규칙)", variable=v_eauto).grid(
+            row=9, column=0, columnspan=4, sticky="w")
+        for v in (v_eon, v_ew, v_et, v_edx, v_edy, v_ecut, v_eauto):
+            v.trace_add("write", save_edit)
+        for v in (v_cw,):       # 칸 테두리 굵기를 바꾸면 고친 칸 미리보기도 다시
+            v.trace_add("write", lambda *a: draw_epv())
+        dir_ed["draw_epv"] = draw_epv
+        draw_epv()
+
         # 서버로 보내기
         g4 = tk.LabelFrame(f, text=" 📺 서버로 보내기 (다른 PC에서 보기) ", padx=10, pady=6)
-        g4.grid(row=6, column=0, columnspan=4, sticky="we", pady=4)
+        g4.grid(row=7, column=0, columnspan=4, sticky="we", pady=4)
         if tv_preview_dir():
             def view_toggle():
                 if not save_tv_view_config(self.v_view_on.get()):
@@ -5339,11 +5591,27 @@ class App:
             self.settings_win = None
             w.destroy()
         bf = tk.Frame(f)
-        bf.grid(row=7, column=0, columnspan=4, sticky="we", pady=(10, 0))
+        bf.grid(row=8, column=0, columnspan=4, sticky="we", pady=(10, 0))
         tk.Button(bf, text="설정 폴더 열기", command=self.open_config_folder).pack(side=tk.LEFT)
         tk.Button(bf, text="닫기", width=10, command=close).pack(side=tk.RIGHT)
         w.protocol("WM_DELETE_WINDOW", close)
         w.bind("<Escape>", lambda e: close())
+
+        def fit(*a):
+            f.update_idletasks()
+            fw, fh = f.winfo_reqwidth(), f.winfo_reqheight()
+            room = max(300, w.winfo_screenheight() - 120)      # 작업 표시줄·제목줄 자리 빼고
+            sc.configure(width=fw, height=min(fh, room), scrollregion=(0, 0, fw, fh))
+            if fh > room:
+                if not sb.winfo_ismapped():
+                    sb.pack(side=tk.RIGHT, fill=tk.Y)
+                    w.bind("<MouseWheel>", lambda e: sc.yview_scroll(-1 if e.delta > 0 else 1, "units"))
+                if w.winfo_y() + min(fh, room) + 60 > w.winfo_screenheight():
+                    w.geometry(f"+{max(0, w.winfo_x())}+0")
+            elif sb.winfo_ismapped():
+                sb.pack_forget()
+        fit()
+        f.bind("<Configure>", lambda e: w.after_idle(fit))
 
     def cfg_over(self):
         o = {"_query_date": getattr(self, "query_date", "")}
