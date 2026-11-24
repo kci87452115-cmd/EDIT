@@ -30,7 +30,7 @@ try:
 except Exception:
     pass
 
-APP_VERSION = "1.3.9"
+APP_VERSION = "1.4.0"
 VERSION = f"v{APP_VERSION} (시험판)"
 
 
@@ -856,6 +856,29 @@ def edit_time_gap(cfg):
             fine_value(cfg.get("edited_time_dy"), -1.0, 3.0, TIME_DY))
 
 
+DASH_W = 0.5                    # 점선 기본 굵기 (pt)
+DASH_HEX = "#595959"            # 점선 기본 색 (진회색)
+DASH_STYLES = {"촘촘": (1.4, 1.1), "보통": (2.5, 1.5), "길게": (4.0, 2.0), "점": (0.0, 1.3)}   # (칠함, 빈 칸) pt
+DASH_STYLE = "보통"
+
+
+def dash_cfg(cfg):
+    """점선 설정 -> (굵기, 색 rgb, 모양 이름, 빈 칸을 음영색으로)"""
+    w = fine_value(cfg.get("dash_w"), 0.1, 3.0, DASH_W)
+    c = hex_to_rgb(cfg.get("dash_color")) or hex_to_rgb(DASH_HEX)
+    st = cfg.get("dash_style") if cfg.get("dash_style") in DASH_STYLES else DASH_STYLE
+    return w, c, st, bool(cfg.get("dash_gap_shade", True))
+
+
+def dash_pattern(style, w):
+    """점선 모양 -> (PDF dashes 문자열, 선 끝 모양). 굵은 선일수록 마디도 그만큼 길게"""
+    on, off = DASH_STYLES.get(style, DASH_STYLES[DASH_STYLE])
+    k = max(1.0, w / 0.5)
+    if style == "점":
+        return f"[0 {off * k + w:.2f}] 0", 1
+    return f"[{on * k:.2f} {off * k:.2f}] 0", 0
+
+
 def line_width(v, default):
     """설정의 선 굵기 (0.1~3pt, 이상하면 기본값)"""
     try:
@@ -935,10 +958,11 @@ class Painter:
         self.shape.draw_rect(pymupdf.Rect(x0, y0, x1, y1))
         self.shape.finish(color=stroke, fill=fill, width=width if stroke else 0)
 
-    def line(self, x0, y0, x1, y1, color=LINE, width=0.3, dashes=None):
+    def line(self, x0, y0, x1, y1, color=LINE, width=0.3, dashes=None, cap=0):
         self.shape.draw_line(pymupdf.Point(x0, y0), pymupdf.Point(x1, y1))
         # closePath=False: 선은 닫지 않음 (닫으면 되돌아오는 선이 점선 틈을 메워 실선처럼 보임)
-        self.shape.finish(color=color, width=width, dashes=dashes, closePath=False)
+        # cap=1: 둥근 끝 (점 모양 점선)
+        self.shape.finish(color=color, width=width, dashes=dashes, closePath=False, lineCap=cap)
 
     def finish(self):
         self.shape.commit()
@@ -1117,6 +1141,7 @@ def draw_schedule(dates, blocks, cfg, out_path=None, printed_at=None):
     반환: (doc 또는 None, 칸 위치 목록[{rect, block}])"""
     geom = []
     dash_lines = []
+    cell_fills = []         # (x0, y0, x1, y1, 채움색): 점선 빈 칸을 위·아래 칸 색으로 칠할 때 씀
     doc = pymupdf.open()
     page = doc.new_page(width=PAGE_W, height=PAGE_H)
     p = Painter(page, find_font(cfg))
@@ -1227,13 +1252,14 @@ def draw_schedule(dates, blocks, cfg, out_path=None, printed_at=None):
         if y1 - y0 < 0.5:
             continue
         geom.append({"rect": (x0, y0, x1, y1), "block": b})
+        fill = (None if "shade" in hide else hex_to_rgb(b.get("shade"))) \
+            or (PINK if b["pink"] and "pink" not in hide else None) \
+            or (None if "shade" in hide else hex_to_rgb(b.get("rule_shade"))) or (1, 1, 1)
+        cell_fills.append((x0, y0, x1, y1, fill))
         if b.get("top_dash"):
             dash_lines.append((x0, y0, x1))
         if b.get("bottom_dash"):
             dash_lines.append((x0, y1, x1))
-        fill = (None if "shade" in hide else hex_to_rgb(b.get("shade"))) \
-            or (PINK if b["pink"] and "pink" not in hide else None) \
-            or (None if "shade" in hide else hex_to_rgb(b.get("rule_shade"))) or (1, 1, 1)
         p.rect(x0, y0, x1, y1, fill=fill, stroke=cell_c, width=cell_w)
         h = y1 - y0
         mm = f"{(b['s'] + DAY_START_MIN) % 60:02d}"
@@ -1271,8 +1297,10 @@ def draw_schedule(dates, blocks, cfg, out_path=None, printed_at=None):
             tx0, tx1, ty0, ty1 = x0 + lw, x1 - iw - 0.5, y0, y1
         else:
             tx0, tx1, ty0, ty1 = x0 + 1.5, x1 - 1.5, y0 + min(ICON, h * 0.15), y1
-            if msz > TIME_SZ or dy > 0:     # 시각 글자를 키우거나 내린 칸: 프로그램명이 겹치지 않게 그만큼 아래에서
-                ty0 = max(ty0, y0 + min(msz * 0.95 + max(0.0, dy), h * 0.3))
+            if msz * 0.95 + max(0.0, dy) > ty0 - y0 + 0.3:
+                # 시각 숫자를 키우거나 내린 칸: 글자는 칸 가운데 그대로 두고,
+                # 숫자 너비만큼 왼쪽·오른쪽을 똑같이 비워 겹치지 않게 (아래로 밀지 않음)
+                tx0, tx1 = x0 + lw, x1 - lw
         items, total = layout_label(p, b["label"], tx1 - tx0, ty1 - ty0)
         cy = (ty0 + ty1) / 2 - total / 2
         fg = (None if "fg" in hide else hex_to_rgb(b.get("fg"))) or (0, 0, 0)
@@ -1298,19 +1326,39 @@ def draw_schedule(dates, blocks, cfg, out_path=None, printed_at=None):
 
     # 바깥 테두리
     # 위/아래 선 점선: 원래 실선을 흰 선으로 지우고 그 위에 점선 (옆 칸 테두리까지 덮도록 칸을 다 그린 뒤)
+    dw, dc, dst, dgap = dash_cfg(cfg)          # ⚙ 설정: 점선 굵기·색·모양·빈 칸 색
+    erase_w = max(0.55, cell_w + 0.25)
+
+    def erase(xa, xb, y):
+        """밑의 실선을 지움: 선 위쪽 반은 위 칸 색, 아래쪽 반은 아래 칸 색 (끄면 흰색)"""
+        hw = erase_w / 2
+        if not dgap:
+            p.rect(xa, y - hw, xb, y + hw, fill=(1, 1, 1), stroke=None)
+            return
+        for cx0, cy0, cx1, cy1, cf in cell_fills:
+            a, b_ = max(xa, cx0), min(xb, cx1)
+            if b_ - a <= 0.05:
+                continue
+            if abs(cy1 - y) < 0.3:          # 위 칸 (가운데를 조금 겹쳐 이음매가 안 보이게)
+                p.rect(a, y - hw, b_, y + 0.08, fill=cf, stroke=None)
+            elif abs(cy0 - y) < 0.3:        # 아래 칸
+                p.rect(a, y - 0.08, b_, y + hw, fill=cf, stroke=None)
+
+    d_pat, d_cap = dash_pattern(dst, dw)
     for lx0, ly, lx1 in dash_lines:
-        p.line(lx0 + 0.2, ly, lx1 - 0.2, ly, (1, 1, 1), 0.55)
-        p.line(lx0, ly, lx1, ly, (0.45, 0.45, 0.45), 0.4, "[1.4 1.1] 0")
+        erase(lx0 + 0.2, lx1 - 0.2, ly)
+        p.line(lx0, ly, lx1, ly, dc, dw, d_pat, d_cap)
     # 고친 칸 테두리: 옆 칸 선에 가리지 않게 마지막에.
     # 위·아래 변이 점선 자리면(이 칸 것이든 위·아래 칸 것이든) 실선으로 덮지 않고, 고친 칸 굵기·색의 점선으로
     def dashed_at(y, xa, xb):
         return any(abs(ly - y) < 0.3 and lx0 < xb - 0.5 and lx1 > xa + 0.5 for lx0, ly, lx1 in dash_lines)
-    ed_dash = f"[{max(1.4, ed_w * 2):.2f} {max(1.1, ed_w * 1.6):.2f}] 0" if ed_w else None
+    ed_dw = max(ed_w or 0, dw)          # 고친 칸 점선: 고친 칸 굵기와 점선 굵기 중 굵은 쪽, 색은 고친 칸 색
+    ed_pat, ed_cap = dash_pattern(dst, ed_dw)
     for ex0, ey0, ex1, ey1, top_, bot_ in ed_lines:     # 1) 위·아래 변
         for y in (ey0, ey1):
             if dashed_at(y, ex0, ex1):
-                p.line(ex0 + ed_w / 2, y, ex1 - ed_w / 2, y, (1, 1, 1), max(0.55, cell_w + 0.25))  # 밑의 가는 선만 지우고
-                p.line(ex0, y, ex1, y, ed_c, ed_w, ed_dash)
+                erase(ex0 + ed_w / 2, ex1 - ed_w / 2, y)       # 밑의 선만 지우고 (빈 칸은 칸 색)
+                p.line(ex0, y, ex1, y, ed_c, ed_dw, ed_pat, ed_cap)
             else:
                 p.line(ex0 - ed_w / 2, y, ex1 + ed_w / 2, y, ed_c, ed_w)
     for ex0, ey0, ex1, ey1, top_, bot_ in ed_lines:     # 2) 왼쪽·오른쪽 변 (지운 자리 위에 다시)
