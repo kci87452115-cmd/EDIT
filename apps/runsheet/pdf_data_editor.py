@@ -25,7 +25,7 @@ except ImportError:
     except ImportError:
         fitz = None
 
-APP_VERSION = "2.18.0"
+APP_VERSION = "2.18.1"
 APP_TITLE = f"운행표 데이터 편집기 v{APP_VERSION}"
 APP_MUTEX = "RunSheetEditor_Running"      # 설치 프로그램이 '실행 중'을 알아보는 이름 (setup.iss 의 AppMutex 와 같아야 함)
 RUN_BY_LAUNCHER = bool(os.environ.get("RADIO_LAUNCHER"))   # 편집 프로그램 런처로 실행됨 -> 업데이트는 런처가 한다
@@ -1447,6 +1447,18 @@ html.dark [style*="#15803d"]{color:#4ade80!important}html.dark [style*="#c2410c"
 html.dark [style*="#9a3412"]{color:#fdba74!important}html.dark tr[style*="#f8fafc"]{background:#172033!important}
 .sch td,.sch th{text-align:center;border:1px solid var(--line)}.sch td.tm{font-variant-numeric:tabular-nums;letter-spacing:.2px}
 .sch tr.out td{background:#e5e7eb;color:#6b7280}.sch tr td.short{background:#fff2cc}.sch tr.tot td{font-weight:bold;background:var(--soft)}
+.dpb{padding:4px 7px;margin-left:2px;font-weight:normal}
+#dpop{position:absolute;z-index:50;background:#fff;border:1px solid #cbd5e1;border-radius:10px;box-shadow:0 8px 24px rgba(15,23,42,.18);padding:8px;width:252px;font-size:13px;user-select:none}
+#dpop .dh{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px}#dpop .dh b{font-size:14px}
+#dpop .dh button,#dpop .df button{height:28px;padding:2px 9px;cursor:pointer}
+#dpop .dg{display:grid;grid-template-columns:repeat(7,1fr);gap:2px;text-align:center}#dpop .dg.m{grid-template-columns:repeat(4,1fr);gap:6px}
+#dpop .dg span{padding:5px 0;border-radius:6px;cursor:pointer}#dpop .dg span:hover{background:#eff6ff}
+#dpop .dg .w{color:var(--mut);font-size:11px;cursor:default}#dpop .dg .w:hover{background:none}
+#dpop .dg .x{visibility:hidden}#dpop .su{color:#dc2626}#dpop .sa{color:#2563eb}
+#dpop .dg .td{outline:2px solid var(--acc)}#dpop .dg .on{background:var(--acc);color:#fff}
+#dpop .df{display:flex;justify-content:space-between;margin-top:6px}
+html.dark #dpop{background:#111827;border-color:#334155;box-shadow:0 8px 24px rgba(0,0,0,.5)}html.dark #dpop .dg span:hover{background:#172033}
+html.dark #dpop .su{color:#f87171}html.dark #dpop .sa{color:#60a5fa}
 .seg{display:inline-flex;border:1px solid #cbd5e1;border-radius:8px;overflow:hidden}.seg button{border:0;border-radius:0;height:32px;padding:5px 14px;cursor:pointer;background:#fff;color:#334155}
 .seg button+button{border-left:1px solid #cbd5e1}.seg button.on{background:var(--acc);color:#fff;font-weight:bold}
 html.dark .seg{border-color:#334155}html.dark .seg button{background:#0f172a;color:#cbd5e1}html.dark .seg button+button{border-color:#334155}html.dark .seg button.on{background:var(--acc);color:#fff}
@@ -1463,7 +1475,7 @@ html.dark input::placeholder{color:#64748b}html.dark ::-webkit-calendar-picker-i
 <div class="tabs" id="tabs"></div>
 <div class="pane">
  <div id="fS">
-  <div class="row"><label id="kLbl">기준일:</label><input id="kref" size="11"><span class="hint" id="kHint"></span>
+  <div class="row"><label id="kLbl">기준일:</label><input id="kref" size="11"><button class="btn lite dpb" id="kcal" type="button" title="달력에서 고르기">📅</button><span class="hint" id="kHint"></span>
    <label>묶음 기준:</label><select id="sby"></select>
    <label>매체:</label><select id="smedia"><option value="">전체</option><option>AM</option><option>FM</option></select>
    <button class="btn" onclick="run()">조회</button>
@@ -1481,7 +1493,8 @@ html.dark input::placeholder{color:#64748b}html.dark ::-webkit-calendar-picker-i
   <div id="dayv"></div>
  </div>
  <div id="fA" style="display:none">
-  <div class="row"><label>기간:</label><input type="date" id="af"> ~ <input type="date" id="at">
+  <div class="row"><label>기간:</label><input id="af" size="11" placeholder="2026-06-01" autocomplete="off"><button class="btn lite dpb" type="button" onclick="dpOpen('af','d',this)" title="달력에서 고르기">📅</button> ~
+   <input id="at" size="11" placeholder="2026-06-30" autocomplete="off"><button class="btn lite dpb" type="button" onclick="dpOpen('at','d',this)" title="달력에서 고르기">📅</button>
    <button class="btn lite" onclick="amonth(0)">이번 달</button><button class="btn lite" onclick="amonth(-1)">지난 달</button>
    <label>매체:</label><select id="amedia"><option value="">전체</option><option>AM</option><option>FM</option></select></div>
   <div class="row"><label>대상:</label>
@@ -1520,8 +1533,8 @@ function keep(){if('일월년'.includes(cur)){refs[cur]=$('kref').value;bys[cur]
 function tab(k){keep();cur=k;drawTabs();const s='일월년'.includes(k);$('fS').style.display=s?'':'none';
  $('fC').style.display=k==='C'?'':'none';$('fA').style.display=k==='A'?'':'none';$('msg').textContent='';$('mainScroll').style.display=k==='C'||k==='A'?'none':'';
  $('total').textContent='';$('total').style.display='';
- if(s){$('kLbl').textContent={'일':'기준일:','월':'기준월:','년':'기준연도:'}[k];$('kHint').textContent={'일':'📅 달력에서 고르기','월':'📅 달력에서 고르기','년':'(2026)'}[k];
-  const kr=$('kref');kr.type={'일':'date','월':'month','년':'number'}[k];if(k==='년'){kr.min=2000;kr.max=2100;kr.style.width='6em'}else{kr.removeAttribute('min');kr.removeAttribute('max');kr.style.width=''}
+ if(s){$('kLbl').textContent={'일':'기준일:','월':'기준월:','년':'기준연도:'}[k];$('kHint').textContent={'일':'(2026-06-01)','월':'(2026-06)','년':'(2026)'}[k];$('kcal').style.display=k==='년'?'none':'';
+  const kr=$('kref');kr.type=k==='년'?'number':'text';kr.placeholder={'일':'2026-06-01','월':'2026-06','년':'2026'}[k];if(k==='년'){kr.min=2000;kr.max=2100;kr.style.width='6em'}else{kr.removeAttribute('min');kr.removeAttribute('max');kr.style.width=''}
   kr.value=refs[k];$('sby').value=bys[k];$('smedia').value=meds[k]}
  run()}
 function sq(){return new URLSearchParams({kind:cur,ref:$('kref').value.trim(),by:$('sby').value,media:$('smedia').value}).toString()}
@@ -1627,6 +1640,30 @@ async function sched(){const q=new URLSearchParams(Object.assign({adv:$('aadv').
   h+='<tr class="tot"><td>합계</td><td></td><td>'+am+'</td><td></td><td>'+fm+'</td></tr>';
   $('atbl').innerHTML=h;$('atitle').textContent=d.title;$('amsg').textContent=d.from+' ~ '+d.to+' — AM 총 '+am+'회 · FM 총 '+fm+'회'}
  catch(e){$('atbl').innerHTML='';$('atitle').textContent='';$('amsg').textContent='⚠ '+(e instanceof TypeError?'편집기 PC에 연결하지 못했습니다.':e.message)}}
+/* 📅 날짜 고르기 — 브라우저의 날짜 칸 대신 페이지 안에서 직접 그린다 (오래된 브라우저에서도 똑같이 보이게) */
+let DP=null;
+function dpClose(){const e=$('dpop');if(e)e.remove();DP=null}
+function dpOpen(id,mode,btn){if(DP&&DP.id===id)return dpClose();dpClose();const inp=$(id);
+ let v=inp.value.trim();if(id==='at'&&!/^\d{4}-\d{2}/.test(v))v=$('af').value.trim();
+ const m=v.match(/^(\d{4})-(\d{2})/);DP={id,mode,y:m?+m[1]:t0.getFullYear(),m:m?+m[2]:t0.getMonth()+1,btn:btn||inp};dpDraw()}
+function dpPick(val){const inp=$(DP.id);inp.value=val;dpClose();inp.dispatchEvent(new Event('change'))}
+function dpDraw(){let e=$('dpop');if(!e){e=document.createElement('div');e.id='dpop';document.body.appendChild(e);e.addEventListener('mousedown',x=>x.stopPropagation())}
+ const {y,m,mode}=DP,cur=$(DP.id).value.trim();let h;
+ if(mode==='m'){h='<div class="dh"><button onclick="DP.y--;dpDraw()">◀</button><b>'+y+'년</b><button onclick="DP.y++;dpDraw()">▶</button></div><div class="dg m">';
+  for(let i=1;i<=12;i++){const v=y+'-'+pad(i);h+='<span class="'+(v===today.slice(0,7)?'td ':'')+(v===cur?'on':'')+'" onclick="dpPick(\''+v+'\')">'+i+'월</span>'}
+  h+='</div><div class="df"><button onclick="dpPick(today.slice(0,7))">이번 달</button><button onclick="dpClose()">닫기</button></div>'}
+ else{h='<div class="dh"><button onclick="dpMv(-1)">◀</button><b>'+y+'년 '+m+'월</b><button onclick="dpMv(1)">▶</button></div><div class="dg">';
+  [...WK].forEach((w,i)=>h+='<span class="w '+(i===0?'su':i===6?'sa':'')+'">'+w+'</span>');
+  const f=new Date(y,m-1,1).getDay(),n=new Date(y,m,0).getDate();for(let i=0;i<f;i++)h+='<span class="x">.</span>';
+  for(let d=1;d<=n;d++){const v=y+'-'+pad(m)+'-'+pad(d),wd=(f+d-1)%7;h+='<span class="'+(wd===0?'su ':wd===6?'sa ':'')+(v===today?'td ':'')+(v===cur?'on':'')+'" onclick="dpPick(\''+v+'\')">'+d+'</span>'}
+  h+='</div><div class="df"><button onclick="dpPick(today)">오늘</button><button onclick="dpClose()">닫기</button></div>'}
+ e.innerHTML=h;const r=DP.btn.getBoundingClientRect();let left=r.left+window.scrollX;if(left+260>document.documentElement.clientWidth)left=Math.max(4,document.documentElement.clientWidth-264);
+ e.style.left=left+'px';e.style.top=(r.bottom+window.scrollY+4)+'px'}
+function dpMv(n){DP.m+=n;if(DP.m<1){DP.m=12;DP.y--}if(DP.m>12){DP.m=1;DP.y++}dpDraw()}
+document.addEventListener('mousedown',e=>{if(DP&&!e.target.classList.contains('dpb'))dpClose()});
+document.addEventListener('keydown',e=>{if(e.key==='Escape')dpClose()});
+function dpFix(id){const e=$(id);e.addEventListener('change',()=>{let v=e.value.trim().replace(/[./]/g,'-');
+ const m=v.match(/^(\d{4})-?(\d{1,2})-?(\d{1,2})$/);if(m)v=m[1]+'-'+pad(+m[2])+'-'+pad(+m[3]);e.value=v},true)}
 function tvManual(){const v=prompt('TV 편성표 PC 주소 (예: http://192.168.0.20:8081)\n자동으로 못 찾을 때만 넣으세요. 비우면 지웁니다.',localStorage.getItem('tvaddr')||'');
  if(v===null)return;try{v.trim()?localStorage.setItem('tvaddr',v.trim().replace(/\/+$/,'')):localStorage.removeItem('tvaddr')}catch(e){}tvsheets()}
 async function tvsheets(){$('msg').textContent='TV 편성표 PC를 찾는 중…';
@@ -1665,6 +1702,8 @@ const opt=(sel,list)=>{for(const t of list){const o=document.createElement('opti
   $('atarget').value='광고주만';$('sby').value='광고주별';$('aby').value='광고주별';}catch(e){}
  $('aadv').addEventListener('change',()=>aref());$('amedia').addEventListener('change',()=>aref());$('aby').addEventListener('change',()=>aref());$('atarget').addEventListener('change',()=>aref());
  $('akw').addEventListener('input',()=>{if(akind()!=='all'){afill();aref()}});$('akw').addEventListener('keydown',e=>{if(e.key==='Enter')aref()});
+ $('kcal').addEventListener('click',e=>dpOpen('kref',cur==='월'?'m':'d',e.currentTarget));dpFix('af');dpFix('at');
+ for(const id of ['af','at'])$(id).addEventListener('keydown',e=>{if(e.key==='Enter')e.target.dispatchEvent(new Event('change'))});
  document.querySelectorAll('#aview button').forEach(b=>b.addEventListener('click',()=>{AV=b.dataset.v;try{localStorage.setItem('sched_view',AV)}catch(_){}aref()}));
  try{$('amerge').checked=localStorage.getItem('sched_merge')==='1';const k=localStorage.getItem('sched_kind');if(k==='ad'||k==='all')document.querySelector('input[name=akind][value='+k+']').checked=true}catch(e){}
  $('amerge').addEventListener('change',e=>{try{localStorage.setItem('sched_merge',e.target.checked?'1':'0')}catch(_){}alist()});
