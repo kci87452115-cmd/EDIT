@@ -25,7 +25,7 @@ except ImportError:
     except ImportError:
         fitz = None
 
-APP_VERSION = "2.18.1"
+APP_VERSION = "2.18.3"
 APP_TITLE = f"운행표 데이터 편집기 v{APP_VERSION}"
 APP_MUTEX = "RunSheetEditor_Running"      # 설치 프로그램이 '실행 중'을 알아보는 이름 (setup.iss 의 AppMutex 와 같아야 함)
 RUN_BY_LAUNCHER = bool(os.environ.get("RADIO_LAUNCHER"))   # 편집 프로그램 런처로 실행됨 -> 업데이트는 런처가 한다
@@ -1523,7 +1523,7 @@ html.dark input::placeholder{color:#64748b}html.dark ::-webkit-calendar-picker-i
 </main>
 <script>
 const $=id=>document.getElementById(id);let cur='C',info=null;const WK='일월화수목금토';
-const TABS=[['C','📅 달력'],['일',' 일 정산 '],['월',' 월 정산 '],['년',' 년 정산 '],['A','🔍 검색'],['P','📄 운행표 미리보기 · 인쇄'],['T','📺 TV 주간 편성표']];
+const TABS=[['C','📅 달력'],['일',' 일 정산 '],['월',' 월 정산 '],['년',' 년 정산 '],['A','🔍 검색'],['P','📄 운행표 미리보기 · 인쇄']];
 const pad=n=>String(n).padStart(2,'0');const t0=new Date();const today=t0.getFullYear()+'-'+pad(t0.getMonth()+1)+'-'+pad(t0.getDate());
 const refs={'일':today,'월':today.slice(0,7),'년':today.slice(0,4)},bys={'일':'광고주별','월':'광고주별','년':'광고주별'},meds={'일':'','월':'','년':''};
 const num=v=>Number(v||0).toLocaleString('ko-KR');
