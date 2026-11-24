@@ -25,7 +25,7 @@ except ImportError:
     except ImportError:
         fitz = None
 
-APP_VERSION = "2.15.3"
+APP_VERSION = "2.16.0"
 APP_TITLE = f"운행표 데이터 편집기 v{APP_VERSION}"
 APP_MUTEX = "RunSheetEditor_Running"      # 설치 프로그램이 '실행 중'을 알아보는 이름 (setup.iss 의 AppMutex 와 같아야 함)
 RUN_BY_LAUNCHER = bool(os.environ.get("RADIO_LAUNCHER"))   # 편집 프로그램 런처로 실행됨 -> 업데이트는 런처가 한다
@@ -1142,7 +1142,7 @@ def export_schedule_xlsx(path, sheets):
         f.write(data)
 
 
-def schedule_labels(store, d0="", d1="", merge=False):
+def schedule_labels(store, d0="", d1="", merge=False, kind=""):
     """일정표 광고 목록 ('60초 이름', 초수가 여럿이면 '이름 (전체 초수)'). 기간을 주면 그 기간에 기록이 있는 광고만.
     merge(☑ 초수 합쳐서 보기): 그룹은 '📁 이름 (그룹)' 하나로, 초수가 여럿인 광고는 '(전체 초수)'만."""
     if d0 or d1:
@@ -1153,6 +1153,12 @@ def schedule_labels(store, d0="", d1="", merge=False):
     for nm, sec in keys:
         secs.setdefault(nm, set()).add(sec)
     gk = store.group_keys(d0, d1)
+    if kind in ("group", "ad"):          # 웹 📋 일정표: 그룹별 / 광고별 따로 (같은 광고가 두 번 나오지 않게)
+        if kind == "group":
+            return [f"📁 {g} (그룹)" for g in sorted({g for g, _ in gk})] if merge else [f"📁 {sec}초 {g} (그룹)" for g, sec in gk]
+        if merge:
+            return [f"{nm} (전체 초수)" if len(secs[nm]) >= 2 else f"{min(secs[nm])}초 {nm}" for nm in sorted(secs)]
+        return [f"{sec}초 {nm}" for nm, sec in sorted(keys, key=lambda t: (t[0], t[1]))]
     if merge:
         out = [f"📁 {g} (그룹)" for g in sorted({g for g, _ in gk})]
         out += [f"{nm} (전체 초수)" if len(secs[nm]) >= 2 else f"{min(secs[nm])}초 {nm}" for nm in sorted(secs)]
@@ -1439,6 +1445,8 @@ html.dark [style*="#15803d"]{color:#4ade80!important}html.dark [style*="#c2410c"
 html.dark [style*="#9a3412"]{color:#fdba74!important}html.dark tr[style*="#f8fafc"]{background:#172033!important}
 .sch td,.sch th{text-align:center;border:1px solid var(--line)}.sch td.tm{font-variant-numeric:tabular-nums;letter-spacing:.2px}
 .sch tr.out td{background:#e5e7eb;color:#6b7280}.sch tr td.short{background:#fff2cc}.sch tr.tot td{font-weight:bold;background:var(--soft)}
+.rk{font-weight:normal;cursor:pointer;margin-left:6px}.rk input{height:auto;vertical-align:middle}
+.btn.xl{background:#16a34a;border-color:#16a34a}.btn.xl:hover{background:#15803d}html.dark .btn.xl{background:#16a34a;border-color:#16a34a}
 .schT{font-size:19px;font-weight:bold;text-align:center;margin:6px 0 10px}
 html.dark .sch tr.out td{background:#1f2937;color:#6b7280}html.dark .sch tr td.short{background:#423a1a}
 @media print{body{background:#fff}header,.tabs,#fA .row,#fA .msg,.hint.np{display:none!important}.pane{border:0;box-shadow:none;padding:0;margin:0}
@@ -1477,19 +1485,20 @@ html.dark input::placeholder{color:#64748b}html.dark ::-webkit-calendar-picker-i
    <label>묶어서 보기:</label><select id="qby"></select>
    <button class="btn" onclick="run()">검색</button>
    <a class="right" id="qcsv" href="#">⬇ CSV 저장</a></div>
-  <div class="row"><button class="btn" style="background:#16a34a;border-color:#16a34a" onclick="gxl()">📥 그룹별 일정표 엑셀</button>
-   <label style="font-weight:normal;cursor:pointer"><input type="checkbox" id="gmerge" style="height:auto;vertical-align:middle"> 초수 합쳐서 (그룹마다 시트 하나)</label>
-   <span class="hint">기간 안의 그룹을 초수별로 묶어 시트 하나씩 (날짜 · AM · 횟수 · FM · 횟수). 그룹 칸을 채우면 그 그룹만.</span></div>
+  <div class="hint" style="margin:-4px 0 8px">날짜 · AM · 횟수 · FM · 횟수 모양의 그룹·광고 일정표(엑셀)는 <a href="#" onclick="tab('A');return false">📋 일정표</a> 탭에서 받습니다.</div>
  </div>
  <div id="fA" style="display:none">
   <div class="row"><label>기간:</label><input type="date" id="af"> ~ <input type="date" id="at">
    <button class="btn lite" onclick="amonth(0)">이번 달</button><button class="btn lite" onclick="amonth(-1)">지난 달</button>
-   <label>광고:</label><select id="aadv" style="min-width:260px"></select>
-   <label style="font-weight:normal;cursor:pointer"><input type="checkbox" id="amerge" style="height:auto;vertical-align:middle"> 초수 합쳐서 보기</label>
-   <span class="hint" id="acnt"></span></div>
+</div>
+  <div class="row"><label>보기:</label>
+   <label class="rk"><input type="radio" name="akind" value="group" checked> 그룹별</label>
+   <label class="rk"><input type="radio" name="akind" value="ad"> 광고별</label>
+   <label class="rk" style="margin-left:14px"><input type="checkbox" id="amerge"> 초수 합치기 <span class="hint">(60초·80초를 한 표로)</span></label>
+   <label>목록:</label><select id="aadv" style="min-width:260px"></select><span class="hint" id="acnt"></span></div>
   <div class="row"><button class="btn" onclick="sched()">보기</button>
-   <a class="btn lite" id="ax1" href="#" style="text-decoration:none;line-height:20px">⬇ 엑셀 (이 광고)</a>
-   <a class="btn lite" id="axa" href="#" style="text-decoration:none;line-height:20px">⬇ 엑셀 (목록의 모든 광고, 시트별)</a>
+   <button class="btn xl" onclick="adl(1)">📥 엑셀 (이것만)</button>
+   <button class="btn xl" onclick="adl(0)" id="axa">📥 엑셀 (목록 전체 · 시트별)</button>
    <button class="btn lite" onclick="window.print()">🖨 인쇄</button>
    <span class="hint">회색: 계약 기간 밖 · 노랑: 하루 최소 횟수에 모자람</span></div>
   <div class="msg" id="amsg"></div>
@@ -1502,7 +1511,7 @@ html.dark input::placeholder{color:#64748b}html.dark ::-webkit-calendar-picker-i
 </main>
 <script>
 const $=id=>document.getElementById(id);let cur='C',info=null;const WK='일월화수목금토';
-const TABS=[['C','📅 달력'],['일',' 일 정산 '],['월',' 월 정산 '],['년',' 년 정산 '],['Q',' 검색 / 그룹 검색 '],['A','📋 광고주별 일정표'],['P','📄 운행표 미리보기 · 인쇄'],['T','📺 TV 주간 편성표']];
+const TABS=[['C','📅 달력'],['일',' 일 정산 '],['월',' 월 정산 '],['년',' 년 정산 '],['Q',' 검색 / 그룹 검색 '],['A','📋 일정표'],['P','📄 운행표 미리보기 · 인쇄'],['T','📺 TV 주간 편성표']];
 const pad=n=>String(n).padStart(2,'0');const t0=new Date();const today=t0.getFullYear()+'-'+pad(t0.getMonth()+1)+'-'+pad(t0.getDate());
 const refs={'일':today,'월':today.slice(0,7),'년':today.slice(0,4)},bys={'일':'광고주별','월':'광고주별','년':'광고주별'},meds={'일':'','월':'','년':''};
 const num=v=>Number(v||0).toLocaleString('ko-KR');
@@ -1576,16 +1585,21 @@ async function run(){if(cur==='C')return cal();if(cur==='A')return alist();if(cu
    $('total').textContent='합계  건수 '+num(d.rows.reduce((a,x)=>a+x[1],0))+'   총 초수 '+num(d.rows.reduce((a,x)=>a+x[2],0));
    $('msg').textContent=(d.from===d.to?d.from:d.from+' ~ '+d.to)+(d.rows.length?'':' — 기록이 없습니다.')}}
  catch(e){$('tbl').innerHTML='';$('total').textContent='';$('msg').textContent='⚠ '+(e instanceof TypeError?'편집기 PC에 연결하지 못했습니다. 편집기가 켜져 있는지 확인해 주세요.':e.message)}}
-function aq(){const o={from:$('af').value,to:$('at').value};if($('amerge').checked)o.merge='1';return o}
+const akind=()=>(document.querySelector('input[name=akind]:checked')||{}).value||'group';
+function aq(){const o={from:$('af').value,to:$('at').value,kind:akind()};if($('amerge').checked)o.merge='1';return o}
+function adl(one){if(one&&!$('aadv').value){$('amsg').textContent='목록에서 먼저 골라 주세요.';return}
+ const a=document.createElement('a');a.href=one?'api/sched.xlsx?'+new URLSearchParams(Object.assign({adv:$('aadv').value},aq())):'api/sched-all.xlsx?'+new URLSearchParams(aq());
+ document.body.appendChild(a);a.click();a.remove()}
 function amonth(n){const d=new Date(t0.getFullYear(),t0.getMonth()+n,1),e=new Date(d.getFullYear(),d.getMonth()+1,0);
  $('af').value=d.getFullYear()+'-'+pad(d.getMonth()+1)+'-01';$('at').value=e.getFullYear()+'-'+pad(e.getMonth()+1)+'-'+pad(e.getDate());alist()}
 async function alist(){if(!$('af').value)return amonth(0);$('amsg').textContent='광고 목록을 불러오는 중…';
  try{const d=await get('api/sched-list?'+new URLSearchParams(aq()));const old=$('aadv').value;
   $('aadv').innerHTML=d.labels.map(x=>'<option>'+esc(x)+'</option>').join('');if(d.labels.includes(old))$('aadv').value=old;
-  $('acnt').textContent='이 기간에 방송된 광고 '+d.labels.length+'개';$('axa').href='api/sched-all.xlsx?'+new URLSearchParams(aq());
+  $('acnt').textContent='이 기간 '+(akind()==='group'?'그룹':'광고')+' '+d.labels.length+'개';
+  $('axa').title=akind()==='group'?'그룹마다 시트 하나 + 그룹 없는 광고는 광고마다 시트 하나':'광고마다 시트 하나';
   if(d.labels.length)sched();else{$('amsg').textContent='이 기간에 기록이 없습니다.';$('atbl').innerHTML='';$('atitle').textContent=''}}
  catch(e){$('amsg').textContent='⚠ '+(e instanceof TypeError?'편집기 PC에 연결하지 못했습니다.':e.message)}}
-async function sched(){const q=new URLSearchParams(Object.assign({adv:$('aadv').value},aq()));$('ax1').href='api/sched.xlsx?'+q;$('amsg').textContent='불러오는 중…';
+async function sched(){const q=new URLSearchParams(Object.assign({adv:$('aadv').value},aq()));$('amsg').textContent='불러오는 중…';
  try{const d=await get('api/sched?'+q);let am=0,fm=0,h='<tr><th>날짜</th><th>AM</th><th>횟수</th><th>FM</th><th>횟수</th></tr>';
   for(const r of d.rows){am+=r.AM_n;fm+=r.FM_n;const dt=r.date.slice(2).replace(/-/g,'.');
    h+='<tr'+(r.outside?' class="out"':'')+'><td>'+dt+'</td><td class="tm'+(r.AM_short?' short':'')+'">'+esc(r.AM)+'</td><td'+(r.AM_short?' class="short"':'')+'>'+(r.AM_n||'')+'</td>'
@@ -1593,8 +1607,6 @@ async function sched(){const q=new URLSearchParams(Object.assign({adv:$('aadv').
   h+='<tr class="tot"><td>합계</td><td></td><td>'+am+'</td><td></td><td>'+fm+'</td></tr>';
   $('atbl').innerHTML=h;$('atitle').textContent=d.title;$('amsg').textContent=d.from+' ~ '+d.to+' — AM 총 '+am+'회 · FM 총 '+fm+'회'}
  catch(e){$('atbl').innerHTML='';$('atitle').textContent='';$('amsg').textContent='⚠ '+(e instanceof TypeError?'편집기 PC에 연결하지 못했습니다.':e.message)}}
-function gxl(){const f=$('from').value,t=$('to').value;if(!f||!t){$('msg').textContent='⚠ 그룹별 일정표는 기간(시작~끝)을 넣어 주세요.';return}
- const o={from:f,to:t,grp:$('grp').value.trim()};if($('gmerge').checked)o.merge='1';const a=document.createElement('a');a.href='api/sched-groups.xlsx?'+new URLSearchParams(o);document.body.appendChild(a);a.click();a.remove()}
 function tvManual(){const v=prompt('TV 편성표 PC 주소 (예: http://192.168.0.20:8081)\n자동으로 못 찾을 때만 넣으세요. 비우면 지웁니다.',localStorage.getItem('tvaddr')||'');
  if(v===null)return;try{v.trim()?localStorage.setItem('tvaddr',v.trim().replace(/\/+$/,'')):localStorage.removeItem('tvaddr')}catch(e){}tvsheets()}
 async function tvsheets(){$('msg').textContent='TV 편성표 PC를 찾는 중…';
@@ -1633,8 +1645,9 @@ const opt=(sel,list)=>{for(const t of list){const o=document.createElement('opti
   $('target').value='광고주만';$('sby').value='광고주별';}catch(e){}
  $('kw').addEventListener('keydown',e=>{if(e.key==='Enter')run()});
  $('aadv').addEventListener('change',()=>sched());
- try{const mv=localStorage.getItem('sched_merge')==='1';$('amerge').checked=mv;$('gmerge').checked=mv}catch(e){}
- for(const id of ['amerge','gmerge'])$(id).addEventListener('change',e=>{const v=e.target.checked;$('amerge').checked=v;$('gmerge').checked=v;try{localStorage.setItem('sched_merge',v?'1':'0')}catch(_){}if(cur==='A')alist()});$('af').addEventListener('change',()=>alist());$('at').addEventListener('change',()=>alist());
+ try{$('amerge').checked=localStorage.getItem('sched_merge')==='1';const k=localStorage.getItem('sched_kind');if(k==='ad')document.querySelector('input[name=akind][value=ad]').checked=true}catch(e){}
+ $('amerge').addEventListener('change',e=>{try{localStorage.setItem('sched_merge',e.target.checked?'1':'0')}catch(_){}alist()});
+ document.querySelectorAll('input[name=akind]').forEach(r=>r.addEventListener('change',()=>{try{localStorage.setItem('sched_kind',akind())}catch(_){}alist()}));$('af').addEventListener('change',()=>alist());$('at').addEventListener('change',()=>alist());
  $('kref').addEventListener('keydown',e=>{if(e.key==='Enter')run()});
  $('sby').addEventListener('change',()=>run());$('smedia').addEventListener('change',()=>run());   // 고르면 바로 조회
  $('kref').addEventListener('change',()=>{if(/^\d{4}(-\d{2}){0,2}$/.test($('kref').value))run()});   // 달력에서 고르면 바로 조회
@@ -1886,14 +1899,21 @@ class ViewServer:
                             if d and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", d):
                                 return self._json({"error": "기간은 2026-06-01 형식으로 넣어 주세요."}, 400)
                         merge = p.get("merge", "") == "1"
+                        kind = p.get("kind", "") if p.get("kind", "") in ("group", "ad") else ""
                         if route == "/api/sched-list":
-                            return self._json({"labels": schedule_labels(store, d0, d1, merge)})
+                            return self._json({"labels": schedule_labels(store, d0, d1, merge, kind)})
                         xh = lambda fn: {"Content-Disposition": f"attachment; filename*=UTF-8''{quote(fn)}"}
                         xct = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                         if route == "/api/sched-all.xlsx":
                             used, sheets = set(), []
                             in_grp = store.grouped_name_keys(d0, d1)
-                            for lb in schedule_labels(store, d0, d1, merge):
+                            if kind == "group":           # 그룹마다 시트 하나 + 그룹 없는 광고는 광고마다 시트 하나
+                                labels = schedule_labels(store, d0, d1, merge, "group") + schedule_labels(store, d0, d1, merge, "ad")
+                            elif kind == "ad":            # 광고마다 시트 하나 (그룹과 상관없이)
+                                labels, in_grp = schedule_labels(store, d0, d1, merge, "ad"), set()
+                            else:
+                                labels = schedule_labels(store, d0, d1, merge)
+                            for lb in labels:
                                 m_ = re.match(r"^(\d+)초\s+(.+)$", lb)
                                 if m_ and (m_.group(2).strip(), int(m_.group(1))) in in_grp:
                                     continue                      # 그룹 시트에 이미 들어감
