@@ -25,7 +25,7 @@ except ImportError:
     except ImportError:
         fitz = None
 
-APP_VERSION = "2.15.0"
+APP_VERSION = "2.15.1"
 APP_TITLE = f"운행표 데이터 편집기 v{APP_VERSION}"
 APP_MUTEX = "RunSheetEditor_Running"      # 설치 프로그램이 '실행 중'을 알아보는 이름 (setup.iss 의 AppMutex 와 같아야 함)
 RUN_BY_LAUNCHER = bool(os.environ.get("RADIO_LAUNCHER"))   # 편집 프로그램 런처로 실행됨 -> 업데이트는 런처가 한다
@@ -857,6 +857,26 @@ class Store:
         with self._conn() as c:
             return [(r[0], r[1]) for r in c.execute("SELECT DISTINCT name, seconds FROM records ORDER BY name, seconds")]
 
+    def group_keys(self, date_from="", date_to=""):
+        """그룹이 있는 기록의 (그룹, 초수) 목록. 기간을 주면 그 기간 안의 기록만."""
+        with self._conn() as c:
+            cur = c.execute("SELECT DISTINCT grp, seconds FROM records WHERE grp<>'' AND air_date>=? AND air_date<=? ORDER BY grp, seconds",
+                            (date_from or "0000-01-01", date_to or "9999-12-31"))
+            return [(r[0], r[1]) for r in cur.fetchall()]
+
+    def group_records(self, grp, seconds, date_from, date_to):
+        with self._conn() as c:
+            cur = c.execute("SELECT air_date,media,time,program,seconds,name FROM records WHERE grp=? AND seconds=? AND air_date>=? AND air_date<=? "
+                            "ORDER BY air_date,time,line,cell", (grp, int(seconds), date_from, date_to))
+            return [dict(r) for r in cur.fetchall()]
+
+    def grouped_name_keys(self, date_from="", date_to=""):
+        """그 기간에 그룹이 붙은 기록이 있는 (이름, 초수) — 엑셀 '시트별'에서 그룹 시트에 들어가므로 따로 만들지 않는다."""
+        with self._conn() as c:
+            cur = c.execute("SELECT DISTINCT name, seconds FROM records WHERE grp<>'' AND air_date>=? AND air_date<=?",
+                            (date_from or "0000-01-01", date_to or "9999-12-31"))
+            return {(r[0], r[1]) for r in cur.fetchall()}
+
     def keys_in_period(self, date_from, date_to):
         """기간 안에 기록이 하나라도 있는 (이름, 초수) 목록."""
         with self._conn() as c:
@@ -1129,9 +1149,46 @@ def schedule_labels(store, d0="", d1=""):
     secs = {}
     for nm, sec in keys:
         secs.setdefault(nm, set()).add(sec)
-    out = [f"{sec}초 {nm}" for nm, sec in sorted(keys, key=lambda t: (t[0], t[1]))]
+    out = [f"📁 {sec}초 {g} (그룹)" for g, sec in store.group_keys(d0, d1)]
+    out += [f"{sec}초 {nm}" for nm, sec in sorted(keys, key=lambda t: (t[0], t[1]))]
     out += [f"{nm} (전체 초수)" for nm in sorted(secs) if len(secs[nm]) >= 2]
     return out
+
+
+GROUP_LABEL_RE = re.compile(r"^📁 (\d+)초 (.+) \(그룹\)$")
+
+
+def _short_ad_name(name):
+    """'건강(무릎)' -> '무릎'. 괄호가 없으면 이름 그대로."""
+    m = re.fullmatch(r".*?\(([^()]+)\)\s*", name or "")
+    return m.group(1).strip() if m else (name or "").strip()
+
+
+def group_schedule_for(store, grp, sec, d0s="", d1s=""):
+    """그룹(같은 계열 광고)을 합친 일정표. 칸에는 시각만, 하루 최소 횟수 점검은 하지 않는다."""
+    pl = [x for x in store.list_presets() if x.get("grp") == grp and int(x.get("seconds") or 0) == sec]
+    starts = [x["start_date"] for x in pl if x.get("start_date")]
+    ends = [x["end_date"] for x in pl if x.get("end_date")]
+    if not d0s or not d1s:
+        allr = store.group_records(grp, sec, "0000-01-01", "9999-12-31")
+        d0s = d0s or (min(starts) if starts else (allr[0]["air_date"] if allr else ""))
+        d1s = d1s or (month_end_iso(max(ends)) if ends else (allr[-1]["air_date"] if allr else ""))
+    if not d0s or not d1s:
+        raise ValueError("이 그룹의 기록이 아직 없어 기간을 알 수 없습니다. 기간을 직접 넣어 주세요.")
+    if d1s < d0s:
+        raise ValueError("기간이 올바르지 않습니다. 시작이 끝보다 늦습니다.")
+    if (datetime.date.fromisoformat(d1s) - datetime.date.fromisoformat(d0s)).days + 1 > 800:
+        raise ValueError("기간이 너무 깁니다. 800일 이내로 넣어 주세요.")
+    recs = store.group_records(grp, sec, d0s, d1s)
+    names = []
+    for r in recs:
+        sn = _short_ad_name(r["name"])
+        if sn and sn not in names:
+            names.append(sn)
+    p = {"name": grp, "seconds": sec, "start_date": "", "end_date": "", "min_am": 0, "min_fm": 0}
+    rows = build_schedule(p, recs, d0s, d1s, set())
+    title = f"{sec}초 {grp}" + (f" ({', '.join(names[:12])}{' 외' if len(names) > 12 else ''})" if names else "")
+    return dict(p, title=title), rows, d0s, d1s
 
 
 def schedule_for(store, label, d0s="", d1s=""):
@@ -1142,6 +1199,9 @@ def schedule_for(store, label, d0s="", d1s=""):
     for v in (d0s, d1s):
         if v and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", v):
             raise ValueError("기간은 2026-08-01 형식으로 입력해 주세요.")
+    mg = GROUP_LABEL_RE.match(label)
+    if mg:
+        return group_schedule_for(store, mg.group(2), int(mg.group(1)), d0s, d1s)
     m_all = re.match(r"^(.+) \(전체 초수\)$", label)
     m = re.match(r"^(\d+)초\s+(.+)$", label)
     if m_all:
@@ -1785,18 +1845,24 @@ class ViewServer:
                         xct = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                         if route == "/api/sched-all.xlsx":
                             used, sheets = set(), []
+                            in_grp = store.grouped_name_keys(d0, d1)
                             for lb in schedule_labels(store, d0, d1):
+                                m_ = re.match(r"^(\d+)초\s+(.+)$", lb)
+                                if m_ and (m_.group(2).strip(), int(m_.group(1))) in in_grp:
+                                    continue                      # 그룹 시트에 이미 들어감
+                                if lb.endswith(" (전체 초수)") and lb[:-len(" (전체 초수)")] in {k[0] for k in in_grp}:
+                                    continue
                                 try:
                                     sp, rows, _, _ = schedule_for(store, lb, d0, d1)
                                 except ValueError:
                                     continue
-                                sheets.append({"title": schedule_title(sp), "sheet": sheet_name_for(sp, used), "rows": rows})
+                                sheets.append({"title": sp.get("title") or schedule_title(sp), "sheet": sheet_name_for(sp, used), "rows": rows})
                             return self._send(200, schedule_xlsx_bytes(sheets), xct, xh(f"일정표_{d0 or '처음'}_{d1 or '끝'}.xlsx"))
                         try:
                             sp, rows, a_, b_ = schedule_for(store, p.get("adv", "")[:200], d0, d1)
                         except ValueError as exc:
                             return self._json({"error": str(exc)}, 400)
-                        title = schedule_title(sp)
+                        title = sp.get("title") or schedule_title(sp)
                         if route == "/api/sched.xlsx":
                             return self._send(200, schedule_xlsx_bytes([{"title": title, "sheet": sheet_name_for(sp, set()), "rows": rows}]),
                                               xct, xh(f"{sheet_name_for(sp, set())}_{a_}_{b_}.xlsx"))
