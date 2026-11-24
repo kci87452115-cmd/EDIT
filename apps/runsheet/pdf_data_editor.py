@@ -25,7 +25,7 @@ except ImportError:
     except ImportError:
         fitz = None
 
-APP_VERSION = "2.15.1"
+APP_VERSION = "2.15.2"
 APP_TITLE = f"운행표 데이터 편집기 v{APP_VERSION}"
 APP_MUTEX = "RunSheetEditor_Running"      # 설치 프로그램이 '실행 중'을 알아보는 이름 (setup.iss 의 AppMutex 와 같아야 함)
 RUN_BY_LAUNCHER = bool(os.environ.get("RADIO_LAUNCHER"))   # 편집 프로그램 런처로 실행됨 -> 업데이트는 런처가 한다
@@ -1461,6 +1461,8 @@ html.dark input::placeholder{color:#64748b}html.dark ::-webkit-calendar-picker-i
    <label>묶어서 보기:</label><select id="qby"></select>
    <button class="btn" onclick="run()">검색</button>
    <a class="right" id="qcsv" href="#">⬇ CSV 저장</a></div>
+  <div class="row"><button class="btn" style="background:#16a34a;border-color:#16a34a" onclick="gxl()">📥 그룹별 일정표 엑셀</button>
+   <span class="hint">기간 안의 그룹을 초수별로 묶어 시트 하나씩 (날짜 · AM · 횟수 · FM · 횟수). 그룹 칸을 채우면 그 그룹만.</span></div>
  </div>
  <div id="fA" style="display:none">
   <div class="row"><label>기간:</label><input type="date" id="af"> ~ <input type="date" id="at">
@@ -1572,6 +1574,8 @@ async function sched(){const q=new URLSearchParams(Object.assign({adv:$('aadv').
   h+='<tr class="tot"><td>합계</td><td></td><td>'+am+'</td><td></td><td>'+fm+'</td></tr>';
   $('atbl').innerHTML=h;$('atitle').textContent=d.title;$('amsg').textContent=d.from+' ~ '+d.to+' — AM 총 '+am+'회 · FM 총 '+fm+'회'}
  catch(e){$('atbl').innerHTML='';$('atitle').textContent='';$('amsg').textContent='⚠ '+(e instanceof TypeError?'편집기 PC에 연결하지 못했습니다.':e.message)}}
+function gxl(){const f=$('from').value,t=$('to').value;if(!f||!t){$('msg').textContent='⚠ 그룹별 일정표는 기간(시작~끝)을 넣어 주세요.';return}
+ const a=document.createElement('a');a.href='api/sched-groups.xlsx?'+new URLSearchParams({from:f,to:t,grp:$('grp').value.trim()});document.body.appendChild(a);a.click();a.remove()}
 function tvManual(){const v=prompt('TV 편성표 PC 주소 (예: http://192.168.0.20:8081)\n자동으로 못 찾을 때만 넣으세요. 비우면 지웁니다.',localStorage.getItem('tvaddr')||'');
  if(v===null)return;try{v.trim()?localStorage.setItem('tvaddr',v.trim().replace(/\/+$/,'')):localStorage.removeItem('tvaddr')}catch(e){}tvsheets()}
 async function tvsheets(){$('msg').textContent='TV 편성표 PC를 찾는 중…';
@@ -1833,6 +1837,24 @@ class ViewServer:
                         if route == "/api/settle":
                             return self._json({"from": d0, "to": d1, "rows": rows})
                         return self._csv([by_lbl.replace("별", ""), "건수", "총 초수"], rows, f"{kind}정산_{p.get('ref', '').strip()}_{by_lbl}.csv")
+                    if route == "/api/sched-groups.xlsx":                 # 🔍 검색 / 그룹 검색: 그룹별 일정표 (그룹 x 초수 = 시트 하나)
+                        from urllib.parse import quote
+                        d0, d1 = p.get("from", ""), p.get("to", "")
+                        if not (re.fullmatch(r"\d{4}-\d{2}-\d{2}", d0) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", d1)):
+                            return self._json({"error": "기간(시작~끝)을 넣어 주세요."}, 400)
+                        want = p.get("grp", "").strip()
+                        used, sheets = set(), []
+                        for g, sec in store.group_keys(d0, d1):
+                            if want and g != want:
+                                continue
+                            try:
+                                sp, rows, _, _ = group_schedule_for(store, g, int(sec), d0, d1)
+                            except ValueError:
+                                continue
+                            sheets.append({"title": sp["title"], "sheet": sheet_name_for(sp, used), "rows": rows})
+                        fn = f"그룹별일정표_{want or '전체'}_{d0}_{d1}.xlsx"
+                        return self._send(200, schedule_xlsx_bytes(sheets), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                          {"Content-Disposition": f"attachment; filename*=UTF-8''{quote(fn)}"})
                     if route in ("/api/sched-list", "/api/sched", "/api/sched.xlsx", "/api/sched-all.xlsx"):   # 📋 광고주별 일정표
                         from urllib.parse import quote
                         d0, d1 = p.get("from", ""), p.get("to", "")
