@@ -174,10 +174,22 @@ def sources(discovery, kind, config):
     return out
 
 
+# 기본 바로가기 — GitHub 업데이트로 모든 서버(AM·FM)에 들어감. config.json 의 links 에 같은 이름이 있으면 그쪽이 우선.
+DEFAULT_LINKS = [
+    {"name": "TV SB 송출 관리", "url": "http://218.237.3.199:8000/", "icon": "📅"},
+    {"name": "통합정보시스템", "url": "https://mportal.mbc.co.kr/xclick_mbc/gate/login.jsp", "icon": "🏢"},
+    {"name": "아따 아카이브", "url": "https://kjmbc.ddns.net/login", "icon": "🗄️"},
+]
+
+
 def config_links():
-    """config.json 의 "links": [{"name": "송출 달력", "url": "http://..."}] — 왼쪽 패널 '바로가기' (새 창으로 열림)."""
+    """왼쪽 패널 '🔗 바로가기' 상자 (새 창으로 열림) = DEFAULT_LINKS + config.json 의 "links"."""
     out = []
+    merged = {d["name"]: dict(d) for d in DEFAULT_LINKS}
     for x in load_json(CONFIG_FILE, {}).get("links", []) or []:
+        if isinstance(x, dict):
+            merged.setdefault(str(x.get("name", "")).strip(), {}).update(x)
+    for x in merged.values():
         if not isinstance(x, dict):
             continue
         url = str(x.get("url", "")).strip()

@@ -37,10 +37,11 @@ bash ~/edit/server/install.sh
 - `public_host`: 사무실 PC가 녹음 PC 웹에 들어오는 주소 (공유기의 회사망 쪽 주소). 운행표 화면의 'TV 주간 편성표' 탭에 씁니다.
 - 공유기에서 녹음 PC에 **DHCP 고정 할당** + **포트 포워딩 80 → 녹음 PC:80** 을 해 두세요.
 
-## 왼쪽 패널 '바로가기' (새 창으로 열림)
-`~/edit-mirror/config.json` 에 `links` 를 넣으면 1분 안에 패널에 나타납니다 (서버 다시 시작 필요 없음).
+## 왼쪽 아래 '🔗 바로가기' 상자 (고르면 새 창으로 열림)
+기본 목록은 `edit_mirror.py` 의 `DEFAULT_LINKS` (TV SB 송출 관리 · 통합정보시스템 · 아따 아카이브) — GitHub 업데이트로 AM·FM 서버에 같이 들어갑니다.
+그 PC에만 더하거나 주소를 바꾸려면 `~/edit-mirror/config.json` 의 `links` 에 넣으세요 (같은 이름이면 config 쪽이 우선, 1분 안에 반영).
 ```json
-{"links": [{"name": "송출 달력", "url": "http://218.237.3.199:8000/calendar", "icon": "📅"}]}
+{"links": [{"name": "다른 사이트", "url": "http://...", "icon": "🔗"}]}
 ```
 
 ## 업데이트 (Ctrl+F5 필요 없음)
