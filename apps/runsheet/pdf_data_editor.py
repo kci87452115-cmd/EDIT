@@ -25,7 +25,7 @@ except ImportError:
     except ImportError:
         fitz = None
 
-APP_VERSION = "2.15.2"
+APP_VERSION = "2.15.3"
 APP_TITLE = f"운행표 데이터 편집기 v{APP_VERSION}"
 APP_MUTEX = "RunSheetEditor_Running"      # 설치 프로그램이 '실행 중'을 알아보는 이름 (setup.iss 의 AppMutex 와 같아야 함)
 RUN_BY_LAUNCHER = bool(os.environ.get("RADIO_LAUNCHER"))   # 편집 프로그램 런처로 실행됨 -> 업데이트는 런처가 한다
@@ -865,9 +865,11 @@ class Store:
             return [(r[0], r[1]) for r in cur.fetchall()]
 
     def group_records(self, grp, seconds, date_from, date_to):
+        """seconds 가 None 이면 그 그룹의 모든 초수."""
+        sec_sql, par = ("", (grp, date_from, date_to)) if seconds is None else (" AND seconds=?", (grp, date_from, date_to, int(seconds)))
         with self._conn() as c:
-            cur = c.execute("SELECT air_date,media,time,program,seconds,name FROM records WHERE grp=? AND seconds=? AND air_date>=? AND air_date<=? "
-                            "ORDER BY air_date,time,line,cell", (grp, int(seconds), date_from, date_to))
+            cur = c.execute("SELECT air_date,media,time,program,seconds,name FROM records WHERE grp=? AND air_date>=? AND air_date<=?" + sec_sql +
+                            " ORDER BY air_date,time,line,cell", par)
             return [dict(r) for r in cur.fetchall()]
 
     def grouped_name_keys(self, date_from="", date_to=""):
@@ -1140,8 +1142,9 @@ def export_schedule_xlsx(path, sheets):
         f.write(data)
 
 
-def schedule_labels(store, d0="", d1=""):
-    """일정표 광고 목록 ('60초 이름', 초수가 여럿이면 '이름 (전체 초수)'). 기간을 주면 그 기간에 기록이 있는 광고만."""
+def schedule_labels(store, d0="", d1="", merge=False):
+    """일정표 광고 목록 ('60초 이름', 초수가 여럿이면 '이름 (전체 초수)'). 기간을 주면 그 기간에 기록이 있는 광고만.
+    merge(☑ 초수 합쳐서 보기): 그룹은 '📁 이름 (그룹)' 하나로, 초수가 여럿인 광고는 '(전체 초수)'만."""
     if d0 or d1:
         keys = set(store.keys_in_period(d0, d1))
     else:
@@ -1149,13 +1152,19 @@ def schedule_labels(store, d0="", d1=""):
     secs = {}
     for nm, sec in keys:
         secs.setdefault(nm, set()).add(sec)
-    out = [f"📁 {sec}초 {g} (그룹)" for g, sec in store.group_keys(d0, d1)]
+    gk = store.group_keys(d0, d1)
+    if merge:
+        out = [f"📁 {g} (그룹)" for g in sorted({g for g, _ in gk})]
+        out += [f"{nm} (전체 초수)" if len(secs[nm]) >= 2 else f"{min(secs[nm])}초 {nm}" for nm in sorted(secs)]
+        return out
+    out = [f"📁 {sec}초 {g} (그룹)" for g, sec in gk]
     out += [f"{sec}초 {nm}" for nm, sec in sorted(keys, key=lambda t: (t[0], t[1]))]
     out += [f"{nm} (전체 초수)" for nm in sorted(secs) if len(secs[nm]) >= 2]
     return out
 
 
 GROUP_LABEL_RE = re.compile(r"^📁 (\d+)초 (.+) \(그룹\)$")
+GROUP_ALL_RE = re.compile(r"^📁 (.+) \(그룹\)$")
 
 
 def _short_ad_name(name):
@@ -1166,7 +1175,7 @@ def _short_ad_name(name):
 
 def group_schedule_for(store, grp, sec, d0s="", d1s=""):
     """그룹(같은 계열 광고)을 합친 일정표. 칸에는 시각만, 하루 최소 횟수 점검은 하지 않는다."""
-    pl = [x for x in store.list_presets() if x.get("grp") == grp and int(x.get("seconds") or 0) == sec]
+    pl = [x for x in store.list_presets() if x.get("grp") == grp and (sec is None or int(x.get("seconds") or 0) == sec)]
     starts = [x["start_date"] for x in pl if x.get("start_date")]
     ends = [x["end_date"] for x in pl if x.get("end_date")]
     if not d0s or not d1s:
@@ -1185,9 +1194,13 @@ def group_schedule_for(store, grp, sec, d0s="", d1s=""):
         sn = _short_ad_name(r["name"])
         if sn and sn not in names:
             names.append(sn)
-    p = {"name": grp, "seconds": sec, "start_date": "", "end_date": "", "min_am": 0, "min_fm": 0}
+    secs = sorted({int(r.get("seconds") or 0) for r in recs})
+    multi = sec is None and len(secs) >= 2           # 초수 합쳐서 보기: 칸마다 0929(60) 처럼 초수를 붙인다
+    p = {"name": grp, "seconds": sec if sec is not None else (secs[0] if secs else 0), "all_seconds": multi,
+         "start_date": "", "end_date": "", "min_am": 0, "min_fm": 0}
     rows = build_schedule(p, recs, d0s, d1s, set())
-    title = f"{sec}초 {grp}" + (f" ({', '.join(names[:12])}{' 외' if len(names) > 12 else ''})" if names else "")
+    head = f"{grp} ({'·'.join(f'{x}초' for x in secs)})" if multi else f"{p['seconds']}초 {grp}"
+    title = head + (f" ({', '.join(names[:12])}{' 외' if len(names) > 12 else ''})" if names else "")
     return dict(p, title=title), rows, d0s, d1s
 
 
@@ -1202,6 +1215,9 @@ def schedule_for(store, label, d0s="", d1s=""):
     mg = GROUP_LABEL_RE.match(label)
     if mg:
         return group_schedule_for(store, mg.group(2), int(mg.group(1)), d0s, d1s)
+    mga = GROUP_ALL_RE.match(label)
+    if mga:
+        return group_schedule_for(store, mga.group(1), None, d0s, d1s)
     m_all = re.match(r"^(.+) \(전체 초수\)$", label)
     m = re.match(r"^(\d+)초\s+(.+)$", label)
     if m_all:
@@ -1462,12 +1478,15 @@ html.dark input::placeholder{color:#64748b}html.dark ::-webkit-calendar-picker-i
    <button class="btn" onclick="run()">검색</button>
    <a class="right" id="qcsv" href="#">⬇ CSV 저장</a></div>
   <div class="row"><button class="btn" style="background:#16a34a;border-color:#16a34a" onclick="gxl()">📥 그룹별 일정표 엑셀</button>
+   <label style="font-weight:normal;cursor:pointer"><input type="checkbox" id="gmerge" style="height:auto;vertical-align:middle"> 초수 합쳐서 (그룹마다 시트 하나)</label>
    <span class="hint">기간 안의 그룹을 초수별로 묶어 시트 하나씩 (날짜 · AM · 횟수 · FM · 횟수). 그룹 칸을 채우면 그 그룹만.</span></div>
  </div>
  <div id="fA" style="display:none">
   <div class="row"><label>기간:</label><input type="date" id="af"> ~ <input type="date" id="at">
    <button class="btn lite" onclick="amonth(0)">이번 달</button><button class="btn lite" onclick="amonth(-1)">지난 달</button>
-   <label>광고:</label><select id="aadv" style="min-width:260px"></select><span class="hint" id="acnt"></span></div>
+   <label>광고:</label><select id="aadv" style="min-width:260px"></select>
+   <label style="font-weight:normal;cursor:pointer"><input type="checkbox" id="amerge" style="height:auto;vertical-align:middle"> 초수 합쳐서 보기</label>
+   <span class="hint" id="acnt"></span></div>
   <div class="row"><button class="btn" onclick="sched()">보기</button>
    <a class="btn lite" id="ax1" href="#" style="text-decoration:none;line-height:20px">⬇ 엑셀 (이 광고)</a>
    <a class="btn lite" id="axa" href="#" style="text-decoration:none;line-height:20px">⬇ 엑셀 (목록의 모든 광고, 시트별)</a>
@@ -1557,7 +1576,7 @@ async function run(){if(cur==='C')return cal();if(cur==='A')return alist();if(cu
    $('total').textContent='합계  건수 '+num(d.rows.reduce((a,x)=>a+x[1],0))+'   총 초수 '+num(d.rows.reduce((a,x)=>a+x[2],0));
    $('msg').textContent=(d.from===d.to?d.from:d.from+' ~ '+d.to)+(d.rows.length?'':' — 기록이 없습니다.')}}
  catch(e){$('tbl').innerHTML='';$('total').textContent='';$('msg').textContent='⚠ '+(e instanceof TypeError?'편집기 PC에 연결하지 못했습니다. 편집기가 켜져 있는지 확인해 주세요.':e.message)}}
-function aq(){return {from:$('af').value,to:$('at').value}}
+function aq(){const o={from:$('af').value,to:$('at').value};if($('amerge').checked)o.merge='1';return o}
 function amonth(n){const d=new Date(t0.getFullYear(),t0.getMonth()+n,1),e=new Date(d.getFullYear(),d.getMonth()+1,0);
  $('af').value=d.getFullYear()+'-'+pad(d.getMonth()+1)+'-01';$('at').value=e.getFullYear()+'-'+pad(e.getMonth()+1)+'-'+pad(e.getDate());alist()}
 async function alist(){if(!$('af').value)return amonth(0);$('amsg').textContent='광고 목록을 불러오는 중…';
@@ -1575,7 +1594,7 @@ async function sched(){const q=new URLSearchParams(Object.assign({adv:$('aadv').
   $('atbl').innerHTML=h;$('atitle').textContent=d.title;$('amsg').textContent=d.from+' ~ '+d.to+' — AM 총 '+am+'회 · FM 총 '+fm+'회'}
  catch(e){$('atbl').innerHTML='';$('atitle').textContent='';$('amsg').textContent='⚠ '+(e instanceof TypeError?'편집기 PC에 연결하지 못했습니다.':e.message)}}
 function gxl(){const f=$('from').value,t=$('to').value;if(!f||!t){$('msg').textContent='⚠ 그룹별 일정표는 기간(시작~끝)을 넣어 주세요.';return}
- const a=document.createElement('a');a.href='api/sched-groups.xlsx?'+new URLSearchParams({from:f,to:t,grp:$('grp').value.trim()});document.body.appendChild(a);a.click();a.remove()}
+ const o={from:f,to:t,grp:$('grp').value.trim()};if($('gmerge').checked)o.merge='1';const a=document.createElement('a');a.href='api/sched-groups.xlsx?'+new URLSearchParams(o);document.body.appendChild(a);a.click();a.remove()}
 function tvManual(){const v=prompt('TV 편성표 PC 주소 (예: http://192.168.0.20:8081)\n자동으로 못 찾을 때만 넣으세요. 비우면 지웁니다.',localStorage.getItem('tvaddr')||'');
  if(v===null)return;try{v.trim()?localStorage.setItem('tvaddr',v.trim().replace(/\/+$/,'')):localStorage.removeItem('tvaddr')}catch(e){}tvsheets()}
 async function tvsheets(){$('msg').textContent='TV 편성표 PC를 찾는 중…';
@@ -1613,7 +1632,9 @@ const opt=(sel,list)=>{for(const t of list){const o=document.createElement('opti
   opt($('target'),info.targets);opt($('sby'),['묶지 않음'].concat(info.by));$('sby').options[0].value='묶지 않음';$('sby').options[0].textContent='전체 내역 (묶지 않음)';opt($('qby'),['묶지 않음'].concat(info.by));
   $('target').value='광고주만';$('sby').value='광고주별';}catch(e){}
  $('kw').addEventListener('keydown',e=>{if(e.key==='Enter')run()});
- $('aadv').addEventListener('change',()=>sched());$('af').addEventListener('change',()=>alist());$('at').addEventListener('change',()=>alist());
+ $('aadv').addEventListener('change',()=>sched());
+ try{const mv=localStorage.getItem('sched_merge')==='1';$('amerge').checked=mv;$('gmerge').checked=mv}catch(e){}
+ for(const id of ['amerge','gmerge'])$(id).addEventListener('change',e=>{const v=e.target.checked;$('amerge').checked=v;$('gmerge').checked=v;try{localStorage.setItem('sched_merge',v?'1':'0')}catch(_){}if(cur==='A')alist()});$('af').addEventListener('change',()=>alist());$('at').addEventListener('change',()=>alist());
  $('kref').addEventListener('keydown',e=>{if(e.key==='Enter')run()});
  $('sby').addEventListener('change',()=>run());$('smedia').addEventListener('change',()=>run());   // 고르면 바로 조회
  $('kref').addEventListener('change',()=>{if(/^\d{4}(-\d{2}){0,2}$/.test($('kref').value))run()});   // 달력에서 고르면 바로 조회
@@ -1844,11 +1865,14 @@ class ViewServer:
                             return self._json({"error": "기간(시작~끝)을 넣어 주세요."}, 400)
                         want = p.get("grp", "").strip()
                         used, sheets = set(), []
-                        for g, sec in store.group_keys(d0, d1):
+                        gk = store.group_keys(d0, d1)
+                        if p.get("merge", "") == "1":            # ☑ 초수 합쳐서 보기: 그룹마다 시트 하나
+                            gk = [(g, None) for g in sorted({g for g, _ in gk})]
+                        for g, sec in gk:
                             if want and g != want:
                                 continue
                             try:
-                                sp, rows, _, _ = group_schedule_for(store, g, int(sec), d0, d1)
+                                sp, rows, _, _ = group_schedule_for(store, g, None if sec is None else int(sec), d0, d1)
                             except ValueError:
                                 continue
                             sheets.append({"title": sp["title"], "sheet": sheet_name_for(sp, used), "rows": rows})
@@ -1861,14 +1885,15 @@ class ViewServer:
                         for d in (d0, d1):
                             if d and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", d):
                                 return self._json({"error": "기간은 2026-06-01 형식으로 넣어 주세요."}, 400)
+                        merge = p.get("merge", "") == "1"
                         if route == "/api/sched-list":
-                            return self._json({"labels": schedule_labels(store, d0, d1)})
+                            return self._json({"labels": schedule_labels(store, d0, d1, merge)})
                         xh = lambda fn: {"Content-Disposition": f"attachment; filename*=UTF-8''{quote(fn)}"}
                         xct = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                         if route == "/api/sched-all.xlsx":
                             used, sheets = set(), []
                             in_grp = store.grouped_name_keys(d0, d1)
-                            for lb in schedule_labels(store, d0, d1):
+                            for lb in schedule_labels(store, d0, d1, merge):
                                 m_ = re.match(r"^(\d+)초\s+(.+)$", lb)
                                 if m_ and (m_.group(2).strip(), int(m_.group(1))) in in_grp:
                                     continue                      # 그룹 시트에 이미 들어감
