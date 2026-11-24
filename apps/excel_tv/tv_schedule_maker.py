@@ -30,7 +30,7 @@ try:
 except Exception:
     pass
 
-APP_VERSION = "1.4.0"
+APP_VERSION = "1.4.1"
 VERSION = f"v{APP_VERSION} (시험판)"
 
 
@@ -1142,6 +1142,7 @@ def draw_schedule(dates, blocks, cfg, out_path=None, printed_at=None):
     geom = []
     dash_lines = []
     cell_fills = []         # (x0, y0, x1, y1, 채움색): 점선 빈 칸을 위·아래 칸 색으로 칠할 때 씀
+    end_below = []          # 낮은 칸의 끝 시각: 밑선 아래에 (밑에 이어지는 칸이 있으면 그 칸 시작 시각이 같은 숫자라 안 그림)
     doc = pymupdf.open()
     page = doc.new_page(width=PAGE_W, height=PAGE_H)
     p = Painter(page, find_font(cfg))
@@ -1279,10 +1280,20 @@ def draw_schedule(dates, blocks, cfg, out_path=None, printed_at=None):
             if dy > 0:      # 아래로 옮겨도 칸 밑선을 넘지 않게
                 base = max(y0 + msz * 0.8, min(base, y1 - 0.3))
             p.text(x0 + dx, base, mm, msz)
-        if b.get("show_end") and h >= msz * 2:      # 끝 시각: 칸 왼쪽 아래
+        # 끝 시각: 칸 왼쪽 아래. 같은 크기로 안 들어가는 낮은 칸은 밑선 아래에 (아래 end_below)
+        esz = msz
+        if b.get("show_end") and not big_local:
+            start_base = y0 + msz * 0.8 + max(0.0, dy)                 # 시작 시각 글자 바닥
+            room = (y1 - 0.7) - start_base - 0.2                       # 끝 시각 글자가 들어갈 높이
+            esz = max(0.0, min(msz, room / 0.75))
+        if b.get("show_end"):
             em = b["e"] + DAY_START_MIN
             et = cfg.get("end_label_format", "{mm}").format(hh=f"{em // 60:02d}", mm=f"{em % 60:02d}")
-            p.text(x0 + dx, y1 - 0.7, et, msz, (0, 0, 0))      # 끝 시각은 시작 분처럼 검정
+            if big_local and h >= msz * 2 or not big_local and esz >= msz - 0.01:
+                p.text(x0 + dx, y1 - 0.7, et, msz, (0, 0, 0))      # 끝 시각은 시작 분처럼 검정
+            elif not big_local:
+                # 칸이 낮아 같은 크기로 안 들어감 -> 줄이지 않고 밑선 바로 아래에 (밑에 이어지는 칸이 없을 때만, 다 그린 뒤)
+                end_below.append((x0, y1, x1, x0 + dx, y1 + msz * 0.8 + max(0.0, dy), et, msz, p.bold))
         icons = [ic for ic in icon_list(b) if ICON_KEY_OF.get(ic[0] if isinstance(ic, tuple) else ic) not in hide]
         isc = 1.0 if h >= ICON else max(0.5, h / ICON)
         iw = draw_icons(p, x1, y0, icons, scale=isc) if icons else 0
@@ -1326,6 +1337,13 @@ def draw_schedule(dates, blocks, cfg, out_path=None, printed_at=None):
 
     # 바깥 테두리
     # 위/아래 선 점선: 원래 실선을 흰 선으로 지우고 그 위에 점선 (옆 칸 테두리까지 덮도록 칸을 다 그린 뒤)
+    for ax0, ay, ax1, tx, ty, et, esz_, bold_ in end_below:
+        nxt = any(abs(g["rect"][1] - ay) < 0.3 and g["rect"][0] < ax1 - 0.5 and g["rect"][2] > ax0 + 0.5
+                  for g in geom)
+        if not nxt and ay < TABLE_BOTTOM - esz_:
+            p.bold = bold_
+            p.text(tx, ty, et, esz_, (0, 0, 0))
+    p.bold = False
     dw, dc, dst, dgap = dash_cfg(cfg)          # ⚙ 설정: 점선 굵기·색·모양·빈 칸 색
     erase_w = max(0.55, cell_w + 0.25)
 
