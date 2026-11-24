@@ -543,6 +543,7 @@ a{color:inherit}
 .nav:hover{background:var(--side2);color:#fff}.nav.on{background:var(--acc);color:#fff}
 .nav .i{width:22px;text-align:center;font-size:16px}.nav .n{flex:1}.nav .c{font-size:11px;background:#334155;color:#e2e8f0;border-radius:10px;padding:1px 7px}
 .nav.on .c{background:rgba(255,255,255,.25)}
+#lksel{display:block;width:100%;margin:0 0 10px;padding:9px 12px;border:1px solid #334155;border-radius:8px;background:#1e293b;color:#e2e8f0;font:inherit;font-size:14px;cursor:pointer}#lksel:hover{border-color:#64748b}#lksel option{background:#fff;color:#0f172a}
 .sub{display:flex;align-items:center;gap:8px;padding:6px 18px 6px 26px;margin:0 8px;border-radius:6px;cursor:pointer;font-size:13px;color:#94a3b8}
 .sub:hover{background:var(--side2);color:#fff}.sub.on{background:#1e3a8a;color:#fff}
 .sub .d{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -607,11 +608,11 @@ html.dark .am{color:#93c5fd}html.dark .fm{color:#fdba74}
   <a class="nav" data-p="tv"><span class="i">📺</span><span class="n">TV 주간편성표</span><span class="c" id="ctv"></span></a>
   <a class="nav" data-p="rec"><span class="i">🎧</span><span class="n" id="navam">AM 녹음 듣기</span></a>
   <a class="nav" data-p="recfm" id="navfm" style="display:none"><span class="i">📻</span><span class="n">FM 녹음 듣기</span></a>
-  <div id="lk"></div>
   <div class="grp">운행표 PDF</div><div id="lrs"><div class="empty">불러오는 중…</div></div>
   <div class="grp">TV 주간편성표 PDF</div><div id="ltv"><div class="empty">불러오는 중…</div></div>
  </div>
  <div class="status">
+  <select id="lksel" title="고르면 새 창으로 열립니다" style="display:none"></select>
   <div id="clock">--:--:--</div>
   <div class="theme" id="theme" title="화면 밝기 (이 브라우저에만 기억)"><button data-t="light">☀ 밝게</button><button data-t="dark">🌙 어둡게</button><button data-t="auto">🖥 자동</button></div>
   <div class="row"><i class="dot" id="dr"></i><span>라디오 편집기</span><small id="sr">-</small></div>
@@ -682,7 +683,9 @@ async function side(){
   f(d.radio,'dr','sr');f(d.tv,'dt','st');
   if(d.ui_ver){if(!UIV)UIV=d.ui_ver;else if(d.ui_ver!==UIV)newVersion()}
   if(d.role==='backup'){$('bkban').style.display='';$('bkban').textContent='🛟 예비 서버입니다 — 운행표·TV는 같고, AM 녹음은 최근 '+(d.am_keep_days||2)+'일만 있습니다';$('navam').textContent='AM 녹음 듣기 (예비 · 최근 '+(d.am_keep_days||2)+'일)'}
-  const L=d.links||[];$('lk').innerHTML=L.length?'<div class="grp">바로가기</div>'+L.map(x=>'<a class="nav" target="_blank" rel="noopener" href="'+esc(x.url)+'" title="'+esc(x.url)+' (새 창)"><span class="i">'+esc(x.icon)+'</span><span class="n">'+esc(x.name)+'</span><span style="font-size:12px;opacity:.6">↗</span></a>').join(''):'';
+  const L=d.links||[],LK=JSON.stringify(L),sel=$('lksel');if(sel.dataset.k!==LK){sel.dataset.k=LK;sel.style.display=L.length?'':'none';
+   sel.innerHTML='<option value="">🔗 바로가기</option>'+L.map(x=>'<option value="'+esc(x.url)+'">'+esc(x.icon)+' '+esc(x.name)+'</option>').join('');
+   sel.onchange=()=>{const u=sel.value;sel.value='';if(u)window.open(u,'_blank','noopener')}}
   const last=[d.radio.synced,d.tv.synced].filter(Boolean).sort().pop();$('sm').textContent=last?'마지막으로 모은 시각 '+last.slice(5,16):'아직 모은 자료가 없습니다';
  }catch(e){$('sm').textContent='⚠ 서버 상태를 읽지 못했습니다'}
  try{const d=await J('radio/api/runsheets');
