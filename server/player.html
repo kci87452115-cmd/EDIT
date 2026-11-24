@@ -193,7 +193,29 @@ async function loadList(){
   }catch(e){ list.innerHTML='<div class="path">폴더 목록을 읽지 못했습니다: '+e+'</div>'; }
 }
 
+// ---- 녹음 중인 파일 (지금 시각의 정각 파일): 파일이 계속 커지므로 브라우저가 중간에 '크기가 바뀌었다'며 멈춘다.
+//      멈추면 같은 자리에서 다시 열어 이어 듣는다.
+let curHref='', live=false, retry=0, resumeAt=null, resumePlay=false;
+function isLive(name){
+  const m=name.match(/(20\d{2})[-_.]?(\d{2})[-_.]?(\d{2})[ _T.-]*(\d{2})/); if(!m) return false;
+  const st=new Date(+m[1],+m[2]-1,+m[3],+m[4]).getTime(), now=Date.now();
+  return now>=st-60000 && now<st+3600000+120000;        // 그 시각 ~ 1시간 2분 뒤
+}
+function reopen(play){
+  if(!curHref) return;
+  resumeAt=au.currentTime||resumeAt||0; resumePlay=play;
+  au.src=curHref+(curHref.includes('?')?'&':'?')+'_='+Date.now();
+}
+au.addEventListener('loadedmetadata',()=>{
+  if(resumeAt!=null){ const t=resumeAt; resumeAt=null; try{ au.currentTime=Math.min(t, Math.max(0,(au.duration||t)-0.5)); }catch(e){}
+    if(resumePlay) au.play().catch(()=>{}); }
+});
+au.addEventListener('playing',()=>{ retry=0; if(live) $('msg').textContent='🔴 지금 녹음 중인 파일입니다 — 들으면서 길이가 계속 늘어납니다.'; });
+au.addEventListener('ended',()=>{ if(live && isLive($('title').textContent)) reopen(true); });   // 녹음 중이면 늘어난 부분을 이어서
+setInterval(()=>{ if(live && au.paused && !au.seeking && au.src && isLive($('title').textContent)) { const was=au.currentTime; reopen(false); resumeAt=was; } }, 60000);   // 멈춰 있을 때 1분마다 길이 갱신
+
 function openFile(f){
+  curHref=f.u.href; live=isLive(f.name); retry=0; resumeAt=null;
   au.src = f.u.href; $('title').textContent = f.name; $('msg').textContent='';
   const dl=$('dl'); dl.href=f.u.href; dl.setAttribute('download', f.name); dl.style.display='';
   startClock = parseStart(f.name);
@@ -228,7 +250,11 @@ function update(){
 au.addEventListener('timeupdate',update);
 au.addEventListener('play',update); au.addEventListener('pause',update);
 au.addEventListener('loadedmetadata',()=>{ drawTicks(); update(); });
-au.addEventListener('error',()=>{ $('msg').textContent='파일을 재생할 수 없습니다.'; });
+au.addEventListener('error',()=>{
+  if(curHref && retry<5){ retry++; const wasPlaying=true; $('msg').textContent=live?'🔴 녹음 중인 파일 — 늘어난 길이로 다시 여는 중…':'다시 여는 중…';
+    setTimeout(()=>reopen(wasPlaying), 400*retry); return; }
+  $('msg').textContent='파일을 재생할 수 없습니다.'+(live?' (녹음 중인 파일입니다. 잠시 뒤 다시 눌러 주세요)':'');
+});
 
 // ---- 진행바 클릭/드래그 ----
 function posFrom(e){ const r=bar.getBoundingClientRect(); return Math.min(1,Math.max(0,(e.clientX-r.left)/r.width)); }
