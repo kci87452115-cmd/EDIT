@@ -777,9 +777,9 @@ html.dark [style*="#9a3412"]{color:#fdba74!important}
 <main><div class="msg" id="msg">불러오는 중…</div><div class="card"><table id="tbl"></table></div></main><script>
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 async function load(){try{const d=await (await fetch('api/tv')).json();document.getElementById('who').textContent=' — '+d.name;
- let h='<tr><th>편성표</th><th>종류</th><th>상태</th><th>마지막 저장</th><th>편집기 PC</th><th>미리보기 · 인쇄</th></tr>';
+ let h='<tr><th>편성표</th><th>종류</th><th>상태</th><th>마지막 저장</th><th>미리보기 · 인쇄</th></tr>';
  for(const x of d.rows){const st=x.dirty?'<b style="color:#c2410c">✏ 편집중</b> <span style="font-size:12px;color:#9a3412">(마지막 저장 상태)</span>':(x.state==='수정완료'?'<b style="color:#15803d">✔ 수정완료</b>':'<b style="color:#c2410c">✏ 편집중</b>');
-  h+='<tr><td>'+esc(x.title||x.src)+'</td><td>'+esc(x.kind)+'</td><td>'+st+'</td><td>'+esc((x.saved_at||'').slice(5,16))+'</td><td>'+esc(x.from)+'</td><td>'+(x.has_pdf?'<a target="_blank" href="tv/'+encodeURIComponent(x.key)+'.pdf">📄 보기 · 인쇄</a>':'<span style="color:#9ca3af">아직 저장 전</span>')+'</td></tr>'}
+  h+='<tr><td>'+esc(x.title||x.src)+'</td><td>'+esc(x.kind)+'</td><td>'+st+'</td><td>'+esc((x.saved_at||'').slice(5,16))+'</td><td>'+(x.has_pdf?'<a target="_blank" href="tv/'+encodeURIComponent(x.key)+'.pdf">📄 보기 · 인쇄</a>':'<span style="color:#9ca3af">아직 저장 전</span>')+'</td></tr>'}
  document.getElementById('tbl').innerHTML=d.rows.length?h:'<tr><td class="empty">아직 모은 편성표가 없습니다</td></tr>';document.getElementById('msg').textContent=d.rows.length?('TV 편집기에서 저장한 편성표를 1분마다 모읍니다. 마지막으로 모은 시각: '+(d.synced||'-').slice(5,16)):'아직 모은 편성표가 없습니다.'}
  catch(e){document.getElementById('msg').textContent='⚠ 연결하지 못했습니다.'}}
 load();setInterval(()=>{if(!document.hidden)load()},30000);
