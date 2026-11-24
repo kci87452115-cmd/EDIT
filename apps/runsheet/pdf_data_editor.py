@@ -25,7 +25,7 @@ except ImportError:
     except ImportError:
         fitz = None
 
-APP_VERSION = "2.16.0"
+APP_VERSION = "2.17.0"
 APP_TITLE = f"운행표 데이터 편집기 v{APP_VERSION}"
 APP_MUTEX = "RunSheetEditor_Running"      # 설치 프로그램이 '실행 중'을 알아보는 이름 (setup.iss 의 AppMutex 와 같아야 함)
 RUN_BY_LAUNCHER = bool(os.environ.get("RADIO_LAUNCHER"))   # 편집 프로그램 런처로 실행됨 -> 업데이트는 런처가 한다
@@ -773,8 +773,10 @@ class Store:
             return [dict(r) for r in cur.fetchall()]
 
     @staticmethod
-    def _where(date_from, date_to, keyword, grp, media="", target="both"):
+    def _where(date_from, date_to, keyword, grp, media="", target="both", seconds=None):
         cond, par = [], []
+        if seconds is not None:
+            cond.append("seconds=?"); par.append(int(seconds))
         if date_from:
             cond.append("air_date>=?"); par.append(date_from)
         if date_to:
@@ -794,15 +796,15 @@ class Store:
             cond.append("media=?"); par.append(media)
         return (" WHERE " + " AND ".join(cond)) if cond else "", par
 
-    def aggregate(self, date_from, date_to, keyword="", grp="", by="name", media="", target="both"):
+    def aggregate(self, date_from, date_to, keyword="", grp="", by="name", media="", target="both", seconds=None):
         expr = by if by in BY_OPTIONS.values() else "name"
-        where, par = self._where(date_from, date_to, keyword, grp, media, target)
+        where, par = self._where(date_from, date_to, keyword, grp, media, target, seconds)
         with self._conn() as c:
             cur = c.execute(f"SELECT {expr} AS k, COUNT(*) AS cnt, SUM(seconds) AS sec, SUM(price) AS amt FROM records{where} GROUP BY k ORDER BY k", par)
             return [(r["k"], r["cnt"], r["sec"] or 0, r["amt"] or 0) for r in cur.fetchall()]
 
-    def detail(self, date_from, date_to, keyword="", grp="", media="", target="both"):
-        where, par = self._where(date_from, date_to, keyword, grp, media, target)
+    def detail(self, date_from, date_to, keyword="", grp="", media="", target="both", seconds=None):
+        where, par = self._where(date_from, date_to, keyword, grp, media, target, seconds)
         with self._conn() as c:
             cur = c.execute(f"SELECT air_date,CASE WHEN media='' THEN 'AM' ELSE media END AS media,time,program,cell,name,seconds,price,grp "
                             f"FROM records{where} ORDER BY air_date,media,time,line,cell", par)
@@ -1445,12 +1447,15 @@ html.dark [style*="#15803d"]{color:#4ade80!important}html.dark [style*="#c2410c"
 html.dark [style*="#9a3412"]{color:#fdba74!important}html.dark tr[style*="#f8fafc"]{background:#172033!important}
 .sch td,.sch th{text-align:center;border:1px solid var(--line)}.sch td.tm{font-variant-numeric:tabular-nums;letter-spacing:.2px}
 .sch tr.out td{background:#e5e7eb;color:#6b7280}.sch tr td.short{background:#fff2cc}.sch tr.tot td{font-weight:bold;background:var(--soft)}
+.seg{display:inline-flex;border:1px solid #cbd5e1;border-radius:8px;overflow:hidden}.seg button{border:0;border-radius:0;height:32px;padding:5px 14px;cursor:pointer;background:#fff;color:#334155}
+.seg button+button{border-left:1px solid #cbd5e1}.seg button.on{background:var(--acc);color:#fff;font-weight:bold}
+html.dark .seg{border-color:#334155}html.dark .seg button{background:#0f172a;color:#cbd5e1}html.dark .seg button+button{border-color:#334155}html.dark .seg button.on{background:var(--acc);color:#fff}
 .rk{font-weight:normal;cursor:pointer;margin-left:6px}.rk input{height:auto;vertical-align:middle}
 .btn.xl{background:#16a34a;border-color:#16a34a}.btn.xl:hover{background:#15803d}html.dark .btn.xl{background:#16a34a;border-color:#16a34a}
 .schT{font-size:19px;font-weight:bold;text-align:center;margin:6px 0 10px}
 html.dark .sch tr.out td{background:#1f2937;color:#6b7280}html.dark .sch tr td.short{background:#423a1a}
 @media print{body{background:#fff}header,.tabs,#fA .row,#fA .msg,.hint.np{display:none!important}.pane{border:0;box-shadow:none;padding:0;margin:0}
- #fS,#fC,#fQ,#msg,#mainScroll,#total{display:none!important}.sch td,.sch th{border:1px solid #000;padding:3px 6px;font-size:12px}#schScroll{max-height:none;overflow:visible;border:0}}
+ #fS,#fC,#msg,#mainScroll,#total{display:none!important}.sch td,.sch th{border:1px solid #000;padding:3px 6px;font-size:12px}#schScroll{max-height:none;overflow:visible;border:0}}
 html.dark input::placeholder{color:#64748b}html.dark ::-webkit-calendar-picker-indicator{filter:invert(.8)}
 </style><script>if(window.top!==window.self)document.documentElement.classList.add('embed')</script></head><body>
 <header><b>💰 정산 / 검색</b><span id="who"></span><span>조회 전용 — 이 화면에서는 기록을 바꿀 수 없습니다</span></header>
@@ -1469,38 +1474,32 @@ html.dark input::placeholder{color:#64748b}html.dark ::-webkit-calendar-picker-i
    <button class="btn lite" onclick="thisMonth()">이번 달</button>
    <label>매체:</label><select id="cmedia" onchange="cal()"><option value="">전체</option><option>AM</option><option>FM</option></select>
    <label>광고주:</label><input id="ckw" size="16" placeholder="비우면 전체">
-   <label>그룹:</label><input id="cgrp" list="grps" size="12">
+   <label>그룹:</label><input id="cgrp" list="grps" size="12"><datalist id="grps"></datalist>
    <button class="btn" onclick="cal()">조회</button></div>
   <div class="msg" id="cmsg"></div>
   <div id="calv"></div>
   <div id="dayv"></div>
  </div>
- <div id="fQ" style="display:none">
-  <div class="row"><label>검색어:</label><input id="kw" size="22">
-   <label>찾는 곳:</label><select id="target"></select>
-   <label>매체:</label><select id="qmedia"><option value="">전체</option><option>AM</option><option>FM</option></select>
-   <label>그룹:</label><input id="grp" list="grps" size="14"><datalist id="grps"></datalist></div>
-  <div class="row"><label>기간:</label><input type="date" id="from"> ~ <input type="date" id="to">
-   <span class="hint">(비우면 전체 기간, 기간 안의 기록만 나옵니다)</span>
-   <label>묶어서 보기:</label><select id="qby"></select>
-   <button class="btn" onclick="run()">검색</button>
-   <a class="right" id="qcsv" href="#">⬇ CSV 저장</a></div>
-  <div class="hint" style="margin:-4px 0 8px">날짜 · AM · 횟수 · FM · 횟수 모양의 그룹·광고 일정표(엑셀)는 <a href="#" onclick="tab('A');return false">📋 일정표</a> 탭에서 받습니다.</div>
- </div>
  <div id="fA" style="display:none">
   <div class="row"><label>기간:</label><input type="date" id="af"> ~ <input type="date" id="at">
    <button class="btn lite" onclick="amonth(0)">이번 달</button><button class="btn lite" onclick="amonth(-1)">지난 달</button>
-</div>
-  <div class="row"><label>보기:</label>
-   <label class="rk"><input type="radio" name="akind" value="group" checked> 그룹별</label>
-   <label class="rk"><input type="radio" name="akind" value="ad"> 광고별</label>
-   <label class="rk" style="margin-left:14px"><input type="checkbox" id="amerge"> 초수 합치기 <span class="hint">(60초·80초를 한 표로)</span></label>
-   <label>목록:</label><select id="aadv" style="min-width:260px"></select><span class="hint" id="acnt"></span></div>
-  <div class="row"><button class="btn" onclick="sched()">보기</button>
-   <button class="btn xl" onclick="adl(1)">📥 엑셀 (이것만)</button>
-   <button class="btn xl" onclick="adl(0)" id="axa">📥 엑셀 (목록 전체 · 시트별)</button>
-   <button class="btn lite" onclick="window.print()">🖨 인쇄</button>
-   <span class="hint">회색: 계약 기간 밖 · 노랑: 하루 최소 횟수에 모자람</span></div>
+   <label>매체:</label><select id="amedia"><option value="">전체</option><option>AM</option><option>FM</option></select></div>
+  <div class="row"><label>대상:</label>
+   <label class="rk"><input type="radio" name="akind" value="group" checked> 그룹</label>
+   <label class="rk"><input type="radio" name="akind" value="ad"> 광고</label>
+   <label class="rk"><input type="radio" name="akind" value="all"> 전체</label>
+   <span id="alistw"><label>목록:</label><select id="aadv" style="min-width:250px"></select></span>
+   <label id="akwl">찾기:</label><input id="akw" size="14" placeholder="이름 일부">
+   <span id="atgw" style="display:none"><select id="atarget"></select></span>
+   <label class="rk" style="margin-left:12px"><input type="checkbox" id="amerge"> 초수 합치기</label>
+   <span class="hint" id="acnt"></span></div>
+  <div class="row"><label>보는 방식:</label><span class="seg" id="aview">
+   <button data-v="sched">📋 일정표</button><button data-v="detail">📄 내역</button><button data-v="sum">Σ 합계</button></span>
+   <select id="aby" style="display:none"></select>
+   <span id="actS"><button class="btn xl" onclick="adl(1)">📥 엑셀 (이것만)</button>
+    <button class="btn xl" onclick="adl(0)" id="axa">📥 엑셀 (목록 전체 · 시트별)</button>
+    <button class="btn lite" onclick="window.print()">🖨 인쇄</button></span>
+   <a class="right" id="acsv" href="#" style="display:none">⬇ CSV 저장</a></div>
   <div class="msg" id="amsg"></div>
   <div id="schOut"><div class="schT" id="atitle"></div><div class="scroll" id="schScroll"><table class="sch" id="atbl"></table></div></div>
  </div>
@@ -1511,22 +1510,21 @@ html.dark input::placeholder{color:#64748b}html.dark ::-webkit-calendar-picker-i
 </main>
 <script>
 const $=id=>document.getElementById(id);let cur='C',info=null;const WK='일월화수목금토';
-const TABS=[['C','📅 달력'],['일',' 일 정산 '],['월',' 월 정산 '],['년',' 년 정산 '],['Q',' 검색 / 그룹 검색 '],['A','📋 일정표'],['P','📄 운행표 미리보기 · 인쇄'],['T','📺 TV 주간 편성표']];
+const TABS=[['C','📅 달력'],['일',' 일 정산 '],['월',' 월 정산 '],['년',' 년 정산 '],['A','🔍 검색'],['P','📄 운행표 미리보기 · 인쇄'],['T','📺 TV 주간 편성표']];
 const pad=n=>String(n).padStart(2,'0');const t0=new Date();const today=t0.getFullYear()+'-'+pad(t0.getMonth()+1)+'-'+pad(t0.getDate());
 const refs={'일':today,'월':today.slice(0,7),'년':today.slice(0,4)},bys={'일':'광고주별','월':'광고주별','년':'광고주별'},meds={'일':'','월':'','년':''};
 const num=v=>Number(v||0).toLocaleString('ko-KR');
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 function drawTabs(){$('tabs').innerHTML=TABS.map(([k,t])=>'<button class="'+(k===cur?'on':'')+'" onclick="tab(\''+k+'\')">'+esc(t)+'</button>').join('')}
 function keep(){if('일월년'.includes(cur)){refs[cur]=$('kref').value;bys[cur]=$('sby').value;meds[cur]=$('smedia').value}}
-function tab(k){keep();cur=k;drawTabs();const s='일월년'.includes(k);$('fS').style.display=s?'':'none';$('fQ').style.display=k==='Q'?'':'none';
+function tab(k){keep();cur=k;drawTabs();const s='일월년'.includes(k);$('fS').style.display=s?'':'none';
  $('fC').style.display=k==='C'?'':'none';$('fA').style.display=k==='A'?'':'none';$('msg').textContent='';$('mainScroll').style.display=k==='C'||k==='A'?'none':'';
- $('total').textContent='';
+ $('total').textContent='';$('total').style.display='';
  if(s){$('kLbl').textContent={'일':'기준일:','월':'기준월:','년':'기준연도:'}[k];$('kHint').textContent={'일':'📅 달력에서 고르기','월':'📅 달력에서 고르기','년':'(2026)'}[k];
   const kr=$('kref');kr.type={'일':'date','월':'month','년':'number'}[k];if(k==='년'){kr.min=2000;kr.max=2100;kr.style.width='6em'}else{kr.removeAttribute('min');kr.removeAttribute('max');kr.style.width=''}
   kr.value=refs[k];$('sby').value=bys[k];$('smedia').value=meds[k]}
  run()}
 function sq(){return new URLSearchParams({kind:cur,ref:$('kref').value.trim(),by:$('sby').value,media:$('smedia').value}).toString()}
-function qq(){return new URLSearchParams({kw:$('kw').value.trim(),target:$('target').value,media:$('qmedia').value,grp:$('grp').value.trim(),from:$('from').value,to:$('to').value,by:$('qby').value}).toString()}
 function detailTable(rows){let h='<tr><th>방송일</th><th>매체</th><th>시분초</th><th>프로그램</th><th>광고주</th><th class=n>초수</th><th>그룹</th></tr>';
  for(const x of rows)h+='<tr><td>'+esc(x[0])+'</td><td>'+esc(x[1])+'</td><td>'+esc(x[2])+'</td><td>'+esc(x[3])+'</td><td>'+esc(x[5])+'</td><td class=n>'+num(x[6])+'</td><td>'+esc(x[7])+'</td></tr>';return h}
 function aggTable(by,rows){let h='<tr><th>'+esc(by.replace('별',''))+'</th><th class=n>건수</th><th class=n>총 초수</th></tr>';
@@ -1573,12 +1571,7 @@ async function day(iso,keepCal){selDay=iso;
  catch(e){$('dayv').innerHTML='<div class="msg">⚠ '+esc(e instanceof TypeError?'편집기 PC에 연결하지 못했습니다.':e.message)+'</div>'}}
 async function run(){if(cur==='C')return cal();if(cur==='A')return alist();if(cur==='P')return previews();if(cur==='T')return tvsheets();
  $('msg').textContent='불러오는 중…';
- try{if(cur==='Q'){$('qcsv').href='api/search.csv?'+qq();const d=await get('api/search?'+qq());
-   if(d.mode==='detail'){$('tbl').innerHTML=detailTable(d.rows);$('total').textContent=num(d.total)+'건   총 초수 '+num(d.sec);
-    $('msg').textContent=d.total>d.rows.length?'화면에는 앞의 '+num(d.rows.length)+'건만 보입니다 (전체는 CSV 저장으로 받으세요)':(d.total?'':'조건에 맞는 기록이 없습니다.')}
-   else{$('tbl').innerHTML=aggTable($('qby').value,d.rows);$('total').textContent=d.rows.length+'개 묶음   건수 '+num(d.rows.reduce((a,x)=>a+x[1],0));
-    $('msg').textContent=d.rows.length?'':'조건에 맞는 기록이 없습니다.'}}
-  else{$('scsv').href='api/settle.csv?'+sq();const d=await get('api/settle?'+sq());
+ try{{$('scsv').href='api/settle.csv?'+sq();const d=await get('api/settle?'+sq());
    if(d.mode==='detail'){$('tbl').innerHTML=detailTable(d.rows);$('total').textContent='합계  건수 '+num(d.total)+'   총 초수 '+num(d.sec);
     $('msg').textContent=(d.from===d.to?d.from:d.from+' ~ '+d.to)+(d.total>d.rows.length?' — 화면에는 앞의 '+num(d.rows.length)+'건만 보입니다 (전체는 CSV 저장)':(d.total?'':' — 기록이 없습니다.'));return}
    $('tbl').innerHTML=aggTable($('sby').value,d.rows);
@@ -1586,18 +1579,45 @@ async function run(){if(cur==='C')return cal();if(cur==='A')return alist();if(cu
    $('msg').textContent=(d.from===d.to?d.from:d.from+' ~ '+d.to)+(d.rows.length?'':' — 기록이 없습니다.')}}
  catch(e){$('tbl').innerHTML='';$('total').textContent='';$('msg').textContent='⚠ '+(e instanceof TypeError?'편집기 PC에 연결하지 못했습니다. 편집기가 켜져 있는지 확인해 주세요.':e.message)}}
 const akind=()=>(document.querySelector('input[name=akind]:checked')||{}).value||'group';
-function aq(){const o={from:$('af').value,to:$('at').value,kind:akind()};if($('amerge').checked)o.merge='1';return o}
-function adl(one){if(one&&!$('aadv').value){$('amsg').textContent='목록에서 먼저 골라 주세요.';return}
+let AV='sched',ALL=[];try{AV=localStorage.getItem('sched_view')||'sched'}catch(e){}
+function aq(){const o={from:$('af').value,to:$('at').value,kind:akind()==='all'?'':akind()};if($('amerge').checked)o.merge='1';return o}
+function aui(){const k=akind();document.querySelectorAll('#aview button').forEach(b=>b.classList.toggle('on',b.dataset.v===AV));
+ $('alistw').style.display=k==='all'?'none':'';$('atgw').style.display=k==='all'?'':'none';
+ $('akwl').textContent=k==='all'?'검색어:':'찾기:';$('akw').placeholder=k==='all'?'비우면 전체':'목록 거르기';
+ $('aby').style.display=AV==='sum'?'':'none';$('actS').style.display=AV==='sched'?'':'none';$('acsv').style.display=AV==='sched'?'none':'';
+ $('schOut').style.display=AV==='sched'?'':'none';$('mainScroll').style.display=AV==='sched'?'none':'';$('total').style.display=AV==='sched'?'none':'';
+ $('amedia').disabled=AV==='sched';$('amedia').title=AV==='sched'?'일정표는 AM·FM을 함께 보여 줍니다':''}
+function afill(){const f=$('akw').value.trim(),old=$('aadv').value,L=f?ALL.filter(x=>x.includes(f)):ALL;
+ $('aadv').innerHTML=L.map(x=>'<option>'+esc(x)+'</option>').join('');if(L.includes(old))$('aadv').value=old;
+ $('acnt').textContent='이 기간 '+(akind()==='group'?'그룹':'광고')+' '+(f?L.length+' / ':'')+ALL.length+'개'}
+function aref(){aui();if(AV!=='sched')return asearch();
+ if(akind()==='all'){$('atbl').innerHTML='';$('atitle').textContent='';$('amsg').textContent='일정표는 대상을 「그룹」이나 「광고」로 고르면 나옵니다. 전체는 [📥 엑셀 (목록 전체 · 시트별)]로 받으세요.';return}
+ if(!$('aadv').value){$('atbl').innerHTML='';$('atitle').textContent='';$('amsg').textContent=ALL.length?'찾기에 맞는 것이 없습니다.':'이 기간에 기록이 없습니다.';return}
+ sched()}
+function asq(){const k=akind(),v=$('aadv').value,o={from:$('af').value,to:$('at').value,media:$('amedia').value,by:AV==='sum'?$('aby').value:'묶지 않음',target:'광고주만',kw:'',grp:''};
+ if(k==='group'){const m=v.match(/^📁 (?:(\d+)초 )?(.+) \(그룹\)$/);o.grp=m?m[2]:'';if(m&&m[1])o.sec=m[1]}
+ else if(k==='ad'){const m=v.match(/^(?:(\d+)초 )?(.+?)(?: \(전체 초수\))?$/);o.kw=m?m[2]:'';if(m&&m[1])o.sec=m[1]}
+ else{o.kw=$('akw').value.trim();o.target=$('atarget').value||'광고주만'}
+ return new URLSearchParams(o).toString()}
+async function asearch(){if(akind()!=='all'&&!$('aadv').value){$('tbl').innerHTML='';$('total').textContent='';$('amsg').textContent='목록에서 먼저 골라 주세요.';return}
+ $('amsg').textContent='불러오는 중…';const q=asq();$('acsv').href='api/search.csv?'+q;
+ try{const d=await get('api/search?'+q);const lab=$('af').value+' ~ '+$('at').value+(akind()==='all'?'':' · '+$('aadv').value)+($('amedia').value?' · '+$('amedia').value:'');
+  if(d.mode==='detail'){$('tbl').innerHTML=detailTable(d.rows);$('total').textContent=num(d.total)+'건   총 초수 '+num(d.sec);
+   $('amsg').textContent=lab+(d.total>d.rows.length?' — 화면에는 앞의 '+num(d.rows.length)+'건만 보입니다 (전체는 CSV 저장)':(d.total?'':' — 조건에 맞는 기록이 없습니다.'))}
+  else{$('tbl').innerHTML=aggTable($('aby').value,d.rows);$('total').textContent=d.rows.length+'개 묶음   건수 '+num(d.rows.reduce((a,x)=>a+x[1],0))+'   총 초수 '+num(d.rows.reduce((a,x)=>a+x[2],0));
+   $('amsg').textContent=lab+(d.rows.length?'':' — 조건에 맞는 기록이 없습니다.')}}
+ catch(e){$('tbl').innerHTML='';$('total').textContent='';$('amsg').textContent='⚠ '+(e instanceof TypeError?'편집기 PC에 연결하지 못했습니다.':e.message)}}
+function adl(one){if(one&&akind()==='all'){$('amsg').textContent='「이것만」은 대상을 그룹이나 광고로 골랐을 때 받습니다.';return}
+ if(one&&!$('aadv').value){$('amsg').textContent='목록에서 먼저 골라 주세요.';return}
  const a=document.createElement('a');a.href=one?'api/sched.xlsx?'+new URLSearchParams(Object.assign({adv:$('aadv').value},aq())):'api/sched-all.xlsx?'+new URLSearchParams(aq());
  document.body.appendChild(a);a.click();a.remove()}
 function amonth(n){const d=new Date(t0.getFullYear(),t0.getMonth()+n,1),e=new Date(d.getFullYear(),d.getMonth()+1,0);
  $('af').value=d.getFullYear()+'-'+pad(d.getMonth()+1)+'-01';$('at').value=e.getFullYear()+'-'+pad(e.getMonth()+1)+'-'+pad(e.getDate());alist()}
-async function alist(){if(!$('af').value)return amonth(0);$('amsg').textContent='광고 목록을 불러오는 중…';
- try{const d=await get('api/sched-list?'+new URLSearchParams(aq()));const old=$('aadv').value;
-  $('aadv').innerHTML=d.labels.map(x=>'<option>'+esc(x)+'</option>').join('');if(d.labels.includes(old))$('aadv').value=old;
-  $('acnt').textContent='이 기간 '+(akind()==='group'?'그룹':'광고')+' '+d.labels.length+'개';
-  $('axa').title=akind()==='group'?'그룹마다 시트 하나 + 그룹 없는 광고는 광고마다 시트 하나':'광고마다 시트 하나';
-  if(d.labels.length)sched();else{$('amsg').textContent='이 기간에 기록이 없습니다.';$('atbl').innerHTML='';$('atitle').textContent=''}}
+async function alist(){if(!$('af').value)return amonth(0);aui();
+ if(akind()==='all'){ALL=[];$('acnt').textContent='';$('axa').title='그룹마다 시트 하나 + 그룹 없는 광고는 광고마다 시트 하나';return aref()}
+ $('amsg').textContent='목록을 불러오는 중…';
+ try{const d=await get('api/sched-list?'+new URLSearchParams(aq()));ALL=d.labels;afill();
+  $('axa').title=akind()==='group'?'그룹마다 시트 하나 + 그룹 없는 광고는 광고마다 시트 하나':'광고마다 시트 하나';aref()}
  catch(e){$('amsg').textContent='⚠ '+(e instanceof TypeError?'편집기 PC에 연결하지 못했습니다.':e.message)}}
 async function sched(){const q=new URLSearchParams(Object.assign({adv:$('aadv').value},aq()));$('amsg').textContent='불러오는 중…';
  try{const d=await get('api/sched?'+q);let am=0,fm=0,h='<tr><th>날짜</th><th>AM</th><th>횟수</th><th>FM</th><th>횟수</th></tr>';
@@ -1641,11 +1661,12 @@ const opt=(sel,list)=>{for(const t of list){const o=document.createElement('opti
 (async()=>{drawTabs();
  try{info=await (await fetch('api/info')).json();
   for(const g of info.groups){const o=document.createElement('option');o.value=g;$('grps').appendChild(o)}
-  opt($('target'),info.targets);opt($('sby'),['묶지 않음'].concat(info.by));$('sby').options[0].value='묶지 않음';$('sby').options[0].textContent='전체 내역 (묶지 않음)';opt($('qby'),['묶지 않음'].concat(info.by));
-  $('target').value='광고주만';$('sby').value='광고주별';}catch(e){}
- $('kw').addEventListener('keydown',e=>{if(e.key==='Enter')run()});
- $('aadv').addEventListener('change',()=>sched());
- try{$('amerge').checked=localStorage.getItem('sched_merge')==='1';const k=localStorage.getItem('sched_kind');if(k==='ad')document.querySelector('input[name=akind][value=ad]').checked=true}catch(e){}
+  opt($('atarget'),info.targets);opt($('sby'),['묶지 않음'].concat(info.by));$('sby').options[0].value='묶지 않음';$('sby').options[0].textContent='전체 내역 (묶지 않음)';opt($('aby'),info.by);
+  $('atarget').value='광고주만';$('sby').value='광고주별';$('aby').value='광고주별';}catch(e){}
+ $('aadv').addEventListener('change',()=>aref());$('amedia').addEventListener('change',()=>aref());$('aby').addEventListener('change',()=>aref());$('atarget').addEventListener('change',()=>aref());
+ $('akw').addEventListener('input',()=>{if(akind()!=='all'){afill();aref()}});$('akw').addEventListener('keydown',e=>{if(e.key==='Enter')aref()});
+ document.querySelectorAll('#aview button').forEach(b=>b.addEventListener('click',()=>{AV=b.dataset.v;try{localStorage.setItem('sched_view',AV)}catch(_){}aref()}));
+ try{$('amerge').checked=localStorage.getItem('sched_merge')==='1';const k=localStorage.getItem('sched_kind');if(k==='ad'||k==='all')document.querySelector('input[name=akind][value='+k+']').checked=true}catch(e){}
  $('amerge').addEventListener('change',e=>{try{localStorage.setItem('sched_merge',e.target.checked?'1':'0')}catch(_){}alist()});
  document.querySelectorAll('input[name=akind]').forEach(r=>r.addEventListener('change',()=>{try{localStorage.setItem('sched_kind',akind())}catch(_){}alist()}));$('af').addEventListener('change',()=>alist());$('at').addEventListener('change',()=>alist());
  $('kref').addEventListener('keydown',e=>{if(e.key==='Enter')run()});
@@ -1943,14 +1964,15 @@ class ViewServer:
                         kw, grp = p.get("kw", "").strip()[:100], p.get("grp", "").strip()[:100]
                         target = SEARCH_TARGETS.get(p.get("target", ""), "name")
                         by_lbl = p.get("by", "")
+                        sec_f = int(p["sec"]) if p.get("sec", "").isdigit() else None     # 🔍 검색: 60초 그룹/광고만
                         fname = f"검색_{kw or '전체'}_{d0 or '처음'}_{d1 or '끝'}.csv"
                         if by_lbl in BY_OPTIONS:
-                            data = store.aggregate(d0, d1, kw, grp, BY_OPTIONS[by_lbl], media=media, target=target)
+                            data = store.aggregate(d0, d1, kw, grp, BY_OPTIONS[by_lbl], media=media, target=target, seconds=sec_f)
                             rows = [(k or "(없음)", cnt, sec) for k, cnt, sec, amt in data]
                             if route == "/api/search":
                                 return self._json({"mode": "agg", "rows": rows})
                             return self._csv([by_lbl.replace("별", ""), "건수", "총 초수"], rows, fname)
-                        data = store.detail(d0, d1, kw, grp, media=media, target=target)
+                        data = store.detail(d0, d1, kw, grp, media=media, target=target, seconds=sec_f)
                         rows = [(a, m, t, pg, cell_label(c_), n, s, g) for a, m, t, pg, c_, n, s, pr, g in data]
                         if route == "/api/search":
                             return self._json({"mode": "detail", "total": len(rows), "sec": sum(r[6] or 0 for r in rows),
