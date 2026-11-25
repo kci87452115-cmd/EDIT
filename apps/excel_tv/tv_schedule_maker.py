@@ -30,7 +30,7 @@ try:
 except Exception:
     pass
 
-APP_VERSION = "1.4.2"
+APP_VERSION = "1.4.3"
 VERSION = f"v{APP_VERSION} (시험판)"
 
 
@@ -1588,19 +1588,51 @@ def parse_days(spec):
 
 # ---- 고친 칸 판단: 사람이 직접 고친 줄만 (로컬 때문에 잘린 줄·매주 자동 로컬은 뺌)
 # 자동으로 바뀐 줄에는 그 순간의 내용 지문(auto_sig)을 남김. 나중에 사람이 고쳐 내용이 달라지면 '고친 칸'
-_SIG_SKIP = ("edited", "cut", "name_edited", "auto_sig")
+_SIG_SKIP = ("edited", "cut", "name_edited", "auto_sig", "auto_view")
+VIEW_ONLY_KEYS = ("show_end", "top_dash", "bottom_dash")      # 보기만 바꾸는 것: 고친 칸으로 치지 않음
+# 엑셀 원본과 비교할 내용 (시간은 따로)
+CONTENT_KEYS = ("name", "plan", "age", "rl", "uhd", "cc", "ad", "sign", "rerun", "shade", "hl", "fg", "bold",
+                "force_pink", "thick_border", "show", "local")
 
 
-def row_sig(r):
-    return json.dumps({k: v for k, v in r.items() if not k.startswith("_") and k not in _SIG_SKIP},
+def row_sig(r, legacy=False):
+    skip = _SIG_SKIP if legacy else _SIG_SKIP + VIEW_ONLY_KEYS
+    return json.dumps({k: v for k, v in r.items() if not k.startswith("_") and k not in skip},
                       sort_keys=True, ensure_ascii=False, default=str)
+
+
+def annotate_auto(rows, orig):
+    """엑셀 원본과 비교해 '사람이 고친 것'이 아닌 줄을 표시 (그릴 때마다, 설정 없이 자동)
+      - 내용·시간이 원본과 같고 끝 시각 표시·점선만 바꾼 줄 -> auto_view (고친 칸 아님)
+      - 내용은 같고 시간만 원본 안쪽으로 줄어든 줄(예전 버전에서 로컬 때문에 잘린 줄) -> 자동으로 잘린 줄"""
+    by = {}
+    for o in orig or []:
+        by.setdefault((o.get("date"), o.get("code")), []).append(o)
+    nz = (lambda v: v or None)
+    for r in rows:
+        r.pop("auto_view", None)
+        if not r.get("edited") or r.get("auto_sig") is not None or r.get("local"):
+            continue
+        o = next((o for o in by.get((r.get("date"), r.get("code")), [])
+                  if o["s"] < r["e"] and r["s"] < o["e"]), None)
+        if o is None or any(nz(r.get(k)) != nz(o.get(k)) for k in CONTENT_KEYS):
+            continue
+        if (r["s"], r["e"]) == (o["s"], o["e"]):
+            r["auto_view"] = True
+        elif o["s"] <= r["s"] and r["e"] <= o["e"] and any(
+                x is not r and x.get("date") == r.get("date") and (x["s"] == r["e"] or x["e"] == r["s"])
+                and not any(oo["s"] < x["e"] and x["s"] < oo["e"] for oo in by.get((x.get("date"), x.get("code")), []))
+                for x in rows):
+            # 줄어든 자리에 원본에 없는 칸(로컬·추가한 칸)이 붙어 있음 = 그 칸 때문에 잘린 줄
+            stamp_auto(r)
+            r["cut"] = True
 
 
 def is_auto_row(r, cfg=None):
     """자동으로만 바뀐 줄인가 (로컬 때문에 잘린 줄, 매주 자동 로컬) - 사람이 그 뒤에 고쳤으면 False"""
     sig = r.get("auto_sig")
     if sig is not None:
-        return row_sig(r) == sig
+        return row_sig(r) == sig or row_sig(r, legacy=True) == sig
     # 예전 프로젝트 (지문 없음): 잘리기만 한 줄, 로컬 규칙 이름과 같은 로컬
     if r.get("cut") and not r.get("name_edited"):
         return True
@@ -1621,7 +1653,7 @@ def stamp_auto(r, was=None):
 
 def is_marked(r, cfg):
     """⚙ 설정 '고친 칸'에 해당하는 줄인가"""
-    if not r.get("edited"):
+    if not r.get("edited") or r.get("auto_view"):
         return False
     if not is_auto_row(r, cfg):
         return True
@@ -5701,6 +5733,7 @@ class App:
     def out_rows(self):
         """그리기용 줄. DMB 편집기: 줄마다 DMB에서 직접 넣은 꾸밈(_own)을 표시 -> 'DMB에서 넣은 꾸밈은 그대로'"""
         if not IS_DMB:
+            annotate_auto(self.rows, self.orig)      # 끝 시각·점선만 바꾼 줄, 예전에 잘린 줄은 고친 칸 아님
             return self.rows
         tv = {r["_tvk"]: r for r in self.orig if r.get("_tvk")}
         out = []
