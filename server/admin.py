@@ -193,11 +193,40 @@ def classify(m, uri):
         except ValueError:
             span = ""
         return "녹음 구간 저장", f"{os.path.basename(urllib.parse.unquote(src))} {span}".strip()
+    # 📥 다운로드 (관리자 화면 '다운로드만'으로 모아 봄)
+    if path == "/tv/download/excel-tv":
+        return "배포판 다운로드", "엑셀 TV 편성표 편집기 (배포판)"
+    if path == "/api/admin/launcher/file":
+        return "설치 파일 다운로드", "런처 설치 파일 " + (q.get("tag") or [""])[0]
+    if path == "/api/admin/backup/file":
+        return "백업 파일 다운로드", (q.get("dir") or [""])[0] + "/" + (q.get("name") or [""])[0]
+    if path == "/api/admin/reclog/file":
+        return "녹음 기록 다운로드", (q.get("src") or [""])[0] + " " + (q.get("date") or [""])[0]
     if path.startswith("/admin"):
         return "관리자 화면", ""
     if path == "/api/admin/login" and m == "POST":
         return "관리자 로그인", ""
     return None
+
+
+def _dl_note(kind, what, d):
+    """다운로드 줄에 받은 크기와 끝까지 받았는지 (중간에 끊긴 것 구분)"""
+    st, got = int(d.get("s") or 0), int(d.get("b") or 0)
+    if st >= 400:
+        return " · 실패"
+    full = 0
+    try:
+        if kind == "배포판 다운로드":
+            full = os.path.getsize(os.path.join(HOME, "dist", "excel_tv_public.exe"))
+        elif kind == "설치 파일 다운로드":
+            tag = what.rsplit(" ", 1)[-1]
+            full = os.path.getsize(os.path.join(HOME, "dist", "launcher", f"setup_{tag}.exe"))
+    except (OSError, ValueError):
+        full = 0
+    mb = f"{got / 1048576:.1f}MB" if got >= 1048576 else f"{max(1, got // 1024)}KB"
+    if full and got < full * 0.99:
+        return f" · ⚠ 중간에 끊김 ({mb} / {full / 1048576:.0f}MB)"
+    return f" · 완료 {mb}" if got else ""
 
 
 def access_rows(days=1, show_all=False, ip_filter="", text="", limit=3000):
@@ -238,6 +267,8 @@ def access_rows(days=1, show_all=False, ip_filter="", text="", limit=3000):
             row = {"t": t.strftime("%Y-%m-%d %H:%M:%S"), "_t": t, "ip": ip, "name": names.get(ip, ""),
                    "kind": kind, "what": what, "s": d.get("s", 0), "ua": short_agent(d.get("ua", "")),
                    "b": d.get("b", 0), "n": 1}
+            if kind.endswith("다운로드"):
+                row["what"] = what + _dl_note(kind, what, d)
             if kind.endswith("녹음 듣기"):
                 seen[(ip, what)] = row
             rows.append(row)
@@ -691,7 +722,7 @@ main{padding:14px 16px;max-width:1300px;margin:0 auto}
 table{border-collapse:collapse;width:100%}th,td{padding:5px 8px;border-bottom:1px solid #eef2f7;text-align:left;font-size:13px;vertical-align:top}
 th{background:#f8fafc;position:sticky;top:0;font-size:12px;color:#475569}td.n{text-align:right}
 .k{display:inline-block;padding:1px 7px;border-radius:9px;font-size:12px;background:#e0e7ff;color:#3730a3;white-space:nowrap}
-.k.rec{background:#dcfce7;color:#166534}.k.fm{background:#ffedd5;color:#9a3412}.k.pdf{background:#fef9c3;color:#854d0e}.k.adm{background:#fee2e2;color:#991b1b}.k.oth{background:#f1f5f9;color:#64748b}
+.k.rec{background:#dcfce7;color:#166534}.k.fm{background:#ffedd5;color:#9a3412}.k.pdf{background:#fef9c3;color:#854d0e}.k.adm{background:#fee2e2;color:#991b1b}.k.oth{background:#f1f5f9;color:#64748b}.k.dl{background:#ede9fe;color:#5b21b6}
 .ipn{color:#2563eb;cursor:pointer;text-decoration:underline dotted}.muted{color:#64748b;font-size:12px}
 .tabs button{border-radius:6px 6px 0 0;border-bottom:none}.tabs button.on{background:#2563eb;color:#fff}
 .err{color:#b91c1c;font-weight:bold}.warnbar{background:#fee2e2;color:#991b1b;border:1px solid #fecaca;border-radius:8px;padding:8px 12px;margin-bottom:10px;font-weight:bold}
@@ -723,6 +754,7 @@ html.dark #rlLog{background:#0b1220;border-color:#1f2937}html.dark .ll.err{backg
  <div class="box" style="border-radius:0 10px 10px 10px">
   <div class="bar" id="fbar">기간 <select id="days"><option value="1">오늘</option><option value="2">어제부터</option><option value="7">7일</option><option value="14">14일</option></select>
    IP·이름 <input id="ip" size="14" placeholder="예: 218.237"> 찾기 <input id="q" size="14" placeholder="예: 녹음, 운행표">
+   <button id="dlOnly" title="배포판·설치 파일·백업·녹음 기록 다운로드만 7일">📥 다운로드만</button>
    <label><input type="checkbox" id="all"> 모든 요청 (1분마다 묻는 것 포함)</label><button class="p" id="run">보기</button>
    <span class="muted" id="cnt"></span></div>
   <div id="msg" class="err"></div>
@@ -744,8 +776,8 @@ async function doLogin(){$('lmsg').textContent='';try{await J('../api/admin/logi
 $('go').onclick=doLogin;$('pw').addEventListener('keydown',e=>{if(e.key==='Enter')doLogin()});
 $('out').onclick=async()=>{try{await J('../api/admin/logout',{method:'POST'})}catch(e){}show(false)};
 document.querySelectorAll('.tabs button').forEach(b=>b.onclick=()=>{tab=b.dataset.t;document.querySelectorAll('.tabs button').forEach(x=>x.classList.toggle('on',x===b));render()});
-$('run').onclick=load;['ip','q'].forEach(i=>$(i).addEventListener('keydown',e=>{if(e.key==='Enter')load()}));$('days').onchange=load;$('all').onchange=load;
-function kcls(k){return /FM/.test(k)?'fm':/녹음/.test(k)?'rec':/PDF/.test(k)?'pdf':/관리자/.test(k)?'adm':/기타/.test(k)?'oth':''}
+$('run').onclick=load;$('dlOnly').onclick=()=>{$('q').value='다운로드';$('days').value='7';load()};['ip','q'].forEach(i=>$(i).addEventListener('keydown',e=>{if(e.key==='Enter')load()}));$('days').onchange=load;$('all').onchange=load;
+function kcls(k){return /다운로드/.test(k)?'dl':/FM/.test(k)?'fm':/녹음/.test(k)?'rec':/PDF/.test(k)?'pdf':/관리자/.test(k)?'adm':/기타/.test(k)?'oth':''}
 function ipCell(ip,name){return '<span class="ipn" data-ip="'+esc(ip)+'" data-n="'+esc(name)+'">'+esc(name||ip)+'</span>'+(name?'<div class="muted">'+esc(ip)+'</div>':'')}
 async function load(){$('msg').textContent='';$('cnt').textContent='불러오는 중…';
  try{const u='../api/admin/access?days='+$('days').value+'&all='+($('all').checked?1:0)+'&ip='+encodeURIComponent($('ip').value)+'&q='+encodeURIComponent($('q').value);
@@ -753,7 +785,7 @@ async function load(){$('msg').textContent='';$('cnt').textContent='불러오는
  catch(e){if(e.message!=='login'){$('msg').textContent=e.message;$('cnt').textContent=''}}}
 function render(){$('tbl').parentElement.style.maxHeight=tab==='rl'?'none':'';if(tab==='ev')return evs();if(tab==='bk')return bk();if(tab==='rl')return rl(true);if(tab==='ins')return ins();if(!last)return;const s=last.summary,k=s.kinds;
  const n=x=>Number(k[x]||0);
- $('kpis').innerHTML=[['오늘 접속한 PC',s.today_ips+'대'],['오늘 기록',s.today_n+'건'],['녹음 듣기',n('AM 녹음 듣기')+n('FM 녹음 듣기')+'건'],['구간 저장',n('녹음 구간 저장')+'건'],['운행표·TV',n('라디오 운행표')+n('운행표 PDF')+n('TV 편성표')+n('TV 편성표 PDF')+'건']]
+ $('kpis').innerHTML=[['오늘 접속한 PC',s.today_ips+'대'],['오늘 기록',s.today_n+'건'],['녹음 듣기',n('AM 녹음 듣기')+n('FM 녹음 듣기')+'건'],['구간 저장',n('녹음 구간 저장')+'건'],['운행표·TV',n('라디오 운행표')+n('운행표 PDF')+n('TV 편성표')+n('TV 편성표 PDF')+'건'],['📥 다운로드',Object.keys(k).filter(x=>/다운로드/.test(x)).reduce((a,x)=>a+n(x),0)+'건']]
   .map(([l,v])=>'<div class="kpi"><div class="l">'+l+'</div><div class="v">'+v+'</div></div>').join('');
  $('fbar').style.display='';$('cnt').textContent=last.rows.length+'줄';
  if(tab==='ppl'){$('tbl').innerHTML='<tr><th>PC (IP)</th><th>마지막</th><th class="n">기록</th><th>본 것</th></tr>'+s.people.map(p=>'<tr><td>'+ipCell(p.ip,p.name)+'</td><td>'+esc(p.last.slice(5))+'</td><td class="n">'+p.n+'</td><td>'
