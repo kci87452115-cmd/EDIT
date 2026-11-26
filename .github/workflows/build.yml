@@ -101,3 +101,55 @@ jobs:
             Output/update/catalog.sig
             Output/update/app_*.zip
             Output/update/launcher_*.zip
+
+  # 배포판: 엑셀 TV 편성표 편집기만 런처 없이 쓰는 단독 exe (서버로 보내기 없음, 스스로 업데이트)
+  # 'excel-tv-public' 릴리스 하나에 늘 덮어써서 올린다 (런처가 보는 최신 릴리스와 섞이지 않게 make_latest: false)
+  # -> 녹음 PC 서버가 1시간마다 가져가 웹 '다운로드' 메뉴에 내놓는다
+  public-excel-tv:
+    runs-on: windows-latest
+    env:
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 패키지 설치
+        run: python -m pip install --upgrade pip pyinstaller pymupdf openpyxl cryptography
+
+      - name: 배포판 exe 만들기 (PyInstaller 한 파일)
+        shell: pwsh
+        run: |
+          'EDITION = "public"' | Out-File -Encoding utf8 apps\excel_tv\_edition.py
+          python -m PyInstaller --noconfirm --clean --windowed --onefile --name ExcelTVEditor_public `
+            --paths apps\excel_tv --hidden-import _edition `
+            --add-data "apps\excel_tv\name_dict.json;." `
+            --collect-all pymupdf --collect-submodules openpyxl `
+            --hidden-import tkinter.colorchooser --hidden-import tkinter.simpledialog --hidden-import tkinter.font `
+            apps\excel_tv\tv_schedule_maker.py
+          if (-not (Test-Path dist\ExcelTVEditor_public.exe)) { throw "배포판 exe 가 만들어지지 않았습니다" }
+
+      - name: 정보 파일 · 서명
+        shell: pwsh
+        env:
+          EDIT_SIGN_KEY: ${{ secrets.EDIT_SIGN_KEY }}
+        run: |
+          $msg = (git log -1 --pretty=%s)
+          python tools\build_public_excel_tv.py "$msg"
+          if ($LASTEXITCODE -ne 0) { throw "배포판 정보 파일 실패" }
+
+      - name: excel-tv-public 릴리스에 올리기 (덮어쓰기)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: excel-tv-public
+          name: 엑셀 TV 편성표 편집기 (배포판)
+          make_latest: false
+          body: |
+            엑셀 TV 편성표 편집기 배포판 — 런처 없이 실행하는 exe 하나 (서버로 보내기 없음)
+            사내에서는 녹음 PC 웹의 '다운로드' 메뉴에서 받으세요. 켤 때 새 버전을 스스로 확인합니다 (F12: 지금 확인).
+          files: |
+            Output/public/ExcelTVEditor_public.exe
+            Output/public/excel_tv_public.json
+            Output/public/excel_tv_public.sig

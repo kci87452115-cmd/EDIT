@@ -98,3 +98,10 @@ FM 녹음 PC를 **예비 웹서버**로: 운행표 · TV 편성표 · 관리자 
 1. FM 녹음 PC: `git clone https://github.com/kci87452115-cmd/EDIT.git ~/edit && bash ~/edit/server/install-fm-pc.sh`
 2. AM 녹음 PC(웹 서버): `cd ~/edit && git pull && bash server/install.sh && bash server/add-fm.sh FM_PC_IP`
 3. 첫 화면 왼쪽에 **📻 FM 녹음 듣기**가 생깁니다 (FM PC가 꺼져 있으면 메뉴가 숨겨짐).
+
+## 웹 '다운로드' (엑셀 TV 편성표 편집기 배포판)
+왼쪽 메뉴 아래 **다운로드 → 엑셀 TV 편성표 편집기 (배포판)** 하나만 받을 수 있습니다 (런처 없이 실행하는 exe, 서버로 보내기 없음).
+- GitHub 빌드가 `excel-tv-public` 릴리스에 배포판을 덮어써 올리면, 녹음 PC 서버가 **1시간마다** 확인해 지문이 맞을 때만 바꿉니다.
+- 파일은 웹 폴더 밖 `~/edit-mirror/dist/` 에 있고, 웹에서는 `/tv/download/excel-tv` 주소로만 내려받습니다 (실제 경로·폴더 목록은 보이지 않음).
+- 설치된 배포판은 켤 때 새 버전을 스스로 확인합니다 (F12: 지금 확인). 서명이 맞을 때만 받아서, 닫으면 바뀌고 다시 켜집니다.
+- 배포판이 아직 없으면 메뉴가 보이지 않습니다. nginx 설정은 바꿀 것 없음.

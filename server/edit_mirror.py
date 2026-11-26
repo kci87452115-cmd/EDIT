@@ -58,6 +58,13 @@ RADIO_DB = os.path.join(RADIO_DATA, "pdf_data_editor.db")
 RADIO_PREVIEW = os.path.join(RADIO_DATA, "미리보기")
 TV_DIR = os.path.join(HOME, "tv")
 STATE_FILE = os.path.join(HOME, "state.json")
+# 웹 '다운로드' (엑셀 TV 편성표 편집기 배포판) — 파일은 웹 폴더 밖(~/edit-mirror/dist)에 두고 정해진 주소로만 내보낸다
+DIST_DIR = os.path.join(HOME, "dist")
+DIST_EXE = os.path.join(DIST_DIR, "excel_tv_public.exe")
+DIST_INFO = os.path.join(DIST_DIR, "excel_tv_public.json")
+DIST_SRC = "https://github.com/kci87452115-cmd/EDIT/releases/download/excel-tv-public/"
+DIST_EVERY = 3600           # 1시간마다 새 배포판 확인
+DIST_NAME = "엑셀TV편성표편집기_배포판.exe"
 BACKUP_DIR = os.path.join(HOME, "backup")
 EDITORS_STATUS = os.path.join(BACKUP_DIR, "status-editors.json")
 
@@ -622,6 +629,8 @@ html.dark .am{color:#93c5fd}html.dark .fm{color:#fdba74}
   <a class="nav" data-p="recfm" id="navfm" style="display:none"><span class="i">📻</span><span class="n">FM 녹음 듣기</span></a>
   <div class="grp">운행표 PDF</div><div id="lrs"><div class="empty">불러오는 중…</div></div>
   <div class="grp">TV 주간편성표 PDF</div><div id="ltv"><div class="empty">불러오는 중…</div></div>
+  <div id="dlbox" style="display:none"><div class="grp">다운로드</div>
+   <a class="nav dl" id="dlx" href="tv/download/excel-tv" download><span class="i">📥</span><span class="n">엑셀 TV 편성표 편집기 (배포판)</span><span class="c" id="dlv"></span></a></div>
  </div>
  <div class="status">
   <select id="lksel" title="고르면 새 창으로 열립니다" style="display:none"></select>
@@ -676,7 +685,7 @@ function go(p,src,title){
  if(location.hash||location.search)history.replaceState(null,'',location.pathname);   // 주소창에는 기본 주소만
  $('side').classList.remove('open');
 }
-document.querySelectorAll('.nav').forEach(a=>a.onclick=()=>go(a.dataset.p));
+document.querySelectorAll('.nav:not(.dl)').forEach(a=>a.onclick=()=>go(a.dataset.p));
 $('menu').onclick=()=>$('side').classList.toggle('open');
 $('reload').onclick=()=>{if(cur==='home')home();else{const f=$('frame');try{f.contentWindow.location.reload()}catch(e){f.src=f.src}}side()};
 async function J(u){const r=await fetch(u,{cache:'no-store'});if(!r.ok)throw new Error(r.status);return r.json()}
@@ -689,6 +698,9 @@ async function checkFM(){try{const r=await fetch('rec-fm/',{cache:'no-store'});h
  $('navfm').style.display=hasFM?'':'none';if(!hasFM&&cur==='recfm')$('navfm').style.display='';return hasFM}
 async function side(){
  checkFM();
+ try{const d=await J('tv/download/excel-tv/info');$('dlv').textContent='v'+d.version;
+  $('dlx').title=(d.date||'')+' · '+Math.round((d.size||0)/1048576)+'MB · 런처 없이 실행 · 켤 때 새 버전 자동 확인';$('dlbox').style.display=''}
+ catch(e){$('dlbox').style.display='none'}
  try{const d=await J('api/status');$('srv').textContent=d.server.name+' · '+d.server.ip;
   const f=(x,dot,lab)=>{const on=(x.online||[]).length;$(dot).className='dot '+(on?'ok':(x.synced?'warn':''));
    $(lab).textContent=on?'연결됨':(x.synced?'꺼짐':'없음');$(lab).title=x.synced?'마지막으로 모은 시각 '+x.synced:''};
@@ -1052,6 +1064,21 @@ def make_hub_handler(mirror):
             with open(f, "rb") as fh:
                 shutil.copyfileobj(fh, self.wfile, 256 * 1024)
 
+        def _dist_exe(self):
+            if not os.path.exists(DIST_EXE):
+                return self._json({"error": "준비 중입니다."}, 404)
+            size = os.path.getsize(DIST_EXE)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Length", str(size))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Disposition", f"attachment; filename*=UTF-8''{urllib.parse.quote(DIST_NAME)}")
+            self.end_headers()
+            if self.command == "HEAD":
+                return
+            with open(DIST_EXE, "rb") as fh:
+                shutil.copyfileobj(fh, self.wfile, 256 * 1024)
+
         def do_HEAD(self):
             self.do_GET()
 
@@ -1068,6 +1095,13 @@ def make_hub_handler(mirror):
                     return self._json(mirror.status())
                 if path in ("/tv", "/tv/", "/tv/index.html"):
                     return self._send(200, TV_HTML, "text/html; charset=utf-8")
+                if path == "/tv/download/excel-tv/info":
+                    info = load_json(DIST_INFO, {})
+                    if not info or not os.path.exists(DIST_EXE):
+                        return self._json({"error": "준비 중입니다."}, 404)
+                    return self._json({k: info.get(k) for k in ("name", "edition", "version", "date", "size", "changes")})
+                if path == "/tv/download/excel-tv":
+                    return self._dist_exe()
                 if path in ("/api/tv", "/tv/api/tv"):
                     return self._json({"app": "edit-tv-view", "name": "녹음 PC 서버 (사본)",
                                        "synced": mirror.state["tv"].get("synced", ""), "rows": tv_rows()})
@@ -1122,6 +1156,52 @@ def git_pull_loop():
             log("저장소 받기 오류:", exc)
 
 
+# ---------------------------------------------------------------- 배포판 가져오기 (웹 '다운로드' 메뉴)
+def _dist_get(name, timeout):
+    req = urllib.request.Request(DIST_SRC + name, headers={"User-Agent": "edit-mirror"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.read()
+
+
+def dist_sync():
+    """GitHub 'excel-tv-public' 릴리스의 배포판이 바뀌었으면 받아 둔다 (지문이 맞을 때만 바꿈)"""
+    try:
+        info = json.loads(_dist_get("excel_tv_public.json", 30).decode("utf-8"))
+    except Exception as exc:
+        if not os.path.exists(DIST_EXE):
+            log("배포판 정보 없음 (아직 빌드 전이면 정상):", exc)
+        return
+    cur = load_json(DIST_INFO, {}) or {}
+    if cur.get("sha256") == info.get("sha256") and os.path.exists(DIST_EXE):
+        return
+    try:
+        data = _dist_get("ExcelTVEditor_public.exe", 600)
+    except Exception as exc:
+        log("배포판 받기 실패:", exc)
+        return
+    if hashlib.sha256(data).hexdigest() != str(info.get("sha256", "")).lower():
+        log("배포판 지문이 맞지 않아 바꾸지 않았습니다.")
+        return
+    os.makedirs(DIST_DIR, exist_ok=True)
+    with open(DIST_EXE + ".tmp", "wb") as f:
+        f.write(data)
+    os.replace(DIST_EXE + ".tmp", DIST_EXE)
+    with open(DIST_INFO + ".tmp", "w", encoding="utf-8") as f:
+        json.dump(info, f, ensure_ascii=False)
+    os.replace(DIST_INFO + ".tmp", DIST_INFO)
+    log(f"배포판 v{info.get('version')} 을 받았습니다 (웹 다운로드).")
+
+
+def dist_loop():
+    time.sleep(30)
+    while True:
+        try:
+            dist_sync()
+        except Exception as exc:
+            log("배포판 확인 오류:", exc)
+        time.sleep(DIST_EVERY)
+
+
 def main():
     global UI_VER
     UI_VER = ui_version()
@@ -1141,6 +1221,7 @@ def main():
     log(f"첫 화면 · TV: http://{lan_ip()}:{HUB_PORT}")
     if "--no-git" not in sys.argv:
         threading.Thread(target=git_pull_loop, daemon=True).start()
+    threading.Thread(target=dist_loop, daemon=True).start()
     time.sleep(6)                     # 알림을 한두 번 들은 뒤 첫 동기화
     mirror.loop()
 

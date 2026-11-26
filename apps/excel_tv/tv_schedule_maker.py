@@ -31,7 +31,13 @@ except Exception:
     pass
 
 APP_VERSION = "1.4.3"
-VERSION = f"v{APP_VERSION} (시험판)"
+# 배포판: GitHub 빌드가 단독 exe 를 만들 때 _edition.py(EDITION = "public")를 넣는다. 런처로 실행하는 사내판에는 없음
+try:
+    from _edition import EDITION
+except Exception:
+    EDITION = "internal"
+IS_PUBLIC = EDITION == "public"
+VERSION = f"v{APP_VERSION} ({'배포판' if IS_PUBLIC else '시험판'})"
 
 
 def _detect_profile():
@@ -46,7 +52,13 @@ def _detect_profile():
 IS_DMB = _detect_profile() == "dmb"
 APP_NAME = "엑셀 DMB 편성표 편집기" if IS_DMB else "엑셀 TV 편성표 편집기"
 # 프로그램 파일이 있는 곳 (런처로 실행해도 이 파일 위치 - 런처 exe 위치가 아님)
-APP_DIR = os.path.dirname(os.path.abspath(__file__))
+# 단독 exe(배포판)는 설정·데이터를 exe 옆에, 함께 묶은 기본 파일(name_dict.json)은 압축 풀린 곳(RES_DIR)에서 읽는다
+# (런처 실행 환경도 frozen 이므로 배포판일 때만 - 사내판은 예전 그대로 이 파일 위치)
+if IS_PUBLIC and getattr(sys, "frozen", False):
+    APP_DIR = os.path.dirname(os.path.abspath(sys.executable))
+    RES_DIR = getattr(sys, "_MEIPASS", APP_DIR)
+else:
+    APP_DIR = RES_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
 def _data_dir():
@@ -74,6 +86,8 @@ TV_VIEW_PORT_DEFAULT = 8081
 
 def tv_preview_dir():
     """런처로 실행할 때만: C:\\EDIT\\TV\\데이터\\미리보기 (TV 편성표 편집기와 같은 폴더)"""
+    if IS_PUBLIC:               # 배포판: 서버로 보내기 없음
+        return ""
     home = os.environ.get("RADIO_HOME")
     return os.path.join(home, "데이터", "미리보기") if home else ""
 
@@ -421,10 +435,10 @@ def read_schedule_xlsx(path):
 
 # ---------------------------------------------------------------- 칸(블록) 만들기
 NAME_DICT_PATH = os.path.join(DATA_DIR, "name_dict.json")
-if DATA_DIR != APP_DIR and not os.path.exists(NAME_DICT_PATH) and os.path.exists(os.path.join(APP_DIR, "name_dict.json")):
+if DATA_DIR != RES_DIR and not os.path.exists(NAME_DICT_PATH) and os.path.exists(os.path.join(RES_DIR, "name_dict.json")):
     try:        # 처음 실행: 프로그램과 함께 온 기본 이름 사전을 데이터 폴더로 복사
         import shutil
-        shutil.copyfile(os.path.join(APP_DIR, "name_dict.json"), NAME_DICT_PATH)
+        shutil.copyfile(os.path.join(RES_DIR, "name_dict.json"), NAME_DICT_PATH)
     except Exception:
         pass
 _name_dict = None
@@ -1164,7 +1178,7 @@ def draw_schedule(dates, blocks, cfg, out_path=None, printed_at=None):
     dmb_title = (cfg.get("_dmb") or {}).get("title", "").strip()
     logo = None if dmb_title else cfg.get("logo_file")
     if logo and not os.path.isabs(logo):
-        logo = next((os.path.join(d, logo) for d in (DATA_DIR, APP_DIR) if os.path.isfile(os.path.join(d, logo))), "")
+        logo = next((os.path.join(d, logo) for d in (DATA_DIR, APP_DIR, RES_DIR) if os.path.isfile(os.path.join(d, logo))), "")
     if logo and os.path.isfile(logo):
         page.insert_image(pymupdf.Rect(195.9, 33.8, 395.1, 82.8), filename=logo, keep_proportion=True)
     else:
@@ -5676,9 +5690,10 @@ class App:
         dir_ed["draw_epv"] = draw_epv
         draw_epv()
 
-        # 서버로 보내기
+        # 서버로 보내기 (배포판에는 칸 자체가 없음)
         g4 = tk.LabelFrame(f, text=" 📺 서버로 보내기 (다른 PC에서 보기) ", padx=10, pady=6)
-        g4.grid(row=7, column=0, columnspan=4, sticky="we", pady=4)
+        if not IS_PUBLIC:
+            g4.grid(row=7, column=0, columnspan=4, sticky="we", pady=4)
         if tv_preview_dir():
             def view_toggle():
                 if not save_tv_view_config(self.v_view_on.get()):
@@ -5991,10 +6006,126 @@ def _already_running():
     return True
 
 
+# ---------------------------------------------------------------- 배포판 업데이트 (주소는 화면·설정에 나오지 않음)
+_UPD_BASE = bytes.fromhex("68747470733a2f2f6769746875622e636f6d2f6b63693837343532313135"
+                          "2d636d642f454449542f72656c65617365732f646f776e6c6f61642f"
+                          "657863656c2d74762d7075626c69632f").decode()
+_UPD_INFO, _UPD_SIG, _UPD_EXE = "excel_tv_public.json", "excel_tv_public.sig", "ExcelTVEditor_public.exe"
+_SIGN_N = int(
+    "b4149f9e7c37f0390d9613d363e12a2a8ccfe0ab5d961b8edd54075f4323ae2e"
+    "5939ab1679b85e02fed58f93b85d96d96e56ce41a4289013508544f1b7e9c0c4"
+    "78fdd81fc764e6cbee9037ab07a29eea23a40c4e53f9e95759b45f6d7aa544f0"
+    "6da5ae579b5130a6f2d08fcef8d14989e809f61dca0a87b8010c2a327689772e"
+    "a6f060390c15b879c98cc7ed69c2c387202771d551c6230aa94ee21764ff03db"
+    "1b8b502abe3c3e78994a40e6522d6fdc1e8be72764cd21ad22e0d457da4e1639"
+    "df760d9df44f00b043cf6e154eacaa1bdf957afa3617dbdc00a34b703c2808e1"
+    "37cdadcccc2402bddb2edbdb60ff8a57f2b6ef59f5691e483e8c6e7aabf36e5b"
+    "f10f3844d3c6760c625336464e0020a24f94e8b46164083309d79976d3fcd0f6"
+    "0b74c988dc517d05b4416774c8b24b0fe643b8851fd5c6b64a9586ef3a1fec52"
+    "426e09941c89aba6c296f6c5d1499b40bfa6200f14db12abc5b80006c6aa0e64"
+    "548106cbeb48160d5747934f769fcc6fd826ec417a7ee0539569c829a1067569", 16)
+
+
+def _sig_ok(data, sig_text):
+    """런처와 같은 서명 확인 (RSA PKCS#1 v1.5 + SHA-256, 런처와 같은 공개 키)"""
+    import base64, hashlib, hmac
+    try:
+        sig = base64.b64decode((sig_text or "").strip(), validate=True)
+    except Exception:
+        return False
+    k = (_SIGN_N.bit_length() + 7) // 8
+    if len(sig) != k:
+        return False
+    di = bytes.fromhex("3031300d060960864801650304020105000420")
+    m = pow(int.from_bytes(sig, "big"), 65537, _SIGN_N).to_bytes(k, "big")
+    want = b"\x00\x01" + b"\xff" * (k - 3 - len(di) - 32) + b"\x00" + di + hashlib.sha256(data).digest()
+    return hmac.compare_digest(m, want)
+
+
+def _ver_tuple(v):
+    return tuple(int(x) for x in re.findall(r"\d+", str(v))[:4])
+
+
+def _http_get(name, timeout=15):
+    import urllib.request
+    req = urllib.request.Request(_UPD_BASE + name, headers={"User-Agent": "ExcelTVEditor"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.read()
+
+
+def public_update_check(app, manual=False):
+    """배포판만: 켤 때 한 번(또는 F12) 새 버전을 확인 -> 받아서 서명·지문 확인 -> 끌 때 바꿔 끼우고 다시 실행"""
+    if not IS_PUBLIC or not getattr(sys, "frozen", False):
+        return
+    import threading
+    from tkinter import messagebox
+
+    def ui(fn):
+        try:
+            app.root.after(0, fn)
+        except Exception:
+            pass
+
+    def work():
+        try:
+            raw = _http_get(_UPD_INFO)
+            sig = _http_get(_UPD_SIG).decode("ascii", "ignore")
+            if not _sig_ok(raw, sig):
+                raise ValueError("업데이트 정보의 서명이 맞지 않습니다.")
+            info = json.loads(raw.decode("utf-8"))
+        except Exception as e:
+            if manual:
+                ui(lambda: messagebox.showinfo("업데이트", f"업데이트를 확인하지 못했습니다.\n{e}"))
+            return
+        if _ver_tuple(info.get("version")) <= _ver_tuple(APP_VERSION):
+            if manual:
+                ui(lambda: messagebox.showinfo("업데이트", f"최신 버전입니다 (v{APP_VERSION})."))
+            return
+        ui(lambda: ask(info))
+
+    def ask(info):
+        note = "\n".join("· " + x for x in (info.get("changes") or [])[:5])
+        if not messagebox.askyesno("업데이트", f"새 버전 v{info['version']}이 있습니다 (지금 v{APP_VERSION}).\n"
+                                   + (note + "\n" if note else "") + "\n받아서 다음에 켤 때부터 쓸까요?"):
+            return
+        threading.Thread(target=lambda: download(info), daemon=True).start()
+
+    def download(info):
+        import hashlib
+        try:
+            data = _http_get(_UPD_EXE, timeout=300)
+            if hashlib.sha256(data).hexdigest().lower() != str(info.get("sha256", "")).lower():
+                raise ValueError("받은 파일이 맞지 않습니다 (지문 다름).")
+            exe = os.path.abspath(sys.executable)
+            new = exe + ".new"
+            with open(new, "wb") as f:
+                f.write(data)
+            bat = os.path.join(os.path.dirname(exe), "_update.bat")
+            with open(bat, "w", encoding="cp949", errors="replace") as f:
+                f.write("@echo off\r\n"
+                        f":w\r\nping -n 2 127.0.0.1 >nul\r\n"
+                        f'move /y "{new}" "{exe}" >nul 2>&1 || goto w\r\n'
+                        f'start "" "{exe}"\r\ndel "%~f0"\r\n')
+            app._pending_update = bat
+            ui(lambda: messagebox.showinfo("업데이트", f"v{info['version']}을 받았습니다.\n프로그램을 닫으면 바뀌고 다시 켜집니다."))
+        except Exception as e:
+            ui(lambda: messagebox.showerror("업데이트", f"업데이트를 받지 못했습니다.\n{e}"))
+
+    threading.Thread(target=work, daemon=True).start()
+
+
 def run_gui():
     if _already_running():      # 두 번 눌러도 하나만: 이미 켜진 창을 앞으로 가져오고 끝낸다
         sys.exit(0)
-    App().run()
+    app = App()
+    if IS_PUBLIC:
+        app.root.after(3000, lambda: public_update_check(app))
+        app.root.bind_all("<F12>", lambda e: public_update_check(app, manual=True))
+    app.run()
+    bat = getattr(app, "_pending_update", None)
+    if bat and os.path.exists(bat):
+        import subprocess
+        subprocess.Popen(["cmd", "/c", bat], creationflags=0x08000000)   # 창 없이
 
 
 if __name__ == "__main__":

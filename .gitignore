@@ -4,3 +4,4 @@ Output/
 __pycache__/
 *.spec
 *.db
+apps/excel_tv/_edition.py
