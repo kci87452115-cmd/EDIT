@@ -28,7 +28,7 @@ import tempfile
 import time
 import zipfile
 
-LAUNCHER_VERSION = "1.2.5"
+LAUNCHER_VERSION = "1.2.6"
 RUNTIME = 1                         # 공용 실행 환경 세대. 필요한 부품이 바뀌면 올린다 (앱의 runtime 값과 비교)
 EXE_NAME = "EditLauncher.exe"
 MUTEX = "EditLauncher_Running"      # 설치 프로그램(setup)이 '실행 중'을 알아보는 이름
@@ -923,6 +923,7 @@ class LauncherApp:
         self._build()
         self.refresh()
         root.after(300, self._first_run_hint)
+        root.after(4000, self._auto_update)          # 켤 때 새 버전이 있으면 백업 후 조용히 업데이트
 
     # ------------------------------------------------------------------ 화면 뼈대
     def _build(self):
@@ -1330,33 +1331,108 @@ class LauncherApp:
             self.refresh()
             messagebox.showinfo("가져오기", "가져왔습니다. 목록에서 설치·업데이트하세요.", parent=self.root)
 
-    def update_launcher(self):
-        """런처(공용 실행 환경 포함) 업데이트. 켜진 프로그램을 모두 닫아야 한다."""
+    def _auto_update(self, periodic=False):
+        """새 버전 자동 업데이트: 런처를 켤 때와 켜 둔 동안 3시간마다.
+        켜진 RADIO·TV 프로그램이 하나라도 있으면 건드리지 않고 다음에 (작업 중인 내용 보호).
+        데이터는 그룹마다 먼저 백업하고, 백업이 안 되는 그룹은 업데이트하지 않는다.
+        launcher.json 에 "auto_update": false 를 넣으면 끔."""
+        nxt = lambda: self.root.after(3 * 3600 * 1000, lambda: self._auto_update(True))
+        try:
+            if not self.settings.get("auto_update", True):
+                return
+            if count_running() > 1:
+                return nxt()
+            if periodic:
+                self.refresh()
+            if not self.cat:
+                return nxt()
+            lv = (self.cat.get("launcher") or {}).get("version")
+            tried = self.settings.get("auto_launcher_tried") or {}
+            again = tried.get("v") == lv and time.time() - float(tried.get("t", 0)) < 6 * 3600
+            if lv and version_tuple(lv) > version_tuple(LAUNCHER_VERSION) and getattr(sys, "frozen", False) and not again:
+                self.settings["auto_launcher_tried"] = {"v": lv, "t": time.time()}   # 바꾸기에 실패해도 6시간 안엔 다시 안 함
+                save_settings(self.settings)
+                self.status.config(text=f"런처 v{lv} 자동 업데이트 중… (잠시 닫혔다가 다시 켜집니다)", foreground="#1d4ed8")
+                self.root.update_idletasks()
+                self.update_launcher(silent=True)       # 다시 켜지면 프로그램들도 이어서 업데이트
+                return
+            todo = [a for a, ent in self.cat["apps"].items()
+                    if installed_info(a) and version_tuple(ent["version"]) > version_tuple(installed_info(a)["version"])
+                    and int(ent.get("runtime", 1)) <= RUNTIME]
+            if not todo:
+                return nxt()
+            ok_groups, done, fail = set(), [], []
+            for g in {group_of(a, self.cat) for a in todo}:
+                try:
+                    backup_data(g)
+                    ok_groups.add(g)
+                except Exception as exc:
+                    fail.append(f"{g} 백업 실패({exc})")
+            self.root.config(cursor="watch")
+            self.root.update_idletasks()
+            for a in todo:
+                ent = self.cat["apps"][a]
+                name = ent.get("name") or APP_INFO.get(a, {}).get("name", a)
+                if group_of(a, self.cat) not in ok_groups:
+                    continue
+                try:
+                    info = install_app(a, self.cat)
+                    done.append(f"{name} v{info['version']}")
+                except Exception as exc:
+                    fail.append(f"{name}: {exc}")
+            self.root.config(cursor="")
+            self.refresh()
+            msg = ("✅ 자동 업데이트 (데이터 백업 후): " + ", ".join(done)) if done else ""
+            if fail:
+                msg += ("   " if msg else "") + "⚠ 자동 업데이트 못 함: " + "; ".join(fail)[:200]
+            if msg:
+                self.status.config(text=msg, foreground="#b45309" if fail else "#15803d", wraplength=720)
+        except Exception as exc:
+            try:
+                self.root.config(cursor="")
+                self.status.config(text=f"⚠ 자동 업데이트 확인 중 오류: {exc}", foreground="#b45309")
+            except Exception:
+                pass
+        nxt()
+
+    def update_launcher(self, silent=False):
+        """런처(공용 실행 환경 포함) 업데이트. 켜진 프로그램을 모두 닫아야 한다.
+        silent=True (자동 업데이트): 묻지 않음. 켜진 프로그램이 있거나 문제가 있으면 조용히 그만둠"""
         from tkinter import messagebox
         lent = (self.cat or {}).get("launcher") or {}
         if not lent.get("file"):
-            messagebox.showinfo("런처 업데이트", "새 런처 정보가 없습니다.", parent=self.root)
+            if not silent:
+                messagebox.showinfo("런처 업데이트", "새 런처 정보가 없습니다.", parent=self.root)
             return
         try:
             self.root.config(cursor="watch")
             self.root.update_idletasks()
             zpath = ensure_local(self.cat, lent["file"])
         except Exception as exc:
-            messagebox.showerror("런처 업데이트", f"런처 꾸러미를 받지 못했습니다:\n{exc}", parent=self.root)
+            if silent:
+                self.status.config(text=f"⚠ 런처 자동 업데이트: 꾸러미를 받지 못했습니다 ({exc})", foreground="#b45309")
+            else:
+                messagebox.showerror("런처 업데이트", f"런처 꾸러미를 받지 못했습니다:\n{exc}", parent=self.root)
             return
         finally:
             self.root.config(cursor="")
         if not os.path.exists(zpath):
-            messagebox.showerror("런처 업데이트", f"런처 꾸러미가 없습니다:\n{zpath}", parent=self.root)
+            if not silent:
+                messagebox.showerror("런처 업데이트", f"런처 꾸러미가 없습니다:\n{zpath}", parent=self.root)
             return
         if not getattr(sys, "frozen", False):
-            messagebox.showinfo("런처 업데이트", f"개발 모드(.py)에서는 런처를 바꾸지 않습니다.\n{zpath}", parent=self.root)
+            if not silent:
+                messagebox.showinfo("런처 업데이트", f"개발 모드(.py)에서는 런처를 바꾸지 않습니다.\n{zpath}", parent=self.root)
             return
-        while count_running() > 1:
-            if not messagebox.askretrycancel("런처 업데이트", "켜져 있는 RADIO·TV 프로그램을 모두 저장하고 닫은 뒤 [다시 시도]를 눌러 주세요.", parent=self.root):
+        if silent:
+            if count_running() > 1:
                 return
-        if not messagebox.askyesno("런처 업데이트", f"런처를 v{lent['version']} 로 업데이트합니다.\n런처가 잠시 닫혔다가 다시 켜집니다.\n(데이터는 그대로입니다)\n\n계속할까요?", parent=self.root):
-            return
+        else:
+            while count_running() > 1:
+                if not messagebox.askretrycancel("런처 업데이트", "켜져 있는 RADIO·TV 프로그램을 모두 저장하고 닫은 뒤 [다시 시도]를 눌러 주세요.", parent=self.root):
+                    return
+            if not messagebox.askyesno("런처 업데이트", f"런처를 v{lent['version']} 로 업데이트합니다.\n런처가 잠시 닫혔다가 다시 켜집니다.\n(데이터는 그대로입니다)\n\n계속할까요?", parent=self.root):
+                return
         try:
             for g in GROUPS:
                 backup_data(g)
