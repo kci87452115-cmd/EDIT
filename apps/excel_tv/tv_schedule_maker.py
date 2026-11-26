@@ -30,7 +30,7 @@ try:
 except Exception:
     pass
 
-APP_VERSION = "1.4.4"
+APP_VERSION = "1.4.5"
 # 배포판: GitHub 빌드가 단독 exe 를 만들 때 _edition.py(EDITION = "public")를 넣는다. 런처로 실행하는 사내판에는 없음
 try:
     from _edition import EDITION
@@ -1073,12 +1073,15 @@ def wrap_words(p, text, size, maxw):
     return lines
 
 
-def layout_label(p, label, w, h):
-    """칸에 들어갈 줄 목록 [(글자, 크기)] 과 줄 높이 합"""
+FINE_SIZES = [round(FONT_SIZES[0] - 0.1 * i, 1) for i in range(int((FONT_SIZES[0] - 3.3) / 0.1) + 1)] + FONT_SIZES[-2:]
+
+
+def layout_label(p, label, w, h, sizes=None):
+    """칸에 들어갈 줄 목록 [(글자, 크기)] 과 줄 높이 합 (sizes: 시험할 글자 크기, 큰 것부터)"""
     m = SUFFIX_RE.match(label)
     main, suf = (m.group(1), m.group(2)) if m else (label, "")
     forced = bool(suf) and bool(re.search(r"\n\s*\([^()]*\)\s*$", label))   # '|(목포M)' 처럼 직접 줄바꿈
-    for size in FONT_SIZES:
+    for size in sizes or FONT_SIZES:
         lh = size * 1.18
         ss = round(size * 0.8, 1)
         parts = main.split("\n") if main else []
@@ -1100,6 +1103,121 @@ def layout_label(p, label, w, h):
                                     for it in items):
             return items, total
     return [(label.replace("\n", " "), FONT_SIZES[-1])], FONT_SIZES[-1] * 1.18
+
+
+def auto_place(p, label, x0, y0, x1, y1, msz, dy, lw, iw, icon_h, end_inside, fine=False):
+    """높은 칸의 프로그램명 자리를 프로그램이 알아서 고름 -> (줄들, 높이 합, 첫 줄 위 y, 왼쪽 x, 오른쪽 x)
+
+    위 띠 = 왼쪽 시작 분 숫자 + 오른쪽 아이콘 줄, 아래 띠 = 칸 안에 그리는 끝 시각(왼쪽 아래).
+    글자 줄이 띠 높이에 걸치면 그 줄은 분 숫자·아이콘·끝 시각과 옆으로도 떨어져 있어야 함 (절대 겹치지 않음).
+      A 칸 전체 가운데 (지금 모양)
+      B 위 띠 아래(아래 띠 위) 남은 높이의 가운데
+      C 높이는 다 쓰고 분 숫자·아이콘 폭만큼 좌우를 똑같이 비움
+      D 높이는 다 쓰고 분 숫자 오른쪽 ~ 아이콘 왼쪽 사이 (아이콘이 많은 낮은 칸)
+      E 첫 줄만 분 숫자와 아이콘 사이, 나머지 줄은 띠 아래 칸 너비 전체
+    넷 중 글자가 가장 크게 나오는 것, 크기가 같으면 A > B > C > D (칸 가운데에 가까운 쪽).
+    fine=True(고친 칸): 0.1pt 단위로 시험해 칸에 맞는 가장 큰 크기 (최대는 보통 칸과 같음)"""
+    sizes = FINE_SIZES if fine else FONT_SIZES
+    pad, gap = 0.35, 0.4
+    top_l = msz * 0.95 + max(0.0, dy) + pad          # 왼쪽 분 숫자 높이
+    top_r = (icon_h + pad) if icon_h else 0.0         # 오른쪽 아이콘 높이
+    bot = (msz * 0.95 + pad) if end_inside else pad   # 왼쪽 아래 끝 시각 높이
+    wx0, wx1 = x0 + 1.5, x1 - 1.5
+
+    def clear(it, tot, cy, a, b, spans=None):
+        """줄마다 위·아래 띠와 겹치지 않게 놓을 수 있으면 줄별 (왼쪽, 오른쪽) 자리, 아니면 None.
+        띠 높이에 걸친 줄이 분 숫자·아이콘에 닿으면 칸 안에서 옆으로 살짝 비켜 놓음 (글자를 줄이지 않고)"""
+        if cy < y0 + pad - 0.05 or cy + tot > y1 - pad + 0.5:     # 줄 높이 합은 글자 아래 여백 포함
+            return None
+        out, y = [], cy
+        for n, x in enumerate(it):
+            sz = x[1]
+            lh = sz * 1.18
+            tw = (p.width(x[0], sz) + p.width(x[2], x[3]) + 0.6) if len(x) > 2 else p.width(x[0], sz)
+            la, lb = spans[n] if spans else (a, b)
+            sx = (la + lb) / 2 - tw / 2
+            gy0, gy1 = y + lh * 0.12, y + lh * 0.98            # 글자가 실제로 차지하는 높이
+            lo, hi = x0 + 0.8, x1 - 0.8                         # 칸 안
+            if gy0 < y0 + top_l or (end_inside and gy1 > y1 - bot):
+                lo = max(lo, x0 + lw + gap)                     # 왼쪽 위 분 숫자 / 왼쪽 아래 끝 시각
+            if top_r and gy0 < y0 + top_r:
+                hi = min(hi, x1 - iw - gap)                     # 오른쪽 위 아이콘
+            if tw > hi - lo + 0.01:
+                return None
+            nx = min(max(sx, lo), hi - tw)                      # 겹치면 가장 덜 움직이는 쪽으로
+            out.append((nx + tw / 2 - (lb - la) / 2, nx + tw / 2 + (lb - la) / 2))
+            y += lh
+        return out
+
+    cands = []
+    # A: 칸 전체 가운데
+    it, tot = layout_label(p, label, wx1 - wx0, (y1 - y0) - 2 * pad, sizes)
+    cy = (y0 + y1) / 2 - tot / 2
+    sp = clear(it, tot, cy, wx0, wx1)
+    if sp:
+        cands.append((it[0][1], 3, it, tot, cy, wx0, wx1, sp))
+    # B: 띠 사이 남은 높이 가운데
+    tb = y0 + max(top_l, top_r)
+    hb = (y1 - bot) - tb
+    if hb > 2.0:
+        it, tot = layout_label(p, label, wx1 - wx0, hb, sizes)
+        cy = max(tb, (tb + y1 - bot) / 2 - tot / 2)
+        sp = clear(it, tot, cy, wx0, wx1)
+        if sp:
+            cands.append((it[0][1], 2, it, tot, cy, wx0, wx1, sp))
+    # C: 좌우를 비우고 높이 전체
+    side = max(lw, iw) + gap
+    cx0, cx1 = x0 + side, x1 - side
+    if cx1 - cx0 > 4:
+        hc = (y1 - y0) - 2 * pad
+        it, tot = layout_label(p, label, cx1 - cx0, hc, sizes)
+        cy = (y0 + y1) / 2 - tot / 2
+        sp = clear(it, tot, cy, cx0, cx1)
+        if sp:
+            cands.append((it[0][1], 1, it, tot, cy, cx0, cx1, sp))
+    # D: 분 숫자와 아이콘 사이
+    dx0, dx1 = x0 + lw + gap, x1 - iw - gap
+    if dx1 - dx0 > 4 and (dx0, dx1) != (cx0, cx1):
+        hd = (y1 - y0) - pad - bot
+        it, tot = layout_label(p, label, dx1 - dx0, hd, sizes)
+        cy = y0 + pad + (hd - tot) / 2
+        sp = clear(it, tot, cy, dx0, dx1)
+        if sp:
+            cands.append((it[0][1], 0, it, tot, cy, dx0, dx1, sp))
+    # E: 첫 줄은 분 숫자와 아이콘 사이, 나머지는 띠 아래 칸 너비 전체 (아이콘이 많은 낮은 칸의 긴 이름)
+    best = max((c[0] for c in cands), default=0)
+    if dx1 - dx0 > 4 and "\n" not in label:
+        words = label.split(" ")
+        for size in sizes:
+            if size <= best:
+                break
+            lh = size * 1.18
+            first = ""
+            k = 0
+            while k < len(words) and p.width((first + " " + words[k]).strip(), size) <= dx1 - dx0:
+                first = (first + " " + words[k]).strip()
+                k += 1
+            if not first or k >= len(words):
+                continue
+            rest = wrap_words(p, " ".join(words[k:]), size, wx1 - wx0)
+            it = [(first, size)] + [(ln, size) for ln in rest]
+            tot = lh * len(it)
+            room = (y1 - y0) - pad - bot
+            if tot > room + 0.5:
+                continue
+            cy = y0 + pad + max(0.0, (room - tot) / 2)
+            spans = [(dx0, dx1)] + [(wx0, wx1)] * len(rest)
+            sp = clear(it, tot, cy, wx0, wx1, spans)
+            if sp:
+                cands.append((size, -1, it, tot, cy, wx0, wx1, sp))
+                break
+    if not cands:           # 아무것도 안 맞는 아주 좁은 칸: 띠 아래에 들어가는 가장 큰 크기, 칸 안으로
+        a, b = wx0, wx1
+        it, tot = layout_label(p, label, b - a, max(1.0, hb), sizes)
+        cy = max(tb if hb > 1 else y0 + pad, min((tb + y1 - bot) / 2 - tot / 2, y1 - pad - tot))
+        return it, tot, cy, a, b, None
+    c = max(cands, key=lambda c: (c[0], c[1]))
+    return c[2], c[3], c[4], c[5], c[6], c[7]
 
 
 def time_scale(blocks):
@@ -1324,16 +1442,17 @@ def draw_schedule(dates, blocks, cfg, out_path=None, printed_at=None):
         elif h < 11:
             tx0, tx1, ty0, ty1 = x0 + lw, x1 - iw - 0.5, y0, y1
         else:
-            tx0, tx1, ty0, ty1 = x0 + 1.5, x1 - 1.5, y0 + min(ICON, h * 0.15), y1
-            if msz * 0.95 + max(0.0, dy) > ty0 - y0 + 0.3:
-                # 시각 숫자를 키우거나 내린 칸: 글자는 칸 가운데 그대로 두고,
-                # 숫자 너비만큼 왼쪽·오른쪽을 똑같이 비워 겹치지 않게 (아래로 밀지 않음)
-                tx0, tx1 = x0 + lw, x1 - lw
-        items, total = layout_label(p, b["label"], tx1 - tx0, ty1 - ty0)
-        cy = (ty0 + ty1) / 2 - total / 2
+            tx0, tx1, ty0, ty1 = x0 + 1.5, x1 - 1.5, y0, y1
+        spans = None
+        if big_local or h < 11:
+            items, total = layout_label(p, b["label"], tx1 - tx0, ty1 - ty0)
+            cy = (ty0 + ty1) / 2 - total / 2
+        else:
+            items, total, cy, tx0, tx1, spans = auto_place(p, b["label"], x0, y0, x1, y1, msz, dy, lw, iw, ICON * isc if iw else 0,
+                                                     bool(b.get("show_end")) and esz >= msz - 0.01, ed)
         fg = (None if "fg" in hide else hex_to_rgb(b.get("fg"))) or (0, 0, 0)
         hl = None if "hl" in hide else hex_to_rgb(b.get("hl"))
-        for it in items:
+        for n, it in enumerate(items):
             size = it[1]
             lh = size * 1.18
             if len(it) > 2:
@@ -1341,7 +1460,8 @@ def draw_schedule(dates, blocks, cfg, out_path=None, printed_at=None):
                 tw = wa + wb + 0.6
             else:
                 tw = p.width(it[0], size)
-            sx = (tx0 + tx1) / 2 - tw / 2
+            la, lb = spans[n] if spans and n < len(spans) else (tx0, tx1)
+            sx = (la + lb) / 2 - tw / 2
             if hl:      # 형광펜: 글자 줄 뒤에만 색
                 p.rect(sx - 0.8, cy + lh * 0.08, sx + tw + 0.8, cy + lh * 0.98, fill=hl, stroke=None)
             if len(it) > 2:
