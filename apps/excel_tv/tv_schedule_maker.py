@@ -30,7 +30,7 @@ try:
 except Exception:
     pass
 
-APP_VERSION = "1.4.9"
+APP_VERSION = "1.4.10"
 # 배포판: GitHub 빌드가 단독 exe 를 만들 때 _edition.py(EDITION = "public")를 넣는다. 런처로 실행하는 사내판에는 없음
 try:
     from _edition import EDITION
@@ -1991,6 +1991,27 @@ def merge_new_version(cur_rows, old_orig, new_rows):
                 n["_drop"] = True
                 dropped.append(n)
             continue
+        # 예전 판에서 이 엑셀 줄을 여러 조각으로 나눠 고쳤으면(조각마다 이름·꾸밈이 다를 수 있음)
+        # 엑셀 줄이 그대로일 때는 조각들을 그대로 옮김 (한 조각만 옮기면 다른 조각이 사라짐)
+        inside = sorted([c for c in cs if c["plan"] == n["plan"] and n["s"] <= c["s"] and c["e"] <= n["e"]],
+                        key=lambda c: c["s"])
+        if len(inside) > 1 and any(c.get("cut") for c in inside):
+            if st == "same":
+                pieces = []
+                for c in inside:
+                    x = copy.deepcopy(c)
+                    if x.get("_share"):
+                        x["code_orig"], x["code"] = x.get("code"), x.pop("_share")
+                    x["_ver"] = "same"
+                    pieces.append(x)
+                n["_pieces"] = pieces
+                kept.append((pieces[0], [f"나눈 조각 {len(pieces)}개 그대로: " +
+                                         ", ".join(f"{fmt_t(x['s'])}~{fmt_t(x['e'])} {x['name']}" for x in pieces)]))
+                continue
+            n["_check"] = True
+            n["_note"] = ("예전 판에서 이 칸을 나눠 고쳤는데 새 판에서 편성이 바뀜 - 조각 확인: " +
+                          ", ".join(f"{fmt_t(x['s'])}~{fmt_t(x['e'])} {x['name']}" for x in inside))
+            time_checks.append(n)
         c = max(cs, key=lambda c: (c["plan"] == n["plan"], c["s"] == n["s"],
                                    _overlap(c["s"], c["e"], n["s"], n["e"]), -abs(c["s"] - n["s"])))
         o = orig_of(c) or {}
@@ -2020,7 +2041,7 @@ def merge_new_version(cur_rows, old_orig, new_rows):
         if moved:
             n["edited"] = True
             kept.append((n, moved))
-    new_rows = [n for n in new_rows if not n.get("_drop")]
+    new_rows = [x for n in new_rows if not n.get("_drop") for x in (n.pop("_pieces", None) or [n])]
 
     # 4) 바뀐 시간대 (로컬·직접 추가 줄이 여기에 걸리면 확인 필요)
     spans = {}
