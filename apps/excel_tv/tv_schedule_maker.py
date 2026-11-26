@@ -30,7 +30,7 @@ try:
 except Exception:
     pass
 
-APP_VERSION = "1.4.5"
+APP_VERSION = "1.4.6"
 # 배포판: GitHub 빌드가 단독 exe 를 만들 때 _edition.py(EDITION = "public")를 넣는다. 런처로 실행하는 사내판에는 없음
 try:
     from _edition import EDITION
@@ -2064,24 +2064,122 @@ def merge_new_version(cur_rows, old_orig, new_rows):
         merged.append(r)
     for r in merged:        # 잘린 조각은 원래 줄의 표시를 따라감
         r.setdefault("_ver", "same")
+
     checks = time_checks + checks
     # 마지막 점검: 같은 날·같은 안에서 시간이 겹치는 칸 (직접 추가한 줄과 새 판 줄 등)
+    pairs = []
     for d in sorted({r["date"] for r in merged}):
         for plan in ("1안", "2안"):
             day = sorted([r for r in merged if r["date"] == d and r["plan"] == plan], key=lambda r: (r["s"], r["e"]))
             for a, b in ((a, b) for n, a in enumerate(day) for b in day[n + 1:]):
                 if clash(a, b):
+                    pairs.append((a, b))
                     for x, y in ((a, b), (b, a)):
                         if not x.get("_check"):
                             x["_check"], x["_ovl"] = True, True
                             x["_note"] = f"다른 칸과 시간이 겹침: {fmt_t(y['s'])}~{fmt_t(y['e'])} {y['name']}"
                             checks.append(x)
+    fixes = overlap_fixes(merged, pairs, cur_rows)
     report = {"same": [n for n in new_rows if n.get("_ver") == "same" and not n.get("local")],
               "changed": [n for n in merged if n.get("_ver") == "changed"],
               "new": [n for n in merged if n.get("_ver") == "new"],
               "removed": removed, "kept": kept, "locals": [r for r in merged if r.get("_ver") == "local"],
-              "added": [r for r in merged if r.get("_ver") == "added"], "checks": checks, "dropped": dropped}
+              "added": [r for r in merged if r.get("_ver") == "added"], "checks": checks, "dropped": dropped,
+              "fixes": fixes}
     return merged, report
+
+
+# ---------------------------------------------------------------- 새 판 반영 뒤 겹침 정리 (비교 창)
+def _nm(r):
+    return f"{fmt_t(r['s'])}~{fmt_t(r['e'])} {r['name']}".replace("\n", " ")
+
+
+def overlap_fixes(rows, pairs, cur_rows):
+    """겹친 짝마다 정리 방법 제안: [{kind, a, b, title, why, rec, apply_txt, del_txt, ...}]
+      kind = merge_dup(직접 넣은 줄이 새 판에 들어옴) / recut(예전 판처럼 자리 비움) / check(판단 필요)
+      rec  = 추천 선택 'a'(적용) / 'd'(삭제) / 'k'(그대로)"""
+    prog = lambda r: norm_key(split_suffix(r["name"].replace("\n", " "))[0])
+    cut_codes = {(c["date"], c.get("code")) for c in cur_rows if c.get("cut") and not c.get("local")}
+    xl = lambda r: r.get("_ver") in ("same", "changed", "new") and not r.get("local")     # 새 판 엑셀 줄
+    out, seen = [], set()
+    for a, b in pairs:
+        if (id(a), id(b)) in seen:
+            continue
+        seen.add((id(a), id(b)))
+        mine, xls = (a, b) if a.get("_ver") in ("added", "local") and xl(b) else \
+                    (b, a) if b.get("_ver") in ("added", "local") and xl(a) else (None, None)
+        f = {"a": a, "b": b, "date": a["date"], "s": min(a["s"], b["s"]), "e": max(a["e"], b["e"])}
+        if mine is not None and mine.get("_ver") == "added" and prog(mine) == prog(xls) and \
+                _overlap(a["s"], a["e"], b["s"], b["e"]) * 2 >= min(a["e"] - a["s"], b["e"] - b["s"]):
+            f.update(kind="merge_dup", mine=mine, xls=xls, rec="a",
+                     title=f"{mine['name']} 2줄 (직접 넣은 줄 + 새 판)".replace("\n", " "),
+                     why="같은 프로그램이 새 판 엑셀에 정식으로 들어옴 -> 새 판 줄 하나로 합치고 직접 넣을 때 바꾼 꾸밈은 옮김",
+                     apply_txt="하나로 합침", del_txt="둘 다 지우기")
+        elif mine is not None and mine.get("_ver") == "added" and (xls["date"], xls.get("code")) in cut_codes:
+            f.update(kind="recut", mine=mine, xls=xls, rec="a",
+                     title=f"{xls['name']} ↔ {mine['name']}".replace("\n", " "),
+                     why=f"예전 판에서 '{mine['name']}' 자리를 비우려고 '{xls['name']}'을(를) 잘랐음 -> 새 판에서도 같게",
+                     apply_txt=f"{xls['name']} 을(를) 잘라 자리 비움", del_txt=f"{mine['name']} 지우기 ({xls['name']} 통째로)")
+        elif mine is not None:
+            f.update(kind="check", mine=mine, xls=xls, rec="a",
+                     title=f"{xls['name']}(새 판) ↔ {mine['name']}({'로컬' if mine.get('local') or mine.get('_ver') == 'local' else '직접 넣음'})".replace("\n", " "),
+                     why="새 판에 다른 편성이 들어와 겹침 -> 추천: 새 판 따르기 (내 칸을 새 판 칸 밖으로 줄이거나 지움)",
+                     apply_txt="새 판 따르기", del_txt=f"{xls['name']} 지우기 (내 칸 유지)")
+        else:
+            f.update(kind="check", mine=b, xls=a, rec="k",
+                     title=f"{a['name']} ↔ {b['name']}".replace("\n", " "),
+                     why="둘 다 새 판 줄이거나 둘 다 고친 칸이라 자동으로 고르지 않음",
+                     apply_txt=f"{a['name']} 기준으로 {b['name']} 정리", del_txt=f"{b['name']} 지우기")
+        out.append(f)
+    return out
+
+
+def apply_overlap_fix(rows, f, choice, ref=None):
+    """겹침 정리 하나를 rows 에 적용. choice: 'a'(적용) / 'd'(삭제) / 'k'(그대로)
+    ref: 원래 줄 -> rows 안의 줄 (미리보기용 복사본에 적용할 때). 반환: 기록할 한 줄 (없으면 '')"""
+    get = (lambda r: ref.get(id(r))) if ref is not None else (lambda r: r if any(x is r for x in rows) else None)
+    mine, xls = get(f["mine"]), get(f["xls"])
+    if choice == "k" or mine is None or xls is None:
+        return ""
+    idx = lambda r: next(i for i, x in enumerate(rows) if x is r)
+    def drop(r):
+        rows.pop(idx(r))
+    def win(w, lose):        # w 시간에 맞춰 lose 를 자르거나 지움
+        plan = [(k, act, t) for k, act, t in overlap_plan(rows, idx(w)) if rows[k] is lose]
+        if plan:
+            resolve_overlaps(rows, idx(w), plan)
+        return "; ".join(t for _, _, t in plan)
+    if f["kind"] == "merge_dup":
+        if choice == "d":
+            drop(mine)
+            drop(xls)
+            return f"{_nm(xls)} 두 줄 모두 지움"
+        mv = []
+        for k in STYLE_KEYS + ICON_KEYS:
+            if mine.get(k) not in (None, "", False) and xls.get(k) != mine.get(k):
+                xls[k] = mine[k]
+                mv.append(k)
+        if mv:
+            xls["edited"] = True
+        drop(mine)
+        return f"{_nm(xls)} 하나로 합침" + (f" (꾸밈 옮김: {', '.join(mv)})" if mv else "")
+    if f["kind"] == "recut":
+        if choice == "d":
+            drop(mine)
+            return f"{_nm(mine)} 지움"
+        return "자리 비움: " + win(mine, xls)
+    if choice == "d":                       # check: 새 판 칸을 지우고 내 칸 유지
+        drop(xls)
+        return f"{_nm(xls)} 지움"
+    return "새 판 따름: " + win(xls, mine)
+
+
+def clear_stale_overlap_marks(rows):
+    """겹침 표시(_ovl)가 붙었지만 이제는 겹치지 않는 칸의 표시를 지움"""
+    for r in rows:
+        if r.get("_ovl") and not any(x is not r and clash(r, x) for x in rows):
+            for k in ("_check", "_note", "_ovl"):
+                r.pop(k, None)
 
 
 def merge_keep_past(cur_rows, old_orig, new_rows, keep_before=None):
@@ -2099,6 +2197,7 @@ def merge_keep_past(cur_rows, old_orig, new_rows, keep_before=None):
     for k in ("same", "changed", "new", "removed", "locals", "added", "checks", "dropped"):
         rep[k] = [r for r in rep[k] if not past(r)]
     rep["kept"] = [(n, mv) for n, mv in rep["kept"] if not past(n)]
+    rep["fixes"] = [f for f in rep.get("fixes", []) if not past(f["a"])]
     keep = [copy.deepcopy(r) for r in cur_rows if past(r)]
     for r in keep:
         for k in ("_ver", "_check", "_note", "_was", "_ovl"):
@@ -5434,6 +5533,179 @@ class App:
             tk.Button(self.ver_bar, text="닫기", width=10, command=self.close_version_window).pack(side=tk.RIGHT, padx=2)
             tk.Button(self.ver_bar, text="표시 지우기", width=12, command=self.clear_version_marks).pack(
                 side=tk.RIGHT, padx=2)
+        if rep.get("fixes"):           # 겹친 칸이 있으면 비교 창 (항목마다 적용 / 삭제 / 그대로)
+            self.root.after(300, lambda: self.show_overlap_popup(rep["fixes"]))
+
+    def _overlap_png(self, rows, f):
+        """rows 로 편성표를 그려 f 의 날짜·시간 부분만 잘라 PhotoImage 로"""
+        import base64
+        cfg = load_config()
+        cfg.update(self.cfg_over())
+        draw = rows if IS_DMB else (annotate_auto(rows, self.orig) or rows)
+        doc, geom, dates, _ = compose(draw, self.prev_rows_cached(), cfg)
+        try:
+            di = dates.index(f["date"])
+            x0, x1 = X_COLS["days"][di][0] - 2, X_COLS["days"][di][1] + 2
+            a, b = f["s"] - 25, f["e"] + 25
+            col = [g for g in geom if g["block"]["day0"] <= di <= g["block"]["day1"]]
+
+            def ypos(t):        # 그 요일 칸들에서 시각 t 의 y (칸 안에서는 비례)
+                for g in col:
+                    bs, be = g["block"]["s"], g["block"]["e"]
+                    if bs <= t <= be and be > bs:
+                        r = g["rect"]
+                        return r[1] + (r[3] - r[1]) * (t - bs) / (be - bs)
+                return None
+            ys = [y for y in (ypos(max(0, a)), ypos(min(DAY_LEN_MIN, b))) if y is not None]
+            ys += [g["rect"][1] for g in col if a <= g["block"]["s"] <= b] + \
+                  [g["rect"][3] for g in col if a <= g["block"]["e"] <= b]
+            if not ys:
+                return None
+            y0, y1 = min(ys) - 2, max(ys) + 2
+            z = max(1.0, min(6.0, 300 / max(1, y1 - y0), 420 / max(1, x1 - x0)))
+            png = doc[0].get_pixmap(matrix=pymupdf.Matrix(z, z), clip=pymupdf.Rect(x0, y0, x1, y1)).tobytes("png")
+        finally:
+            doc.close()
+        return self.tk.PhotoImage(data=base64.b64encode(png).decode("ascii"))
+
+    def show_overlap_popup(self, fixes):
+        """새 판 반영 뒤 겹친 칸 비교 창: 항목마다 지금/고른 대로의 그림을 나란히, 적용·삭제·그대로를 골라 한 번에"""
+        tk, ttk = self.tk, self.ttk
+        fixes = [f for f in fixes if any(x is f["a"] for x in self.rows) and any(x is f["b"] for x in self.rows)]
+        if not fixes:
+            return
+        w = tk.Toplevel(self.root)
+        w.title(f"새 판 반영 - 겹침 비교 ({len(fixes)}건)")
+        w.geometry("1000x700")
+        w.transient(self.root)
+        choice = [f["rec"] for f in fixes]
+        lab = {"a": "적용", "d": "삭제", "k": "그대로"}
+        tk.Label(w, anchor="w", justify="left", fg="#333",
+                 text="새 판과 겹친 칸입니다. 항목을 누르면 아래에 지금 / 고른 대로의 그림이 나옵니다.\n"
+                      "항목마다 [적용·삭제·그대로]를 고른 뒤 [고른 대로 적용]. 마음에 안 들면 [되돌리기] 한 번에 새 판 반영 전으로."
+                 ).pack(fill=tk.X, padx=8, pady=(8, 4))
+        tv = ttk.Treeview(w, columns=("pick", "day", "title", "kind"), show="headings", height=min(8, len(fixes)),
+                          selectmode="browse")
+        for c, t_, wd in (("pick", "선택", 70), ("day", "날짜", 120), ("title", "겹친 칸", 520), ("kind", "구분", 110)):
+            tv.heading(c, text=t_)
+            tv.column(c, width=wd, anchor="w", stretch=c == "title")
+        tv.tag_configure("a", foreground="#15803d")
+        tv.tag_configure("d", foreground="#b45309")
+        tv.tag_configure("k", foreground="#b91c1c")
+        tv.pack(fill=tk.X, padx=8)
+        row = tk.Frame(w)
+        row.pack(fill=tk.X, padx=8, pady=4)
+        v = tk.StringVar(value=choice[0])
+        rbs = {}
+        for k in ("a", "d", "k"):
+            rbs[k] = tk.Radiobutton(row, variable=v, value=k, indicatoron=False, width=36, pady=3)
+            rbs[k].pack(side=tk.LEFT, padx=2)
+        why = tk.Label(w, anchor="w", justify="left", fg="#555", wraplength=860)
+        why.pack(fill=tk.X, padx=8)
+        pv = tk.Frame(w, bg="white", bd=1, relief="solid")
+        pv.pack(fill=tk.BOTH, expand=True, padx=8, pady=6)
+        lb = tk.Label(pv, text="지금 (겹침)", fg="#b91c1c", bg="white", font=("맑은 고딕", 9, "bold"))
+        la = tk.Label(pv, text="", bg="white", font=("맑은 고딕", 9, "bold"))
+        ib, ia = tk.Label(pv, bg="white"), tk.Label(pv, bg="white")
+        lb.grid(row=0, column=0, pady=(4, 0))
+        la.grid(row=0, column=1, pady=(4, 0))
+        ib.grid(row=1, column=0, padx=10, pady=4)
+        ia.grid(row=1, column=1, padx=10, pady=4)
+        pv.grid_columnconfigure(0, weight=1)
+        pv.grid_columnconfigure(1, weight=1)
+        summ = tk.Label(w, anchor="w", fg="#333")
+        cur = {"i": 0}
+        imgs = {}
+
+        def fill():
+            for i, f in enumerate(fixes):
+                vals = (("✔ " if choice[i] == "a" else "🗑 " if choice[i] == "d" else "· ") + lab[choice[i]],
+                        day_label(f["date"]) + " " + fmt_t(f["s"]), f["title"],
+                        "자동 정리" if f["kind"] != "check" else "⚠ 확인")
+                if tv.exists(str(i)):
+                    tv.item(str(i), values=vals, tags=(choice[i],))
+                else:
+                    tv.insert("", "end", iid=str(i), values=vals, tags=(choice[i],))
+            n = lambda k: choice.count(k)
+            summ.config(text=f"적용 {n('a')} · 삭제 {n('d')} · 그대로 {n('k')}")
+
+        def show():
+            i = cur["i"]
+            f = fixes[i]
+            cut = lambda x: x if len(x) <= 30 else x[:29] + "…"
+            rbs["a"].config(text="적용: " + cut(f["apply_txt"]))
+            rbs["d"].config(text="삭제: " + cut(f["del_txt"]))
+            rbs["k"].config(text="그대로 (겹침 남김)")
+            v.set(choice[i])
+            why.config(text="이유: " + f["why"])
+            try:
+                rows2 = [dict(r) for r in self.rows]
+                ref = {id(o): n for o, n in zip(self.rows, rows2)}
+                apply_overlap_fix(rows2, f, choice[i], ref)
+                clear_stale_overlap_marks(rows2)
+                imgs["b"] = self._overlap_png([dict(r) for r in self.rows], f)
+                imgs["a"] = self._overlap_png(rows2, f)
+            except Exception as e:
+                self.log(f"[겹침 비교] 그림 오류: {type(e).__name__}: {e}")
+                imgs["b"] = imgs["a"] = None
+            ib.config(image=imgs["b"] or "", text="" if imgs["b"] else "(그림 없음)")
+            ia.config(image=imgs["a"] or "", text="" if imgs["a"] else "(그림 없음)")
+            c = choice[i]
+            la.config(text={"a": "적용하면", "d": "삭제하면", "k": "그대로 두면 (겹침 남음)"}[c],
+                      fg={"a": "#15803d", "d": "#b45309", "k": "#b91c1c"}[c])
+
+        def on_pick(_e=None):
+            sel = tv.selection()
+            if sel:
+                cur["i"] = int(sel[0])
+                show()
+
+        def on_choice():
+            choice[cur["i"]] = v.get()
+            fill()
+            show()
+
+        for k in ("a", "d", "k"):
+            rbs[k].config(command=on_choice)
+        tv.bind("<<TreeviewSelect>>", on_pick)
+
+        def all_rec():
+            for i, f in enumerate(fixes):
+                choice[i] = f["rec"]
+            fill()
+            show()
+
+        def apply():
+            done = []
+            for f, c in zip(fixes, choice):
+                try:
+                    t_ = apply_overlap_fix(self.rows, f, c)
+                except Exception as e:
+                    t_ = f"오류: {e}"
+                if t_:
+                    done.append(f"{day_label(f['date'])} {t_}")
+            clear_stale_overlap_marks(self.rows)
+            for t_ in done:
+                self.log("[겹침 정리] " + t_)
+            self.saved = False
+            self.sel, self.multi = None, []
+            w.grab_release()
+            w.destroy()
+            self.refresh()
+
+        bar = tk.Frame(w)
+        bar.pack(fill=tk.X, padx=8, pady=(0, 8))
+        summ.pack(in_=bar, side=tk.LEFT)
+        tk.Button(bar, text="닫기 (그대로)", width=12, command=lambda: (w.grab_release(), w.destroy())).pack(side=tk.RIGHT, padx=2)
+        tk.Button(bar, text="고른 대로 적용", width=14, bg="#66bb6a", command=apply).pack(side=tk.RIGHT, padx=2)
+        tk.Button(bar, text="모두 추천대로", width=12, command=all_rec).pack(side=tk.RIGHT, padx=2)
+        fill()
+        tv.selection_set("0")
+        w.after(50, show)
+        try:
+            w.grab_set()
+        except Exception:
+            pass
 
     def find_row(self, row):
         """보고 창의 줄 -> 지금 편성표의 줄 번호 (되돌리기 뒤에도 날짜·시각·이름으로 찾음)"""
