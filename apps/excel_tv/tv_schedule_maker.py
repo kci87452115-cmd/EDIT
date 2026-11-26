@@ -30,7 +30,7 @@ try:
 except Exception:
     pass
 
-APP_VERSION = "1.4.6"
+APP_VERSION = "1.4.7"
 # 배포판: GitHub 빌드가 단독 exe 를 만들 때 _edition.py(EDITION = "public")를 넣는다. 런처로 실행하는 사내판에는 없음
 try:
     from _edition import EDITION
@@ -5594,18 +5594,31 @@ class App:
         tv.tag_configure("k", foreground="#b91c1c")
         tv.pack(fill=tk.X, padx=8)
         row = tk.Frame(w)
-        row.pack(fill=tk.X, padx=8, pady=4)
+        row.pack(fill=tk.X, padx=8, pady=(8, 4))
         v = tk.StringVar(value=choice[0])
         rbs = {}
-        for k in ("a", "d", "k"):
-            rbs[k] = tk.Radiobutton(row, variable=v, value=k, indicatoron=False, width=36, pady=3)
-            rbs[k].pack(side=tk.LEFT, padx=2)
-        why = tk.Label(w, anchor="w", justify="left", fg="#555", wraplength=860)
-        why.pack(fill=tk.X, padx=8)
+        # 고르는 버튼: 크게, 색으로 구분, 고른 것은 진하게 (글이 길면 줄바꿈 - 잘리지 않게)
+        COL = {"a": ("#e8f5e9", "#2e7d32"), "d": ("#fff3e0", "#e65100"), "k": ("#f5f5f5", "#616161")}
+        for n, k in enumerate(("a", "d", "k")):
+            rbs[k] = tk.Radiobutton(row, variable=v, value=k, indicatoron=False, font=("맑은 고딕", 10, "bold"),
+                                    justify="center", wraplength=290, pady=6, bd=2, cursor="hand2",
+                                    bg=COL[k][0], activebackground=COL[k][0], selectcolor=COL[k][1])
+            rbs[k].grid(row=0, column=n, sticky="nsew", padx=3)
+            row.grid_columnconfigure(n, weight=1, uniform="pick")
+
+        def paint():
+            for k, rb in rbs.items():
+                on = v.get() == k
+                rb.config(bg=COL[k][1] if on else COL[k][0], fg="white" if on else COL[k][1],
+                          activeforeground="white" if on else COL[k][1],
+                          activebackground=COL[k][1] if on else COL[k][0], relief="sunken" if on else "raised")
+        why = tk.Label(w, anchor="w", justify="left", fg="#1e3a8a", bg="#eef2ff", font=("맑은 고딕", 10, "bold"),
+                       wraplength=960, padx=8, pady=6)
+        why.pack(fill=tk.X, padx=8, pady=(2, 0))
         pv = tk.Frame(w, bg="white", bd=1, relief="solid")
         pv.pack(fill=tk.BOTH, expand=True, padx=8, pady=6)
-        lb = tk.Label(pv, text="지금 (겹침)", fg="#b91c1c", bg="white", font=("맑은 고딕", 9, "bold"))
-        la = tk.Label(pv, text="", bg="white", font=("맑은 고딕", 9, "bold"))
+        lb = tk.Label(pv, text="지금 (겹침)", fg="#b91c1c", bg="white", font=("맑은 고딕", 12, "bold"))
+        la = tk.Label(pv, text="", bg="white", font=("맑은 고딕", 12, "bold"))
         ib, ia = tk.Label(pv, bg="white"), tk.Label(pv, bg="white")
         lb.grid(row=0, column=0, pady=(4, 0))
         la.grid(row=0, column=1, pady=(4, 0))
@@ -5632,12 +5645,12 @@ class App:
         def show():
             i = cur["i"]
             f = fixes[i]
-            cut = lambda x: x if len(x) <= 30 else x[:29] + "…"
-            rbs["a"].config(text="적용: " + cut(f["apply_txt"]))
-            rbs["d"].config(text="삭제: " + cut(f["del_txt"]))
-            rbs["k"].config(text="그대로 (겹침 남김)")
+            rbs["a"].config(text="✔ 적용 (추천)\n" + f["apply_txt"] if f["rec"] == "a" else "✔ 적용\n" + f["apply_txt"])
+            rbs["d"].config(text="🗑 삭제\n" + f["del_txt"])
+            rbs["k"].config(text="· 그대로" + (" (추천)" if f["rec"] == "k" else "") + "\n겹친 채로 두고 빨간 표시 남김")
             v.set(choice[i])
-            why.config(text="이유: " + f["why"])
+            paint()
+            why.config(text="💡 " + f["why"])
             try:
                 rows2 = [dict(r) for r in self.rows]
                 ref = {id(o): n for o, n in zip(self.rows, rows2)}
@@ -5697,7 +5710,9 @@ class App:
         bar.pack(fill=tk.X, padx=8, pady=(0, 8))
         summ.pack(in_=bar, side=tk.LEFT)
         tk.Button(bar, text="닫기 (그대로)", width=12, command=lambda: (w.grab_release(), w.destroy())).pack(side=tk.RIGHT, padx=2)
-        tk.Button(bar, text="고른 대로 적용", width=14, bg="#66bb6a", command=apply).pack(side=tk.RIGHT, padx=2)
+        tk.Button(bar, text="✔ 고른 대로 적용", width=18, bg="#2e7d32", fg="white", activebackground="#1b5e20",
+                  activeforeground="white", font=("맑은 고딕", 11, "bold"), pady=4, cursor="hand2",
+                  command=apply).pack(side=tk.RIGHT, padx=4)
         tk.Button(bar, text="모두 추천대로", width=12, command=all_rec).pack(side=tk.RIGHT, padx=2)
         fill()
         tv.selection_set("0")
