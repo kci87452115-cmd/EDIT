@@ -30,7 +30,7 @@ try:
 except Exception:
     pass
 
-APP_VERSION = "1.4.7"
+APP_VERSION = "1.4.8"
 # 배포판: GitHub 빌드가 단독 exe 를 만들 때 _edition.py(EDITION = "public")를 넣는다. 런처로 실행하는 사내판에는 없음
 try:
     from _edition import EDITION
@@ -2102,20 +2102,40 @@ def overlap_fixes(rows, pairs, cur_rows):
     cut_codes = {(c["date"], c.get("code")) for c in cur_rows if c.get("cut") and not c.get("local")}
     xl = lambda r: r.get("_ver") in ("same", "changed", "new") and not r.get("local")     # 새 판 엑셀 줄
     out, seen = [], set()
+    same_prog_of = lambda a, b: prog(a) == prog(b) and \
+        _overlap(a["s"], a["e"], b["s"], b["e"]) * 2 >= min(a["e"] - a["s"], b["e"] - b["s"])
+    # 같은 프로그램이 여러 줄 겹치면 한 묶음으로 (3줄이면 항목 하나)
+    grp = {}
     for a, b in pairs:
-        if (id(a), id(b)) in seen:
+        if same_prog_of(a, b):
+            ga, gb = grp.get(id(a), [a]), grp.get(id(b), [b])
+            if ga is not gb:
+                ga += [x for x in gb if all(x is not y for y in ga)]
+                for x in ga:
+                    grp[id(x)] = ga
+    done_grp = set()
+    for g in grp.values():
+        if id(g) in done_grp:
+            continue
+        done_grp.add(id(g))
+        score = lambda r: (xl(r), bool(r.get("edited") or r.get("name_edited")), r.get("_ver") != "new")
+        keep = max(g, key=score)
+        gone = [x for x in g if x is not keep]
+        kinds = {("직접 넣은 줄" if x.get("_ver") == "added" else "로컬" if x.get("_ver") == "local" or x.get("local")
+                  else "새 판") for x in g}
+        out.append({"a": keep, "b": gone[0], "date": keep["date"], "s": min(x["s"] for x in g),
+                    "e": max(x["e"] for x in g), "kind": "merge_dup", "mine": gone[0], "gone": gone, "xls": keep,
+                    "rec": "a", "title": f"{keep['name']} {len(g)}줄 ({' + '.join(sorted(kinds))})".replace("\n", " "),
+                    "why": f"같은 시간에 같은 프로그램이 {len(g)}줄 -> 한 줄로 합치고 다른 줄에서 바꾼 꾸밈(음영·아이콘 등)은 옮김",
+                    "apply_txt": "한 줄로 합침", "del_txt": f"{len(g)}줄 모두 지우기"})
+    for a, b in pairs:
+        if (id(a), id(b)) in seen or (id(a) in grp and grp[id(a)] is grp.get(id(b))):
             continue
         seen.add((id(a), id(b)))
         mine, xls = (a, b) if a.get("_ver") in ("added", "local") and xl(b) else \
                     (b, a) if b.get("_ver") in ("added", "local") and xl(a) else (None, None)
         f = {"a": a, "b": b, "date": a["date"], "s": min(a["s"], b["s"]), "e": max(a["e"], b["e"])}
-        if mine is not None and mine.get("_ver") == "added" and prog(mine) == prog(xls) and \
-                _overlap(a["s"], a["e"], b["s"], b["e"]) * 2 >= min(a["e"] - a["s"], b["e"] - b["s"]):
-            f.update(kind="merge_dup", mine=mine, xls=xls, rec="a",
-                     title=f"{mine['name']} 2줄 (직접 넣은 줄 + 새 판)".replace("\n", " "),
-                     why="같은 프로그램이 새 판 엑셀에 정식으로 들어옴 -> 새 판 줄 하나로 합치고 직접 넣을 때 바꾼 꾸밈은 옮김",
-                     apply_txt="하나로 합침", del_txt="둘 다 지우기")
-        elif mine is not None and mine.get("_ver") == "added" and (xls["date"], xls.get("code")) in cut_codes:
+        if mine is not None and mine.get("_ver") == "added" and (xls["date"], xls.get("code")) in cut_codes:
             f.update(kind="recut", mine=mine, xls=xls, rec="a",
                      title=f"{xls['name']} ↔ {mine['name']}".replace("\n", " "),
                      why=f"예전 판에서 '{mine['name']}' 자리를 비우려고 '{xls['name']}'을(를) 잘랐음 -> 새 판에서도 같게",
@@ -2131,6 +2151,7 @@ def overlap_fixes(rows, pairs, cur_rows):
                      why="둘 다 새 판 줄이거나 둘 다 고친 칸이라 자동으로 고르지 않음",
                      apply_txt=f"{a['name']} 기준으로 {b['name']} 정리", del_txt=f"{b['name']} 지우기")
         out.append(f)
+    out.sort(key=lambda f: (f["date"], f["s"]))
     return out
 
 
@@ -2139,6 +2160,8 @@ def apply_overlap_fix(rows, f, choice, ref=None):
     ref: 원래 줄 -> rows 안의 줄 (미리보기용 복사본에 적용할 때). 반환: 기록할 한 줄 (없으면 '')"""
     get = (lambda r: ref.get(id(r))) if ref is not None else (lambda r: r if any(x is r for x in rows) else None)
     mine, xls = get(f["mine"]), get(f["xls"])
+    if f["kind"] == "merge_dup" and xls is not None and choice != "k":
+        mine = mine or xls
     if choice == "k" or mine is None or xls is None:
         return ""
     idx = lambda r: next(i for i, x in enumerate(rows) if x is r)
@@ -2150,19 +2173,21 @@ def apply_overlap_fix(rows, f, choice, ref=None):
             resolve_overlaps(rows, idx(w), plan)
         return "; ".join(t for _, _, t in plan)
     if f["kind"] == "merge_dup":
+        gone = [g for g in (get(x) for x in f.get("gone", [f["mine"]])) if g is not None]
         if choice == "d":
-            drop(mine)
-            drop(xls)
-            return f"{_nm(xls)} 두 줄 모두 지움"
+            for g in gone + [xls]:
+                drop(g)
+            return f"{_nm(xls)} {len(gone) + 1}줄 모두 지움"
         mv = []
-        for k in STYLE_KEYS + ICON_KEYS:
-            if mine.get(k) not in (None, "", False) and xls.get(k) != mine.get(k):
-                xls[k] = mine[k]
-                mv.append(k)
+        for g in gone:
+            for k in STYLE_KEYS + ICON_KEYS:
+                if g.get(k) not in (None, "", False) and xls.get(k) != g.get(k):
+                    xls[k] = g[k]
+                    mv.append(k)
+            drop(g)
         if mv:
             xls["edited"] = True
-        drop(mine)
-        return f"{_nm(xls)} 하나로 합침" + (f" (꾸밈 옮김: {', '.join(mv)})" if mv else "")
+        return f"{_nm(xls)} 한 줄로 합침" + (f" (꾸밈 옮김: {', '.join(dict.fromkeys(mv))})" if mv else "")
     if f["kind"] == "recut":
         if choice == "d":
             drop(mine)
@@ -5576,7 +5601,7 @@ class App:
             return
         w = tk.Toplevel(self.root)
         w.title(f"새 판 반영 - 겹침 비교 ({len(fixes)}건)")
-        w.geometry("1000x700")
+        w.geometry("1020x780")
         w.transient(self.root)
         choice = [f["rec"] for f in fixes]
         lab = {"a": "적용", "d": "삭제", "k": "그대로"}
@@ -5584,14 +5609,19 @@ class App:
                  text="새 판과 겹친 칸입니다. 항목을 누르면 아래에 지금 / 고른 대로의 그림이 나옵니다.\n"
                       "항목마다 [적용·삭제·그대로]를 고른 뒤 [고른 대로 적용]. 마음에 안 들면 [되돌리기] 한 번에 새 판 반영 전으로."
                  ).pack(fill=tk.X, padx=8, pady=(8, 4))
-        tv = ttk.Treeview(w, columns=("pick", "day", "title", "kind"), show="headings", height=min(8, len(fixes)),
-                          selectmode="browse")
-        for c, t_, wd in (("pick", "선택", 70), ("day", "날짜", 120), ("title", "겹친 칸", 520), ("kind", "구분", 110)):
+        st = ttk.Style(w)
+        st.configure("Ovl.Treeview", rowheight=34, font=("맑은 고딕", 11))
+        st.configure("Ovl.Treeview.Heading", font=("맑은 고딕", 10, "bold"))
+        st.map("Ovl.Treeview", background=[("selected", "#1565c0")], foreground=[("selected", "white")])
+        tv = ttk.Treeview(w, columns=("pick", "day", "title", "kind"), show="headings", height=min(6, len(fixes)),
+                          selectmode="browse", style="Ovl.Treeview")
+        for c, t_, wd in (("pick", "선택", 100), ("day", "날짜", 150), ("title", "겹친 칸", 560), ("kind", "구분", 120)):
             tv.heading(c, text=t_)
             tv.column(c, width=wd, anchor="w", stretch=c == "title")
-        tv.tag_configure("a", foreground="#15803d")
-        tv.tag_configure("d", foreground="#b45309")
-        tv.tag_configure("k", foreground="#b91c1c")
+        # 고른 것마다 줄 바탕색: 적용 초록 / 삭제 주황 / 그대로 빨강(겹침이 남음)
+        tv.tag_configure("a", background="#c8e6c9", foreground="#1b5e20")
+        tv.tag_configure("d", background="#ffe0b2", foreground="#bf360c")
+        tv.tag_configure("k", background="#ffcdd2", foreground="#b71c1c")
         tv.pack(fill=tk.X, padx=8)
         row = tk.Frame(w)
         row.pack(fill=tk.X, padx=8, pady=(8, 4))
@@ -5615,6 +5645,8 @@ class App:
         why = tk.Label(w, anchor="w", justify="left", fg="#1e3a8a", bg="#eef2ff", font=("맑은 고딕", 10, "bold"),
                        wraplength=960, padx=8, pady=6)
         why.pack(fill=tk.X, padx=8, pady=(2, 0))
+        bar = tk.Frame(w)
+        bar.pack(side=tk.BOTTOM, fill=tk.X, padx=8, pady=(0, 8))      # 아래 버튼은 늘 보이게 먼저
         pv = tk.Frame(w, bg="white", bd=1, relief="solid")
         pv.pack(fill=tk.BOTH, expand=True, padx=8, pady=6)
         lb = tk.Label(pv, text="지금 (겹침)", fg="#b91c1c", bg="white", font=("맑은 고딕", 12, "bold"))
@@ -5632,7 +5664,7 @@ class App:
 
         def fill():
             for i, f in enumerate(fixes):
-                vals = (("✔ " if choice[i] == "a" else "🗑 " if choice[i] == "d" else "· ") + lab[choice[i]],
+                vals = (("✔ " if choice[i] == "a" else "🗑 " if choice[i] == "d" else "⚠ ") + lab[choice[i]],
                         day_label(f["date"]) + " " + fmt_t(f["s"]), f["title"],
                         "자동 정리" if f["kind"] != "check" else "⚠ 확인")
                 if tv.exists(str(i)):
@@ -5706,8 +5738,6 @@ class App:
             w.destroy()
             self.refresh()
 
-        bar = tk.Frame(w)
-        bar.pack(fill=tk.X, padx=8, pady=(0, 8))
         summ.pack(in_=bar, side=tk.LEFT)
         tk.Button(bar, text="닫기 (그대로)", width=12, command=lambda: (w.grab_release(), w.destroy())).pack(side=tk.RIGHT, padx=2)
         tk.Button(bar, text="✔ 고른 대로 적용", width=18, bg="#2e7d32", fg="white", activebackground="#1b5e20",
