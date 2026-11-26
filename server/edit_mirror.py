@@ -1222,6 +1222,7 @@ def main():
     if "--no-git" not in sys.argv:
         threading.Thread(target=git_pull_loop, daemon=True).start()
     threading.Thread(target=dist_loop, daemon=True).start()
+    threading.Thread(target=admin.launcher_loop, daemon=True).start()   # 관리자 화면 설치 파일 탭
     time.sleep(6)                     # 알림을 한두 번 들은 뒤 첫 동기화
     mirror.loop()
 

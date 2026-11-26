@@ -386,6 +386,136 @@ def set_keep(b, who):
     event(who, "백업 설정: " + ", ".join(msg))
 
 
+# ---------------------------------------------------------------- 📦 설치 파일 (마지막으로 성공한 런처 설치 파일)
+# GitHub 빌드는 모든 단계가 성공해야 릴리스(r###)를 올린다 -> 가장 최근 r### 릴리스 = 마지막 성공 빌드.
+# 웹 폴더 밖 ~/edit-mirror/dist/launcher 에 최신·직전 2개만 두고, 관리자 로그인한 사람만 받는다.
+LAUNCHER_DIR = os.path.join(HOME, "dist", "launcher")
+LAUNCHER_STATE = os.path.join(LAUNCHER_DIR, "state.json")
+LAUNCHER_API = "https://api.github.com/repos/kci87452115-cmd/EDIT/releases?per_page=10"
+LAUNCHER_KEEP = 2
+LAUNCHER_EVERY = 3600
+_launcher_lock = threading.Lock()
+
+
+def _gh_get(url, timeout, accept="application/vnd.github+json"):
+    import urllib.request
+    req = urllib.request.Request(url, headers={"User-Agent": "edit-mirror", "Accept": accept})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.read()
+
+
+def _kst(iso):
+    try:
+        t = datetime.datetime.strptime((iso or "")[:19], "%Y-%m-%dT%H:%M:%S") + datetime.timedelta(hours=9)
+        return t.strftime("%Y-%m-%d %H:%M")
+    except ValueError:
+        return ""
+
+
+def launcher_state():
+    st = _load(LAUNCHER_STATE, {})
+    files = [f for f in (st.get("files") or []) if os.path.isfile(os.path.join(LAUNCHER_DIR, f.get("local", "")))]
+    return {"files": files, "check": st.get("check") or {}}
+
+
+def _save_launcher_state(files, check):
+    os.makedirs(LAUNCHER_DIR, exist_ok=True)
+    _save(LAUNCHER_STATE, {"files": files, "check": check})
+
+
+def launcher_sync():
+    """GitHub 최근 성공 빌드 2개의 설치 파일(EDIT_setup_r###.exe)을 받아 둔다. 지문(sha256)이 맞을 때만 저장."""
+    if not _launcher_lock.acquire(blocking=False):
+        return "이미 확인하는 중입니다."
+    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    st = launcher_state()
+    have = {f["tag"]: f for f in st["files"]}
+    try:
+        rels = json.loads(_gh_get(LAUNCHER_API, 30).decode("utf-8"))
+        rels = [r for r in rels if re.fullmatch(r"r\d+", r.get("tag_name", "")) and not r.get("draft")
+                and not r.get("prerelease")]
+        rels.sort(key=lambda r: int(r["tag_name"][1:]), reverse=True)
+        files, got = [], []
+        for r in rels:
+            if len(files) >= LAUNCHER_KEEP:
+                break
+            tag = r["tag_name"]
+            assets = {a["name"]: a for a in r.get("assets") or []}
+            setup = next((a for n, a in assets.items() if re.fullmatch(r"EDIT_setup_r\d+\.exe", n)), None)
+            if not setup:
+                continue
+            if tag in have:
+                files.append(have[tag])
+                continue
+            want = str(setup.get("digest") or "").lower().replace("sha256:", "")
+            if not want:
+                continue                                  # 지문을 모르면 받지 않음
+            info = {"tag": tag, "name": setup["name"], "local": f"setup_{tag}.exe", "size": setup.get("size", 0),
+                    "sha256": want, "published": _kst(r.get("published_at")), "got": now}
+            try:
+                cat = json.loads(_gh_get(assets["catalog.json"]["url"], 30, "application/octet-stream").decode("utf-8"))
+                info["launcher"] = (cat.get("launcher") or {}).get("version", "")
+                info["apps"] = {k: v.get("version", "") for k, v in (cat.get("apps") or {}).items()}
+            except Exception:
+                pass
+            data = _gh_get(setup["url"], 900, "application/octet-stream")
+            if hashlib.sha256(data).hexdigest() != want:
+                raise ValueError(f"{setup['name']} 지문이 맞지 않아 저장하지 않았습니다.")
+            os.makedirs(LAUNCHER_DIR, exist_ok=True)
+            tmp = os.path.join(LAUNCHER_DIR, info["local"] + ".tmp")
+            with open(tmp, "wb") as f:
+                f.write(data)
+            os.replace(tmp, os.path.join(LAUNCHER_DIR, info["local"]))
+            files.append(info)
+            got.append(tag)
+        keep = {f["local"] for f in files}
+        for fn in os.listdir(LAUNCHER_DIR) if os.path.isdir(LAUNCHER_DIR) else []:
+            if fn.startswith("setup_") and fn not in keep:
+                try:
+                    os.remove(os.path.join(LAUNCHER_DIR, fn))
+                except Exception:
+                    pass
+        msg = ("새로 받음: " + ", ".join(got)) if got else "최신 상태"
+        _save_launcher_state(files, {"at": now, "ok": True, "msg": msg})
+        return msg
+    except Exception as exc:
+        _save_launcher_state(st["files"], {"at": now, "ok": False, "msg": str(exc)[:200]})
+        return "확인 실패: " + str(exc)[:200]
+    finally:
+        _launcher_lock.release()
+
+
+def launcher_loop():
+    time.sleep(60)
+    while True:
+        try:
+            launcher_sync()
+        except Exception:
+            pass
+        time.sleep(LAUNCHER_EVERY)
+
+
+def _send_launcher_file(h, ip, tag):
+    f = next((x for x in launcher_state()["files"] if x["tag"] == tag), None)
+    path = os.path.join(LAUNCHER_DIR, f["local"]) if f else ""
+    if not f or not os.path.isfile(path):
+        h._json({"error": "파일이 없습니다."}, 404)
+        return
+    event(ip, f"런처 설치 파일 받기: {f['name']} (런처 {f.get('launcher', '?')})")
+    size = os.path.getsize(path)
+    h.send_response(200)
+    h.send_header("Content-Type", "application/octet-stream")
+    h.send_header("Content-Length", str(size))
+    h.send_header("Cache-Control", "no-store")
+    h.send_header("Content-Disposition", f"attachment; filename*=UTF-8''{urllib.parse.quote(f['name'])}")
+    h.end_headers()
+    if h.command == "HEAD":
+        return
+    import shutil
+    with open(path, "rb") as fh:
+        shutil.copyfileobj(fh, h.wfile, 256 * 1024)
+
+
 # ---------------------------------------------------------------- 웹 (edit_mirror 의 8081 처리기에서 부름)
 def handle(h, method):
     """처리했으면 True. h: BaseHTTPRequestHandler (h._send, h._json 이 있음)"""
@@ -511,6 +641,17 @@ def handle(h, method):
     if path == "/api/admin/events":
         h._json({"rows": events()})
         return True
+    if path == "/api/admin/launcher":
+        h._json(launcher_state())
+        return True
+    if path == "/api/admin/launcher/check" and method == "POST":
+        event(ip, "설치 파일: 지금 확인")
+        threading.Thread(target=launcher_sync, daemon=True).start()
+        h._json({"ok": True, "msg": "GitHub에서 확인을 시작했습니다. 새 파일이 있으면 받는 데 1~2분 걸립니다."})
+        return True
+    if path == "/api/admin/launcher/file":
+        _send_launcher_file(h, ip, g("tag"))
+        return True
     if path == "/api/admin/ipname" and method == "POST":
         b = _body(h)
         try:
@@ -578,7 +719,7 @@ html.dark #rlLog{background:#0b1220;border-color:#1f2937}html.dark .ll.err{backg
  <div id="lmsg" class="err" style="margin-top:10px"></div></div>
 <div id="app" style="display:none">
  <div class="kpis" id="kpis"></div>
- <div class="tabs" style="margin-top:12px"><button data-t="acc" class="on">접속 기록</button> <button data-t="ppl">사람별</button> <button data-t="ev">관리자 기록</button> <button data-t="bk">💾 백업</button> <button data-t="rl">📻 녹음 기록</button></div>
+ <div class="tabs" style="margin-top:12px"><button data-t="acc" class="on">접속 기록</button> <button data-t="ppl">사람별</button> <button data-t="ev">관리자 기록</button> <button data-t="bk">💾 백업</button> <button data-t="rl">📻 녹음 기록</button> <button data-t="ins">📦 설치 파일</button></div>
  <div class="box" style="border-radius:0 10px 10px 10px">
   <div class="bar" id="fbar">기간 <select id="days"><option value="1">오늘</option><option value="2">어제부터</option><option value="7">7일</option><option value="14">14일</option></select>
    IP·이름 <input id="ip" size="14" placeholder="예: 218.237"> 찾기 <input id="q" size="14" placeholder="예: 녹음, 운행표">
@@ -610,7 +751,7 @@ async function load(){$('msg').textContent='';$('cnt').textContent='불러오는
  try{const u='../api/admin/access?days='+$('days').value+'&all='+($('all').checked?1:0)+'&ip='+encodeURIComponent($('ip').value)+'&q='+encodeURIComponent($('q').value);
   last=await J(u);if(!last.log_ok)$('msg').textContent='접속 기록 파일이 아직 없습니다 ('+last.log+'). 녹음 PC에서 cd ~/edit && git pull && bash server/install.sh 를 실행하세요.';render()}
  catch(e){if(e.message!=='login'){$('msg').textContent=e.message;$('cnt').textContent=''}}}
-function render(){$('tbl').parentElement.style.maxHeight=tab==='rl'?'none':'';if(tab==='ev')return evs();if(tab==='bk')return bk();if(tab==='rl')return rl(true);if(!last)return;const s=last.summary,k=s.kinds;
+function render(){$('tbl').parentElement.style.maxHeight=tab==='rl'?'none':'';if(tab==='ev')return evs();if(tab==='bk')return bk();if(tab==='rl')return rl(true);if(tab==='ins')return ins();if(!last)return;const s=last.summary,k=s.kinds;
  const n=x=>Number(k[x]||0);
  $('kpis').innerHTML=[['오늘 접속한 PC',s.today_ips+'대'],['오늘 기록',s.today_n+'건'],['녹음 듣기',n('AM 녹음 듣기')+n('FM 녹음 듣기')+'건'],['구간 저장',n('녹음 구간 저장')+'건'],['운행표·TV',n('라디오 운행표')+n('운행표 PDF')+n('TV 편성표')+n('TV 편성표 PDF')+'건']]
   .map(([l,v])=>'<div class="kpi"><div class="l">'+l+'</div><div class="v">'+v+'</div></div>').join('');
@@ -717,6 +858,19 @@ function rlDraw(){const me=RLD.me,pe=RLD.peer,L=[me,pe].filter(x=>x&&x.ok);
   :'<div class="muted">'+(L.length?'이 조건의 기록이 없습니다.':'기록을 읽지 못했습니다.')+'</div>';
  if(atEnd)box.scrollTop=box.scrollHeight}
 setInterval(()=>{if(!document.hidden&&$('app').style.display===''&&tab==='rl')rl(false)},10000);
+// ---------------- 📦 설치 파일 (마지막으로 성공한 런처 설치 파일)
+async function ins(){$('fbar').style.display='none';$('cnt').textContent='';$('msg').textContent='';
+ let d;try{d=await J('../api/admin/launcher')}catch(e){if(e.message!=='login')$('msg').textContent=e.message;return}
+ const c=d.check||{},A=x=>x.apps||{};
+ let h='<h3>런처 설치 파일 <span class="muted">GitHub 빌드가 성공한 것만 · 최신과 직전 2개 보관 · 1시간마다 확인</span></h3>';
+ h+='<div class="bar">'+(c.at?(c.ok?'<span class="ok">✔ '+esc(c.msg)+'</span>':'<span class="bad">✖ '+esc(c.msg)+'</span>')+' <span class="muted">'+esc(c.at.slice(5,16))+' ('+ago(c.at)+')</span>':'<span class="grey">아직 확인 전</span>')+' <button id="insChk">지금 확인</button></div>';
+ h+=d.files.length?'<table><tr><th>구분</th><th>빌드</th><th>런처</th><th>프로그램</th><th>빌드 시각</th><th class="n">크기</th><th></th></tr>'+d.files.map((f,i)=>'<tr><td>'+(i?'직전':'<b>최신 (마지막 성공)</b>')+'</td><td>'+esc(f.tag)+'</td><td>'+esc(f.launcher||'')+'</td><td class="muted">'
+  +[['runsheet','운행표'],['schedule','TV 편성표·DMB'],['excel_tv','엑셀 TV·DMB']].filter(([k])=>A(f)[k]).map(([k,l])=>l+' '+esc(A(f)[k])).join(' · ')+'</td><td>'+esc(f.published)+'</td><td class="n">'+KB(f.size)+'</td><td><a href="../api/admin/launcher/file?tag='+encodeURIComponent(f.tag)+'">⬇ 받기</a></td></tr>').join('')+'</table>'
+  :'<div class="muted">아직 받아 둔 설치 파일이 없습니다. [지금 확인]을 누르세요.</div>';
+ h+='<div class="muted" style="margin-top:8px">· 받은 EDIT_setup_r###.exe 를 새 PC에서 실행하면 C:\\EDIT 에 설치되고 바탕화면에 [편집 프로그램] 바로가기가 생깁니다. · 사내판(서버로 보내기 있음)입니다 — 외부에는 웹 다운로드의 배포판을 주세요. · 받은 기록은 관리자 기록에 남습니다.</div>';
+ $('tbl').innerHTML='<tr><td style="border:none;padding:0">'+h+'</td></tr>';
+ $('insChk').onclick=async()=>{const b=$('insChk');b.disabled=true;try{const r=await J('../api/admin/launcher/check',{method:'POST'});alert(r.msg);setTimeout(ins,8000)}catch(e){if(e.message!=='login')alert(e.message)}b.disabled=false};
+}
 async function evs(){$('fbar').style.display='none';try{const d=await J('../api/admin/events');$('cnt').textContent='';
  $('tbl').innerHTML='<tr><th>시각</th><th>IP</th><th>한 일</th></tr>'+d.rows.map(r=>'<tr><td>'+esc(r.t.replace('T',' ').slice(5))+'</td><td>'+esc(r.ip)+'</td><td>'+esc(r.what)+'</td></tr>').join('')}catch(e){}}
 function bindIp(){document.querySelectorAll('.ipn').forEach(a=>a.onclick=async()=>{const nm=prompt(a.dataset.ip+' 의 이름 (비우면 지움)\n예: 라디오 편집 PC, 3층 주조',a.dataset.n||'');if(nm===null)return;
