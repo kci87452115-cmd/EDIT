@@ -30,7 +30,7 @@ try:
 except Exception:
     pass
 
-APP_VERSION = "1.4.3"
+APP_VERSION = "1.4.4"
 # 배포판: GitHub 빌드가 단독 exe 를 만들 때 _edition.py(EDITION = "public")를 넣는다. 런처로 실행하는 사내판에는 없음
 try:
     from _edition import EDITION
@@ -4167,6 +4167,8 @@ class App:
         self.multi = [k for k in self.multi if 0 <= k < len(self.rows)]
         if self.sel is not None and self.sel not in self.multi:
             self.multi.append(self.sel)
+        if getattr(self, "_blk_lock", None) and {id(self.rows[k]) for k in self.multi} != self._blk_lock:
+            self._blk_lock = None       # 다른 칸을 고르면 '묶음 전체' 기억을 지움
         self.load_form()
         self.fill_daylist()
         if source != "tree" and self.valid_sel() and self.tree.exists(str(self.sel)):
@@ -4177,12 +4179,19 @@ class App:
         self.draw_marks()
 
     def whole_block(self):
-        """지금 고른 칸들이 월~금(주말)으로 묶인 한 칸 전체이면 그 줄 번호들, 아니면 None"""
+        """지금 고른 칸들이 월~금(주말)으로 묶인 한 칸 전체이면 그 줄 번호들, 아니면 None
+
+        묶음 전체를 고른 순간을 기억(_blk_lock)한다. 프로그램명을 치는 동안 다시 그리면 이름이 잠깐 달라지거나
+        옆 칸과 이름이 같아져 칸 모양이 갈라지거나 넓어지는데, 그래도 고른 묶음은 끝까지 한 칸처럼 고쳐지게."""
         sel = set(self.selected_rows())
         if len(sel) < 2 or not self.valid_sel():
             return None
+        ids = {id(self.rows[k]) for k in sel}
+        if getattr(self, "_blk_lock", None) == ids:
+            return sorted(sel)
         blk = self.block_of(self.sel)
         if blk and set(blk["_ris"]) == sel:
+            self._blk_lock = ids
             return sorted(sel)
         return None
 
