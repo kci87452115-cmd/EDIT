@@ -111,6 +111,8 @@ jobs:
       PYTHONUTF8: "1"
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 30
 
       - uses: actions/setup-python@v5
         with:
@@ -136,7 +138,7 @@ jobs:
         env:
           EDIT_SIGN_KEY: ${{ secrets.EDIT_SIGN_KEY }}
         run: |
-          $msg = (git log -1 --pretty=%s)
+          $msg = (git log -1 --pretty=%s -- apps/excel_tv)
           python tools\build_public_excel_tv.py "$msg"
           if ($LASTEXITCODE -ne 0) { throw "배포판 정보 파일 실패" }
 
