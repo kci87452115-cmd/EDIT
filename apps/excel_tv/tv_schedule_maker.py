@@ -30,7 +30,7 @@ try:
 except Exception:
     pass
 
-APP_VERSION = "1.4.8"
+APP_VERSION = "1.4.9"
 # 배포판: GitHub 빌드가 단독 exe 를 만들 때 _edition.py(EDITION = "public")를 넣는다. 런처로 실행하는 사내판에는 없음
 try:
     from _edition import EDITION
@@ -5016,7 +5016,6 @@ class App:
         return self._prev_rows
 
     def redraw(self):
-        import base64
         self._redraw_id = None
         if not self.rows:
             return
@@ -5028,6 +5027,99 @@ class App:
             self.draw_lbl.config(text=f"그리기 오류: {e}", fg="#c62828")
             self.log(f"[그리기 오류] {type(e).__name__}: {e}")
             return
+        self._show_render(png, geom, dates)
+
+    def redraw_busy(self, msg="편성표를 다시 그리는 중…", then=None):
+        """편성표 그리기를 뒤에서 하고 그동안 '움직이는' 알림을 보여 줌 (오래 걸리는 반영 뒤에)"""
+        if self._redraw_id:
+            try:
+                self.root.after_cancel(self._redraw_id)
+            except Exception:
+                pass
+            self._redraw_id = None
+        if not self.rows:
+            return then() if then else None
+        cfg = load_config()
+        cfg.update(self.cfg_over())
+        rows = [dict(r) for r in self.out_rows()]          # 그리는 동안 고쳐도 섞이지 않게 복사본으로
+        prev, zoom = self.prev_rows_cached(), self.zoom
+
+        def done(res):
+            self._show_render(*res)
+            if then:
+                then()
+        self.run_busy(msg, lambda: render_live(rows, prev, zoom, cfg), done, "그리기 오류")
+
+    def run_busy(self, msg, work, done, err_title="오류"):
+        """work() 를 뒤에서 실행하고, 끝날 때까지 가운데에 '⏳ 메시지 + 움직이는 막대 + 걸린 초'를 띄움.
+        끝나면 done(결과)를 화면 쪽에서 부름. 오류면 오류 창."""
+        import threading
+        import time
+        tk, ttk = self.tk, self.ttk
+        b = tk.Toplevel(self.root)
+        b.overrideredirect(True)
+        try:
+            b.attributes("-topmost", True)
+        except Exception:
+            pass
+        frm = tk.Frame(b, bg="white", bd=2, relief="ridge", padx=22, pady=14)
+        frm.pack()
+        tk.Label(frm, text="⏳ " + msg, font=("맑은 고딕", 12, "bold"), bg="white", fg="#1e3a8a").pack()
+        pb = ttk.Progressbar(frm, mode="indeterminate", length=300)
+        pb.pack(pady=(10, 4))
+        pb.start(10)
+        sec = tk.Label(frm, text="잠시만 기다려 주세요", bg="white", fg="#777", font=("맑은 고딕", 9))
+        sec.pack()
+        b.update_idletasks()
+        try:
+            rx, ry = self.root.winfo_rootx(), self.root.winfo_rooty()
+            rw, rh = self.root.winfo_width(), self.root.winfo_height()
+            b.geometry(f"+{rx + (rw - b.winfo_width()) // 2}+{ry + (rh - b.winfo_height()) // 3}")
+        except Exception:
+            pass
+        wins = [self.root] + [w for w in self.root.winfo_children() if w.winfo_class() == "Toplevel" and w is not b]
+        for w in wins:
+            try:
+                w.config(cursor="watch")
+            except Exception:
+                pass
+        res = {}
+
+        def run():
+            try:
+                res["v"] = work()
+            except Exception as e:      # 화면 쪽에서 알림
+                res["e"] = e
+        th = threading.Thread(target=run, daemon=True)
+        t0 = time.time()
+        th.start()
+
+        def poll():
+            if th.is_alive():
+                el = time.time() - t0
+                if el >= 1:
+                    sec.config(text=f"{el:.0f}초 · 잠시만 기다려 주세요")
+                b.after(100, poll)
+                return
+            pb.stop()
+            for w in wins:
+                try:
+                    w.config(cursor="")
+                except Exception:
+                    pass
+            try:
+                b.destroy()
+            except Exception:
+                pass
+            if "e" in res:
+                self.error(err_title, res["e"])
+            else:
+                done(res["v"])
+        b.after(100, poll)
+        return b
+
+    def _show_render(self, png, geom, dates):
+        import base64
         self.geom, self.dates = geom, dates
         self.pink_state = {ri: g["block"]["pink"] for g in geom for ri in g["block"]["_ris"]}
         self.img = self.tk.PhotoImage(data=base64.b64encode(png).decode("ascii"))
@@ -5408,11 +5500,11 @@ class App:
                                        initialdir=os.path.dirname(self.xlsx or "") or None)
         if not f:
             return
-        try:
-            new = read_schedule_xlsx(f)
-        except Exception as e:
-            self.error("엑셀 읽기 오류", e)
-            return
+        self.run_busy("새 판 엑셀을 읽는 중…", lambda: read_schedule_xlsx(f),
+                      lambda new: self._new_version_read(f, new), "엑셀 읽기 오류")
+
+    def _new_version_read(self, f, new):
+        from tkinter import messagebox
         od, nd = sorted({r["date"] for r in self.orig}), sorted({r["date"] for r in new})
         if od != nd:
             span = lambda ds: f"{day_label(ds[0])} ~ {day_label(ds[-1])}" if ds else "-"
@@ -5434,6 +5526,7 @@ class App:
         ent += [("× 지운 줄", r, "예전 판에서 지운 줄이라 새 판에서도 뺌", False) for r in rep["dropped"]]
         ent += [("● 옮김", n, "고친 것 그대로: " + ", ".join(mv), True) for n, mv in rep["kept"]]
         ent += [("· 지난 날", r, f"반영 안 함 (새 판: {t})", False) for t, r in rep.get("past", [])]
+        ent += [("✔ 정리됨", r, t, True) for r, t in rep.get("fixed", [])]
         return sorted(ent, key=lambda e: (e[1]["date"], e[1]["s"], e[0]))
 
     def show_version_report(self, path, new, cur, base=None):
@@ -5479,6 +5572,7 @@ class App:
         for tag, color in (("new", "#ef6c00"), ("del", "#757575"), ("chk", "#c62828"), ("keep", "#2e7d32"),
                            ("past", "#9e9e9e")):
             tv.tag_configure(tag, foreground=color)
+        tv.tag_configure("fix", foreground="#1b5e20", background="#c8e6c9")
         self.ver_tree = tv
         tv.bind("<<TreeviewSelect>>", lambda e: self.on_version_pick())
         self.ver_bar = bar = tk.Frame(w)
@@ -5487,6 +5581,7 @@ class App:
         tk.Button(bar, text="취소", width=10, command=self.close_version_window).pack(side=tk.RIGHT, padx=2)
         w.protocol("WM_DELETE_WINDOW", self.close_version_window)
         self.ver_applied = False
+        self.ver_result = None
         self.ver_src = (path, new, cur, dates)
         self.version_recalc()
 
@@ -5498,22 +5593,31 @@ class App:
         base = None
         if self.v_keep_past.get():
             base = next((d for d in dates if day_label(d) == self.v_keep_base.get()), None)
-        try:
-            merged, rep, orig = merge_keep_past(cur, self.orig, new, base)
-        except Exception as e:
-            self.error("새 판 반영 오류", e)
-            return
-        self.ver_result = (path, new, merged, rep, orig, base)
-        past_days = [day_label(d) for d in dates if base and d < base]
-        self.ver_keep_lbl.config(text=("그대로: " + ", ".join(past_days)) if past_days else "모든 날 새 판 반영")
+        orig_now = self.orig
+
+        def done(res):
+            merged, rep, orig = res
+            if self.ver_win is None:
+                return
+            self.ver_result = (path, new, merged, rep, orig, base)
+            past_days = [day_label(d) for d in dates if base and d < base]
+            self.ver_keep_lbl.config(text=("그대로: " + ", ".join(past_days)) if past_days else "모든 날 새 판 반영")
+            self.version_list(rep)
+        self.run_busy("예전 판과 비교하는 중…", lambda: merge_keep_past(cur, orig_now, new, base), done, "새 판 반영 오류")
+
+    def version_list(self, rep):
+        """보고 창 위 요약과 목록을 rep 대로 (겹침 정리 뒤에도 다시 부름)"""
+        n_fixed = len(rep.get("fixed", []))
         self.ver_summ.config(text=f"그대로 {len(rep['same'])}줄 · 바뀜 {len(rep['changed'])} · 새로 {len(rep['new'])} · "
                                   f"없어짐 {len(rep['removed'])} · 고친 것 옮김 {len(rep['kept'])}줄 · "
                                   f"로컬 {len(rep['locals'])}칸 · 직접 추가 {len(rep['added'])}줄 · "
                                   f"확인 필요 {len(rep['checks'])}" +
-                                  (f" · 지난 날 반영 안 함 {len(rep['past'])}" if rep["past"] else ""))
+                                  (f" · 겹침 정리됨 {n_fixed}" if n_fixed else "") +
+                                  (f" · 지난 날 반영 안 함 {len(rep['past'])}" if rep["past"] else ""),
+                             fg="#c62828" if rep["checks"] else "#1b5e20")
         tv = self.ver_tree
         tv.delete(*tv.get_children())
-        tagof = {"+": "new", "~": "new", "-": "del", "⚠": "chk", "×": "del", "●": "keep", "·": "past"}
+        tagof = {"+": "new", "~": "new", "-": "del", "⚠": "chk", "×": "del", "●": "keep", "·": "past", "✔": "fix"}
         self.ver_entries = ent = self.version_entries(rep)
         for i, (kind, r, note, _live) in enumerate(ent):
             tv.insert("", "end", iid=str(i), tags=(tagof[kind[0]],),
@@ -5522,6 +5626,8 @@ class App:
 
     def apply_new_version(self):
         tk = self.tk
+        if not getattr(self, "ver_result", None):      # 아직 비교 중
+            return
         path, new, merged, rep, orig, base = self.ver_result
         self.push_undo()
         old_name = os.path.basename(self.proj_path or self.xlsx or "")
@@ -5543,6 +5649,7 @@ class App:
         self.build_day_buttons()
         self.refresh()
         self.root.title(f"{APP_NAME} {VERSION} - {os.path.basename(path)} (새 판 반영, 저장 전)")
+        self._ver_rep = rep
         self.log(f"[새 판 반영] {old_name} -> {os.path.basename(path)}  바뀜 {len(rep['changed'])} · 새로 "
                  f"{len(rep['new'])} · 없어짐 {len(rep['removed'])} · 고친 것 옮김 {len(rep['kept'])} · "
                  f"로컬 {len(rep['locals'])} · 확인 필요 {len(rep['checks'])}" +
@@ -5558,16 +5665,17 @@ class App:
             tk.Button(self.ver_bar, text="닫기", width=10, command=self.close_version_window).pack(side=tk.RIGHT, padx=2)
             tk.Button(self.ver_bar, text="표시 지우기", width=12, command=self.clear_version_marks).pack(
                 side=tk.RIGHT, padx=2)
-        if rep.get("fixes"):           # 겹친 칸이 있으면 비교 창 (항목마다 적용 / 삭제 / 그대로)
-            self.root.after(300, lambda: self.show_overlap_popup(rep["fixes"]))
+        # 편성표를 뒤에서 다시 그리는 동안 '움직이는' 알림, 다 그리면 겹친 칸이 있을 때 비교 창
+        self.redraw_busy("새 판으로 편성표를 다시 그리는 중…",
+                         then=(lambda: self.show_overlap_popup(rep["fixes"])) if rep.get("fixes") else None)
 
-    def _overlap_png(self, rows, f):
-        """rows 로 편성표를 그려 f 의 날짜·시간 부분만 잘라 PhotoImage 로"""
-        import base64
-        cfg = load_config()
-        cfg.update(self.cfg_over())
-        draw = rows if IS_DMB else (annotate_auto(rows, self.orig) or rows)
-        doc, geom, dates, _ = compose(draw, self.prev_rows_cached(), cfg)
+    def _overlap_png(self, rows, f, cfg=None, prev=None, orig=None):
+        """rows 로 편성표를 그려 f 의 날짜·시간 부분만 잘라 PNG 바이트로 (뒤에서 불러도 되게 화면은 안 건드림)"""
+        if cfg is None:
+            cfg = load_config()
+            cfg.update(self.cfg_over())
+        draw = rows if IS_DMB else (annotate_auto(rows, self.orig if orig is None else orig) or rows)
+        doc, geom, dates, _ = compose(draw, self.prev_rows_cached() if prev is None else prev, cfg)
         try:
             di = dates.index(f["date"])
             x0, x1 = X_COLS["days"][di][0] - 2, X_COLS["days"][di][1] + 2
@@ -5591,7 +5699,7 @@ class App:
             png = doc[0].get_pixmap(matrix=pymupdf.Matrix(z, z), clip=pymupdf.Rect(x0, y0, x1, y1)).tobytes("png")
         finally:
             doc.close()
-        return self.tk.PhotoImage(data=base64.b64encode(png).decode("ascii"))
+        return png
 
     def show_overlap_popup(self, fixes):
         """새 판 반영 뒤 겹친 칸 비교 창: 항목마다 지금/고른 대로의 그림을 나란히, 적용·삭제·그대로를 골라 한 번에"""
@@ -5683,18 +5791,46 @@ class App:
             v.set(choice[i])
             paint()
             why.config(text="💡 " + f["why"])
-            try:
-                rows2 = [dict(r) for r in self.rows]
-                ref = {id(o): n for o, n in zip(self.rows, rows2)}
-                apply_overlap_fix(rows2, f, choice[i], ref)
-                clear_stale_overlap_marks(rows2)
-                imgs["b"] = self._overlap_png([dict(r) for r in self.rows], f)
-                imgs["a"] = self._overlap_png(rows2, f)
-            except Exception as e:
-                self.log(f"[겹침 비교] 그림 오류: {type(e).__name__}: {e}")
-                imgs["b"] = imgs["a"] = None
-            ib.config(image=imgs["b"] or "", text="" if imgs["b"] else "(그림 없음)")
-            ia.config(image=imgs["a"] or "", text="" if imgs["a"] else "(그림 없음)")
+            # 그림은 뒤에서 만들고, 그동안 '⏳ 그림 만드는 중…' (마지막에 누른 항목의 그림만 씀)
+            import threading
+            import base64
+            cur["tok"] = tok = cur.get("tok", 0) + 1
+            rows2 = [dict(r) for r in self.rows]
+            ref = {id(o): n for o, n in zip(self.rows, rows2)}
+            apply_overlap_fix(rows2, f, choice[i], ref)
+            clear_stale_overlap_marks(rows2)
+            rows1 = [dict(r) for r in self.rows]
+            cfg = load_config()
+            cfg.update(self.cfg_over())
+            prev, orig = self.prev_rows_cached(), [dict(r) for r in self.orig]
+            for lbl in (ib, ia):
+                lbl.config(image="", text="⏳ 그림 만드는 중…", fg="#1e3a8a", font=("맑은 고딕", 11, "bold"))
+            w.config(cursor="watch")
+            res = {}
+
+            def work():
+                try:
+                    res["b"] = self._overlap_png(rows1, f, cfg, prev, orig)
+                    res["a"] = self._overlap_png(rows2, f, cfg, prev, orig)
+                except Exception as e:
+                    res["e"] = e
+            th = threading.Thread(target=work, daemon=True)
+            th.start()
+
+            def poll():
+                if th.is_alive():
+                    w.after(80, poll)
+                    return
+                if cur.get("tok") != tok or not w.winfo_exists():
+                    return
+                w.config(cursor="")
+                if "e" in res:
+                    self.log(f"[겹침 비교] 그림 오류: {type(res['e']).__name__}: {res['e']}")
+                for k, lbl in (("b", ib), ("a", ia)):
+                    png = res.get(k)
+                    imgs[k] = self.tk.PhotoImage(data=base64.b64encode(png).decode("ascii")) if png else None
+                    lbl.config(image=imgs[k] or "", text="" if imgs[k] else "(그림 없음)")
+            w.after(80, poll)
             c = choice[i]
             la.config(text={"a": "적용하면", "d": "삭제하면", "k": "그대로 두면 (겹침 남음)"}[c],
                       fg={"a": "#15803d", "d": "#b45309", "k": "#b91c1c"}[c])
@@ -5721,7 +5857,7 @@ class App:
             show()
 
         def apply():
-            done = []
+            done, fixed = [], []
             for f, c in zip(fixes, choice):
                 try:
                     t_ = apply_overlap_fix(self.rows, f, c)
@@ -5729,14 +5865,30 @@ class App:
                     t_ = f"오류: {e}"
                 if t_:
                     done.append(f"{day_label(f['date'])} {t_}")
+                    keep = next((r for r in (f["xls"], f["mine"]) if any(x is r for x in self.rows)), f["xls"])
+                    fixed.append((keep, ("적용: " if c == "a" else "삭제: ") + t_))
             clear_stale_overlap_marks(self.rows)
             for t_ in done:
                 self.log("[겹침 정리] " + t_)
+            # 새 판 반영 보고 창도 맞춤: 정리된 줄은 '✔ 정리됨', 확인 필요 숫자는 남은 것만
+            vr = getattr(self, "_ver_rep", None)
+            if vr is not None:
+                alive = {id(x) for x in self.rows}
+                vr["checks"] = [r for r in vr["checks"] if id(r) in alive and r.get("_check")]
+                for k in ("new", "changed", "added", "locals"):
+                    vr[k] = [r for r in vr.get(k, []) if id(r) in alive]
+                vr["fixed"] = vr.get("fixed", []) + fixed
+                if self.ver_win is not None:
+                    try:
+                        self.version_list(vr)
+                    except Exception:
+                        pass
             self.saved = False
             self.sel, self.multi = None, []
             w.grab_release()
             w.destroy()
             self.refresh()
+            self.redraw_busy("겹침 정리한 편성표를 다시 그리는 중…")
 
         summ.pack(in_=bar, side=tk.LEFT)
         tk.Button(bar, text="닫기 (그대로)", width=12, command=lambda: (w.grab_release(), w.destroy())).pack(side=tk.RIGHT, padx=2)
